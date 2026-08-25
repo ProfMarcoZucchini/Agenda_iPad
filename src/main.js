@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.1.6';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -21,7 +21,7 @@ const WELCOME_SPLASH_MS = 2000;
 const MAX_IMAGE_DIMENSION = 2200;
 const IMAGE_WEBP_QUALITY = 0.86;
 const AUDIO_BITRATE = 64000;
-const INK_AUTOSAVE_IDLE_MS = 900;
+const INK_AUTOSAVE_IDLE_MS = 1400;
 const INK_INTERPOLATION_MAX_POINTS = 18;
 const AUDIO_MIME_CANDIDATES = ['audio/mp4;codecs=mp4a.40.2', 'audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'];
 
@@ -75,6 +75,8 @@ app.innerHTML = `
 
         <div class="object-layer" id="objectLayer" aria-label="Oggetti multimediali della pagina"></div>
         <canvas id="inkCanvas" aria-label="Pagina di scrittura. Apple Pencil per scrivere; dito per sfogliare. Su PC il mouse scrive per impostazione predefinita."></canvas>
+        <canvas id="inkRealtimeCanvas" class="ink-realtime-canvas" aria-hidden="true"></canvas>
+        <canvas id="inkPredictionCanvas" class="ink-prediction-canvas" aria-hidden="true"></canvas>
         <canvas id="strokeSelectionCanvas" class="stroke-selection-canvas" aria-hidden="true"></canvas>
         <div id="strokeSelectionBox" class="stroke-selection-box" hidden aria-label="Selezione di tratti. Trascina per spostare.">
           <span class="stroke-selection-grip" aria-hidden="true">⋮⋮</span>
@@ -390,11 +392,15 @@ const welcomeSplash = document.querySelector('#welcomeSplash');
 const welcomePauseMark = document.querySelector('#welcomePauseMark');
 const appShell = document.querySelector('#appShell');
 const canvas = document.querySelector('#inkCanvas');
+const inkRealtimeCanvas = document.querySelector('#inkRealtimeCanvas');
+const inkPredictionCanvas = document.querySelector('#inkPredictionCanvas');
 const objectLayer = document.querySelector('#objectLayer');
 const strokeSelectionCanvas = document.querySelector('#strokeSelectionCanvas');
 const strokeSelectionCtx = strokeSelectionCanvas.getContext('2d', { alpha: true });
 const strokeSelectionBox = document.querySelector('#strokeSelectionBox');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+const inkRealtimeCtx = inkRealtimeCanvas.getContext('2d', { alpha: true, desynchronized: true });
+const inkPredictionCtx = inkPredictionCanvas.getContext('2d', { alpha: true, desynchronized: true });
 const pageWrap = document.querySelector('#pageWrap');
 const pageHeader = pageWrap.querySelector('.page-header');
 const miniCalendar = document.querySelector('#miniCalendar');
@@ -552,12 +558,17 @@ let pendingGestureTransition = false;
 let pendingGestureVisual = null;
 let activeInkPointerId = null;
 let activeStrokeRenderedUntil = 0;
+let inkRealtimeRenderedUntil = 0;
+let inkSession = null;
+let pendingInkUndoSnapshot = null;
+let lastRawInkAt = 0;
 let penContactActive = false;
 let inkEventSerial = 0;
 let lastInkEventSignature = '';
 let lastPenCancelAt = 0;
 let recoverablePenStroke = null;
 let eraserChanged = false;
+let eraserRenderQueued = false;
 let pageChanging = false;
 let selectedObjectId = null;
 let objectInteraction = null;
@@ -1065,6 +1076,10 @@ function pageRecord() {
 async function savePage(immediate = false) {
   if (currentMode === 'password') return;
   clearTimeout(saveTimer);
+  if (!immediate && penContactActive) {
+    saveTimer = setTimeout(() => savePage(false), INK_AUTOSAVE_IDLE_MS);
+    return;
+  }
   const doSave = async () => {
     try {
       saveStatus.textContent = 'Salvataggio…';
@@ -1256,8 +1271,10 @@ function updateDateUI() {
   const weekday = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toUpperCase();
   const month = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
   if (currentMode === 'note') {
-    dayName.textContent = 'NOTE DI SUPPORTO';
-    monthName.textContent = `${weekday.toLowerCase()} · ${month}`;
+    dayName.textContent = 'NOTE DEL GIORNO';
+    const notePos = Math.max(0, notesForDate.findIndex(n => n.id === currentNoteId));
+    const noteTotal = Math.max(1, notesForDate.length);
+    monthName.textContent = `${notePos + 1}/${noteTotal} · ${weekday.toLowerCase()} · ${month}`;
   } else {
     dayName.textContent = weekday;
     monthName.textContent = month;
@@ -1279,7 +1296,7 @@ function updatePageContextUI() {
   if (currentMode === 'note') {
     const pos = Math.max(0, notesForDate.findIndex(n => n.id === currentNoteId));
     const humanPos = pos + 1;
-    pageKindLabel.textContent = `Pagina nota ${humanPos} · collegata al ${new Intl.DateTimeFormat('it-IT', {day:'numeric', month:'long', year:'numeric'}).format(parseISODate(currentDate))}`;
+    pageKindLabel.textContent = `Nota ${humanPos}/${Math.max(1, notesForDate.length)} · collegata al ${new Intl.DateTimeFormat('it-IT', {day:'numeric', month:'long', year:'numeric'}).format(parseISODate(currentDate))}`;
     notesBtn.setAttribute('aria-label', 'Torna alla pagina agenda');
     notesBtn.title = 'Torna alla pagina agenda';
   } else {
@@ -1305,7 +1322,7 @@ function updateNotesUI() {
     nextNoteBtn.hidden = true;
     deleteNoteBtn.hidden = true;
   } else {
-    notesInfo.textContent = `Pagina nota ${pos + 1} di ${Math.max(1, count)} · riferimento ${currentDate}.`;
+    notesInfo.textContent = `Nota ${pos + 1}/${Math.max(1, count)} · riferimento ${currentDate}.`;
     openNotesBtn.hidden = true;
     returnDailyBtn.hidden = false;
     prevNoteBtn.hidden = false;
@@ -2260,16 +2277,18 @@ function resizeCanvas() {
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const width = Math.max(1, Math.round(rect.width * dpr));
   const height = Math.max(1, Math.round(rect.height * dpr));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  if (strokeSelectionCanvas.width !== width || strokeSelectionCanvas.height !== height) {
-    strokeSelectionCanvas.width = width;
-    strokeSelectionCanvas.height = height;
+  for (const layer of [canvas, inkRealtimeCanvas, inkPredictionCanvas, strokeSelectionCanvas]) {
+    if (layer.width !== width || layer.height !== height) {
+      layer.width = width;
+      layer.height = height;
+    }
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  inkRealtimeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  inkPredictionCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   strokeSelectionCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  inkRealtimeCtx.clearRect(0, 0, rect.width, rect.height);
+  inkPredictionCtx.clearRect(0, 0, rect.width, rect.height);
   renderAll();
   renderStrokeSelection();
 }
@@ -2342,18 +2361,57 @@ function inkEventSignature(ev) {
   return `${ev.pointerId}:${Math.round(ev.clientX*10)}:${Math.round(ev.clientY*10)}:${Math.round((ev.timeStamp||0)*10)}`;
 }
 
+function beginInkSession(ev) {
+  const rect = canvas.getBoundingClientRect();
+  const headerRect = pageHeader?.getBoundingClientRect();
+  inkSession = {
+    rect,
+    protectedTop: headerRect ? Math.max(0, Math.min(rect.height, headerRect.bottom - rect.top)) : 0,
+    pointerId: ev.pointerId,
+    pointerType: ev.pointerType,
+    startedAt: performance.now()
+  };
+  inkRealtimeRenderedUntil = 0;
+  inkRealtimeCtx.clearRect(0, 0, rect.width, rect.height);
+  inkPredictionCtx.clearRect(0, 0, rect.width, rect.height);
+}
+
+function endInkSession() {
+  const rect = inkSession?.rect || canvas.getBoundingClientRect();
+  inkRealtimeCtx.clearRect(0, 0, rect.width, rect.height);
+  inkPredictionCtx.clearRect(0, 0, rect.width, rect.height);
+  inkSession = null;
+  inkRealtimeRenderedUntil = 0;
+  lastRawInkAt = 0;
+}
+
+function normalizedInkPoint(ev) {
+  const rect = inkSession?.rect || canvas.getBoundingClientRect();
+  return {
+    x: Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width)),
+    y: Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height)),
+    p: ev.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : 0.5,
+    t: Number.isFinite(ev.timeStamp) ? ev.timeStamp : performance.now()
+  };
+}
+
+function inkPointInProtectedHeader(ev) {
+  if (!inkSession) return pointIsInProtectedHeader(ev, canvas);
+  return (ev.clientY - inkSession.rect.top) < inkSession.protectedTop;
+}
+
 function appendInkPoint(point) {
   if (!activeStroke) return;
   const pts = activeStroke.points;
   const last = pts[pts.length - 1];
   if (!last) { pts.push(point); return; }
-  const rect = canvas.getBoundingClientRect();
+  const rect = inkSession?.rect || canvas.getBoundingClientRect();
   const dxPx = (point.x - last.x) * rect.width;
   const dyPx = (point.y - last.y) * rect.height;
   const distPx = Math.hypot(dxPx, dyPx);
   if (distPx < 0.08) return;
-  // Se Safari consegna campioni radi, interpola il segmento per evitare vuoti visivi.
-  const targetStep = Math.max(1.1, Math.min(3.2, activeStroke.width * 0.62));
+  // Interpolazione solo geometrica: evita buchi senza introdurre I/O o layout read.
+  const targetStep = Math.max(1.0, Math.min(2.8, activeStroke.width * 0.58));
   const inserts = Math.min(INK_INTERPOLATION_MAX_POINTS, Math.max(0, Math.ceil(distPx / targetStep) - 1));
   for (let i = 1; i <= inserts; i++) {
     const q = i / (inserts + 1);
@@ -2378,51 +2436,95 @@ function collectInkEvents(ev) {
   return events;
 }
 
-function ensureInkPointerCapture(pointerId) {
-  try {
-    if (!canvas.hasPointerCapture(pointerId)) canvas.setPointerCapture(pointerId);
-  } catch {}
+function setupTransientInkContext(targetCtx, stroke, alphaScale = 1) {
+  const rect = inkSession?.rect || canvas.getBoundingClientRect();
+  const protectedTop = inkSession?.protectedTop ?? protectedHeaderBoundary(canvas);
+  targetCtx.save();
+  targetCtx.beginPath();
+  targetCtx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop));
+  targetCtx.clip();
+  targetCtx.strokeStyle = stroke.color;
+  targetCtx.fillStyle = stroke.color;
+  targetCtx.globalAlpha = (stroke.opacity ?? 1) * alphaScale;
+  targetCtx.lineCap = 'round';
+  targetCtx.lineJoin = 'round';
+  return rect;
 }
 
-function drawActiveStrokeIncremental() {
-  if (!activeStroke) return;
+function drawRealtimeStrokeIncremental() {
+  if (!activeStroke || !inkSession) return;
   const pts = activeStroke.points;
   if (!pts.length) return;
-  ctx.save();
-  const canvasRect = canvas.getBoundingClientRect();
-  const protectedTop = protectedHeaderBoundary(canvas);
-  ctx.beginPath();
-  ctx.rect(0, protectedTop, canvasRect.width, Math.max(0, canvasRect.height - protectedTop));
-  ctx.clip();
-  ctx.strokeStyle = activeStroke.color;
-  ctx.fillStyle = activeStroke.color;
-  ctx.globalAlpha = activeStroke.opacity ?? 1;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  const rect = setupTransientInkContext(inkRealtimeCtx, activeStroke, 1);
+  const px = point => ({ x: point.x * rect.width, y: point.y * rect.height });
 
-  if (activeStrokeRenderedUntil === 0 && pts.length === 1) {
-    const p = pxPoint(pts[0]);
+  if (inkRealtimeRenderedUntil === 0 && pts.length === 1) {
+    const p = px(pts[0]);
     const w = strokeWidth(activeStroke, pts[0].p);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.max(.7, w / 2), 0, Math.PI * 2);
-    ctx.fill();
-    activeStrokeRenderedUntil = 1;
-    ctx.restore();
+    inkRealtimeCtx.beginPath();
+    inkRealtimeCtx.arc(p.x, p.y, Math.max(.7, w / 2), 0, Math.PI * 2);
+    inkRealtimeCtx.fill();
+    inkRealtimeRenderedUntil = 1;
+    inkRealtimeCtx.restore();
     return;
   }
 
-  let start = Math.max(1, activeStrokeRenderedUntil);
+  const start = Math.max(1, inkRealtimeRenderedUntil);
   for (let i = start; i < pts.length; i++) {
-    const a = pxPoint(pts[i - 1]);
-    const b = pxPoint(pts[i]);
-    const pressure = ((pts[i - 1].p ?? .5) + (pts[i].p ?? .5)) / 2;
-    ctx.lineWidth = strokeWidth(activeStroke, pressure);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    const a = px(pts[i - 1]);
+    const b = px(pts[i]);
+    inkRealtimeCtx.lineWidth = strokeWidth(activeStroke, ((pts[i - 1].p ?? .5) + (pts[i].p ?? .5)) / 2);
+    inkRealtimeCtx.beginPath();
+    inkRealtimeCtx.moveTo(a.x, a.y);
+    inkRealtimeCtx.lineTo(b.x, b.y);
+    inkRealtimeCtx.stroke();
   }
-  activeStrokeRenderedUntil = pts.length;
+  inkRealtimeRenderedUntil = pts.length;
+  inkRealtimeCtx.restore();
+}
+
+function redrawRealtimeStroke() {
+  if (!activeStroke || !inkSession) return;
+  const rect = inkSession.rect;
+  inkRealtimeCtx.clearRect(0, 0, rect.width, rect.height);
+  inkRealtimeRenderedUntil = 0;
+  drawRealtimeStrokeIncremental();
+}
+
+function renderPredictedInk(ev) {
+  if (!activeStroke || !inkSession || ev.pointerType !== 'pen') return;
+  const rect = inkSession.rect;
+  inkPredictionCtx.clearRect(0, 0, rect.width, rect.height);
+  if (typeof ev.getPredictedEvents !== 'function') return;
+  let predicted = [];
+  try { predicted = ev.getPredictedEvents() || []; } catch { return; }
+  if (!predicted.length) return;
+  const lastReal = activeStroke.points[activeStroke.points.length - 1];
+  if (!lastReal) return;
+  const visualStroke = { ...activeStroke, points: [lastReal, ...predicted.map(normalizedInkPoint)] };
+  const pts = visualStroke.points;
+  setupTransientInkContext(inkPredictionCtx, visualStroke, .34);
+  for (let i = 1; i < pts.length; i++) {
+    const a = { x: pts[i-1].x * rect.width, y: pts[i-1].y * rect.height };
+    const b = { x: pts[i].x * rect.width, y: pts[i].y * rect.height };
+    inkPredictionCtx.lineWidth = strokeWidth(visualStroke, ((pts[i-1].p ?? .5)+(pts[i].p ?? .5))/2);
+    inkPredictionCtx.beginPath();
+    inkPredictionCtx.moveTo(a.x,a.y);
+    inkPredictionCtx.lineTo(b.x,b.y);
+    inkPredictionCtx.stroke();
+  }
+  inkPredictionCtx.restore();
+}
+
+function commitRealtimeStrokeToBase() {
+  if (!inkSession || !activeStroke) return;
+  const rect = inkSession.rect;
+  ctx.save();
+  ctx.drawImage(
+    inkRealtimeCanvas,
+    0, 0, inkRealtimeCanvas.width, inkRealtimeCanvas.height,
+    0, 0, rect.width, rect.height
+  );
   ctx.restore();
 }
 
@@ -2430,8 +2532,8 @@ function renderAll() {
   const rect = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
   for (const stroke of strokes) drawStroke(stroke);
-  if (activeStroke) drawStroke(activeStroke);
-  activeStrokeRenderedUntil = activeStroke?.points?.length ?? 0;
+  activeStrokeRenderedUntil = 0;
+  if (activeStroke && inkSession) redrawRealtimeStroke();
 }
 
 function strokeBounds(stroke) {
@@ -2713,6 +2815,27 @@ function pushUndoSnapshot() {
   updateUndoRedo();
 }
 
+function beginLightweightInkUndo() {
+  // Nessuna structuredClone nel percorso critico pointerdown→pointerup.
+  // Penna/evidenziatore aggiungono un nuovo stroke; la gomma sostituisce l'array ma non muta gli stroke superstiti.
+  pendingInkUndoSnapshot = {
+    strokes: strokes.slice(),
+    objects: objects.slice(),
+    attachments: attachments.filter(item => item.kind !== 'audio').slice()
+  };
+  redoStack = [];
+}
+
+function commitLightweightInkUndo(changed = true) {
+  if (!pendingInkUndoSnapshot) return;
+  if (changed) {
+    undoStack.push(pendingInkUndoSnapshot);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+  }
+  pendingInkUndoSnapshot = null;
+  updateUndoRedo();
+}
+
 function performUndo() {
   if (!undoStack.length) return;
   redoStack.push(pageSnapshot());
@@ -2794,26 +2917,31 @@ function distancePointToSegment(p, a, b) {
 }
 
 function eraseAt(point) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = inkSession?.rect || canvas.getBoundingClientRect();
+  const protectedTop = inkSession?.protectedTop ?? protectedHeaderBoundary(canvas);
   const p = {x: point.x * rect.width, y: point.y * rect.height};
-  if (p.y < protectedHeaderBoundary(canvas)) return;
+  if (p.y < protectedTop) return;
   const radius = Math.max(10, baseWidth * 3.2);
   const before = strokes.length;
+  const pxCached = pt => ({x: pt.x * rect.width, y: pt.y * rect.height});
   strokes = strokes.filter(stroke => {
     if (stroke.points.length === 1) {
-      const a = pxPoint(stroke.points[0]);
+      const a = pxCached(stroke.points[0]);
       return Math.hypot(p.x - a.x, p.y - a.y) > radius;
     }
     for (let i = 1; i < stroke.points.length; i++) {
-      const a = pxPoint(stroke.points[i - 1]);
-      const b = pxPoint(stroke.points[i]);
+      const a = pxCached(stroke.points[i - 1]);
+      const b = pxCached(stroke.points[i]);
       if (distancePointToSegment(p, a, b) <= radius) return false;
     }
     return true;
   });
   if (strokes.length !== before) {
     eraserChanged = true;
-    renderAll();
+    if (!eraserRenderQueued) {
+      eraserRenderQueued = true;
+      requestAnimationFrame(() => { eraserRenderQueued = false; renderAll(); });
+    }
   }
 }
 
@@ -2960,16 +3088,22 @@ function handleInkPointerDown(ev) {
     return;
   }
   if (!canInk(ev)) return;
-  if (pointIsInProtectedHeader(ev, canvas)) return;
+
+  // Un solo layout read all'inizio del contatto; da qui a pointerup la pipeline Ink usa solo dati cached.
+  beginInkSession(ev);
+  if (inkPointInProtectedHeader(ev)) { endInkSession(); return; }
   ev.preventDefault();
+  clearTimeout(saveTimer);
   if (ev.pointerType === 'pen') setPenContact(true);
   activeInkPointerId = ev.pointerId;
   inkEventSerial += 1;
   lastInkEventSignature = '';
-  // Pointer capture + listener globali: massima continuità se la Pencil attraversa overlay o bordi.
-  ensureInkPointerCapture(ev.pointerId);
-  pushUndoSnapshot();
-  const point = normalizedPointFromEvent(ev);
+  beginLightweightInkUndo();
+  // Il mouse può usare capture; per Apple Pencil i listener globali sono più affidabili su iPadOS/WebKit.
+  if (ev.pointerType === 'mouse') {
+    try { canvas.setPointerCapture(ev.pointerId); } catch {}
+  }
+  const point = normalizedInkPoint(ev);
 
   if (tool === 'eraser') {
     eraserChanged = false;
@@ -2983,17 +3117,17 @@ function handleInkPointerDown(ev) {
   const canRecover = ev.pointerType === 'pen' && recoverablePenStroke && (now - lastPenCancelAt) < 420;
   if (canRecover) {
     const last = recoverablePenStroke.points?.[recoverablePenStroke.points.length-1];
-    const rect = canvas.getBoundingClientRect();
+    const rect = inkSession.rect;
     const near = last && Math.hypot((point.x-last.x)*rect.width,(point.y-last.y)*rect.height) < 34;
     if (near && recoverablePenStroke.tool === tool) {
-      // Il tratto cancellato da Safari era stato già salvato al cancel: lo rimuoviamo
-      // prima di proseguirlo per evitare duplicati.
       strokes = strokes.filter(stroke => stroke.id !== recoverablePenStroke.id);
+      // Il tratto salvato al cancel va tolto anche dal canvas base prima di continuarlo.
+      renderAll();
       activeStroke = recoverablePenStroke;
       recoverablePenStroke = null;
       appendInkPoint(point);
-      activeStrokeRenderedUntil = Math.max(0, activeStroke.points.length-2);
-      drawActiveStrokeIncremental();
+      inkRealtimeRenderedUntil = 0;
+      redrawRealtimeStroke();
       return;
     }
   }
@@ -3008,12 +3142,13 @@ function handleInkPointerDown(ev) {
     points: [point]
   };
   activeStrokeRenderedUntil = 0;
-  drawActiveStrokeIncremental();
+  inkRealtimeRenderedUntil = 0;
+  drawRealtimeStrokeIncremental();
 }
 
 canvas.addEventListener('pointerdown', handleInkPointerDown, { passive: false });
 
-function handleGlobalPointerMove(ev) {
+function handleGlobalPointerMove(ev, source = 'move') {
   if (lassoPointerId === ev.pointerId && updateLasso(ev)) return;
   if (pageGesture && pageGesture.id === ev.pointerId) {
     ev.preventDefault();
@@ -3022,23 +3157,37 @@ function handleGlobalPointerMove(ev) {
   }
   if (activeInkPointerId !== ev.pointerId || !canInk(ev)) return;
   ev.preventDefault();
+
   if (ev.pointerType === 'pen') {
     setPenContact(true);
-    ensureInkPointerCapture(ev.pointerId);
+    if (source === 'raw') {
+      lastRawInkAt = performance.now();
+      const rect = inkSession?.rect;
+      if (rect) inkPredictionCtx.clearRect(0, 0, rect.width, rect.height);
+    } else if ((performance.now() - lastRawInkAt) < 36) {
+      // Se rawupdate è realmente in flusso, pointermove serve solo per la previsione.
+      renderPredictedInk(ev);
+      return;
+    }
   }
+
   const sig = inkEventSignature(ev);
-  if (sig === lastInkEventSignature) return;
+  if (sig === lastInkEventSignature) {
+    if (source === 'move') renderPredictedInk(ev);
+    return;
+  }
   lastInkEventSignature = sig;
   const events = collectInkEvents(ev);
 
   if (tool === 'eraser') {
-    for (const e of events) eraseAt(normalizedPointFromEvent(e));
+    for (const e of events) eraseAt(normalizedInkPoint(e));
     return;
   }
 
   if (!activeStroke) return;
-  for (const e of events) appendInkPoint(normalizedPointFromEvent(e));
-  drawActiveStrokeIncremental();
+  for (const e of events) appendInkPoint(normalizedInkPoint(e));
+  drawRealtimeStrokeIncremental();
+  if (source === 'move') renderPredictedInk(ev);
 }
 
 async function finishPointer(ev) {
@@ -3054,29 +3203,38 @@ async function finishPointer(ev) {
   if (tool === 'eraser') {
     try { if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
     activeInkPointerId = null;
-    if (eraserChanged) {
-      eraserChanged = false;
-      updateUndoRedo();
-      savePage();
-    }
+    const changed = eraserChanged;
+    eraserChanged = false;
+    commitLightweightInkUndo(changed);
+    endInkSession();
+    if (changed) savePage();
     return;
   }
 
-  if (!activeStroke) { activeInkPointerId = null; return; }
+  if (!activeStroke) {
+    activeInkPointerId = null;
+    commitLightweightInkUndo(false);
+    endInkSession();
+    return;
+  }
+
+  // Un'unica composizione del layer realtime sul canvas persistente al termine del tratto.
+  commitRealtimeStrokeToBase();
   strokes.push(activeStroke);
   recoverablePenStroke = null;
   try { if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
   activeStroke = null;
   activeStrokeRenderedUntil = 0;
   activeInkPointerId = null;
-  updateUndoRedo();
-  // Salvataggio differito: evita I/O IndexedDB tra due tratti consecutivi di Pencil.
+  commitLightweightInkUndo(true);
+  endInkSession();
+  // IndexedDB viene toccato solo dopo un periodo di inattività, mai durante il contatto Pencil.
   savePage();
 }
 
-window.addEventListener('pointermove', handleGlobalPointerMove, { passive: false, capture: true });
+window.addEventListener('pointermove', ev => handleGlobalPointerMove(ev, 'move'), { passive: false, capture: true });
 if ('onpointerrawupdate' in window) {
-  window.addEventListener('pointerrawupdate', handleGlobalPointerMove, { passive: false, capture: true });
+  window.addEventListener('pointerrawupdate', ev => handleGlobalPointerMove(ev, 'raw'), { passive: false, capture: true });
 }
 window.addEventListener('pointerup', finishPointer, { capture: true });
 window.addEventListener('pointercancel', ev => {
@@ -3088,8 +3246,6 @@ window.addEventListener('pointercancel', ev => {
     return;
   }
   if (ev.pointerType === 'pen' && ev.pointerId === activeInkPointerId) {
-    // Manteniamo un piccolo recovery window: se Safari cancella il contatto e la Pencil
-    // rientra subito vicino all'ultimo punto, il tratto viene ricucito senza buco evidente.
     setPenContact(false);
     lastPenCancelAt = performance.now();
     const recovery = activeStroke ? structuredClone(activeStroke) : null;
@@ -3098,9 +3254,7 @@ window.addEventListener('pointercancel', ev => {
   }
   finishPointer(ev);
 }, { capture: true });
-canvas.addEventListener('lostpointercapture', ev => {
-  if (penContactActive && activeInkPointerId !== null) ensureInkPointerCapture(activeInkPointerId);
-});
+// Nessun lostpointercapture recovery per Pencil: non forziamo capture sulla penna.
 // Durante il contatto Pencil, i tocchi del palmo non devono sottrarre priorità all'Ink.
 window.addEventListener('pointerdown', ev => {
   if (penContactActive && ev.pointerType === 'touch') { ev.preventDefault(); ev.stopImmediatePropagation(); }

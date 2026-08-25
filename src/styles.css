@@ -1397,3 +1397,21 @@ html.pen-contact-active, html.pen-contact-active body {
 @media (prefers-reduced-motion: reduce) {
   .page-transition-ghost { transition-duration: 120ms !important; }
 }
+
+/* 0.1.6 — pipeline Ink realtime: layer separati dal canvas persistente */
+.ink-realtime-canvas,
+.ink-prediction-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  contain: strict;
+}
+.ink-realtime-canvas { z-index: 5; }
+.ink-prediction-canvas { z-index: 6; }
+.stroke-selection-canvas { z-index: 7; }
+.stroke-selection-box { z-index: 8; }
