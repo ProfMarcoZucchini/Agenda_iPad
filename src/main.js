@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.2';
+const APP_VERSION = '0.1.3';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -205,6 +205,21 @@ app.innerHTML = `
               <button class="setting-button paper-choice" data-paper="antique" type="button" aria-pressed="true">Giallino antico</button>
               <button class="setting-button paper-choice" data-paper="white" type="button" aria-pressed="false">Bianca</button>
               <button class="setting-button paper-choice" data-paper="dark" type="button" aria-pressed="false">Scura</button>
+            </div>
+          </div>
+
+          <div class="setting-row shape-setting-row">
+            <div class="setting-label">Forme / simboli</div>
+            <div class="shape-settings-body">
+              <div class="segmented shape-buttons">
+                <button class="setting-button shape-add" data-shape="rect" type="button">▭ Rettangolo</button>
+                <button class="setting-button shape-add" data-shape="ellipse" type="button">◯ Cerchio</button>
+                <button class="setting-button shape-add" data-shape="line" type="button">╱ Linea</button>
+                <button class="setting-button shape-add" data-shape="arrow" type="button">→ Freccia</button>
+                <button class="setting-button shape-add" data-shape="sticky" type="button">🗒 Sticky</button>
+                <button class="setting-button danger-button" id="deleteShapeBtn" type="button" disabled>Elimina selezionato</button>
+              </div>
+              <div class="shape-info" id="shapeInfo">Nessuna forma nella pagina.</div>
             </div>
           </div>
 
@@ -421,6 +436,8 @@ const capturePhotoBtn = document.querySelector('#capturePhotoBtn');
 const rotateImageBtn = document.querySelector('#rotateImageBtn');
 const deleteImageBtn = document.querySelector('#deleteImageBtn');
 const mediaInfo = document.querySelector('#mediaInfo');
+const shapeInfo = document.querySelector('#shapeInfo');
+const deleteShapeBtn = document.querySelector('#deleteShapeBtn');
 const imageFileInput = document.querySelector('#imageFileInput');
 const cameraFileInput = document.querySelector('#cameraFileInput');
 const vaultJumpBtn = document.querySelector('#vaultJumpBtn');
@@ -1410,17 +1427,21 @@ async function renderCompanionObjects(record) {
   const token = ++companionRenderToken;
   clearCompanionObjectUrls();
   companionObjectLayer.innerHTML = '';
-  for (const obj of (record?.objects ?? []).filter(x => x.type === 'image')) {
-    const media = await idbGetMedia(obj.mediaId);
+  for (const obj of (record?.objects ?? [])) {
     if (token !== companionRenderToken) return;
-    if (!media?.blob) continue;
-    const url = URL.createObjectURL(media.blob);
-    companionObjectUrls.set(obj.id,url);
     const el=document.createElement('div');
-    el.className='page-object image-object companion-preview-object';
-    el.style.left=`${obj.x*100}%`; el.style.top=`${obj.y*100}%`; el.style.width=`${obj.w*100}%`; el.style.height=`${obj.h*100}%`; el.style.transform=`rotate(${obj.rotation ?? 0}deg)`;
-    const img=document.createElement('img'); img.src=url; img.alt=media.originalName || 'Immagine'; img.draggable=false;
-    el.appendChild(img); companionObjectLayer.appendChild(el);
+    el.className=`page-object ${obj.type==='image'?'image-object':'shape-object'} companion-preview-object`;
+    objectStyle(el,obj);
+    if (obj.type === 'image') {
+      const media = await idbGetMedia(obj.mediaId);
+      if (token !== companionRenderToken) return;
+      if (!media?.blob) continue;
+      const url = URL.createObjectURL(media.blob); companionObjectUrls.set(obj.id,url);
+      const img=document.createElement('img'); img.src=url; img.alt=media.originalName || 'Immagine'; img.draggable=false; el.appendChild(img);
+    } else if (['rect','ellipse','line','arrow','sticky'].includes(obj.type)) {
+      el.appendChild(makeShapeVisual(obj));
+    } else continue;
+    companionObjectLayer.appendChild(el);
   }
 }
 
@@ -1542,12 +1563,21 @@ function getObjectById(id) {
 
 function updateMediaUI() {
   const images = objects.filter(obj => obj.type === 'image');
+  const shapes = objects.filter(obj => ['rect','ellipse','line','arrow','sticky'].includes(obj.type));
   const selected = selectedObjectId ? getObjectById(selectedObjectId) : null;
+  const selectedImage = selected?.type === 'image' ? selected : null;
+  const selectedShape = selected && ['rect','ellipse','line','arrow','sticky'].includes(selected.type) ? selected : null;
   mediaInfo.textContent = images.length === 0
     ? 'Nessuna immagine nella pagina.'
-    : `${images.length} ${images.length === 1 ? 'immagine' : 'immagini'} · ${selected ? 'selezionata' : 'usa “Oggetti” per modificare'}.`;
-  rotateImageBtn.disabled = !selected;
-  deleteImageBtn.disabled = !selected;
+    : `${images.length} ${images.length === 1 ? 'immagine' : 'immagini'} · ${selectedImage ? 'selezionata' : 'usa “Oggetti” per modificare'}.`;
+  rotateImageBtn.disabled = !selectedImage;
+  deleteImageBtn.disabled = !selectedImage;
+  if (shapeInfo) {
+    shapeInfo.textContent = shapes.length === 0
+      ? 'Nessuna forma nella pagina.'
+      : `${shapes.length} ${shapes.length === 1 ? 'forma/simbolo' : 'forme/simboli'} · ${selectedShape ? 'selezionata' : 'usa “Oggetti” per spostare o ridimensionare'}.`;
+  }
+  if (deleteShapeBtn) deleteShapeBtn.disabled = !selectedShape;
 }
 
 function objectStyle(el, obj) {
@@ -1558,30 +1588,82 @@ function objectStyle(el, obj) {
   el.style.transform = `rotate(${obj.rotation ?? 0}deg)`;
 }
 
+function appendResizeHandle(el) {
+  const handle = document.createElement('span');
+  handle.className = 'object-resize';
+  handle.setAttribute('aria-hidden', 'true');
+  el.appendChild(handle);
+}
+
+function makeShapeVisual(obj) {
+  const wrap = document.createElement('div');
+  wrap.className = `shape-visual shape-${obj.type}`;
+  const stroke = obj.strokeColor || '#111111';
+  const sw = Math.max(1, Number(obj.strokeWidth) || 3);
+  if (obj.type === 'sticky') {
+    wrap.innerHTML = '<span class="sticky-fold" aria-hidden="true"></span><span class="sticky-mark" aria-hidden="true">!</span>';
+    wrap.style.setProperty('--sticky-ink', stroke);
+    return wrap;
+  }
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 100 100');
+  svg.setAttribute('preserveAspectRatio','none');
+  svg.setAttribute('aria-hidden','true');
+  let shape;
+  if (obj.type === 'rect') {
+    shape = document.createElementNS(svg.namespaceURI,'rect');
+    shape.setAttribute('x','5'); shape.setAttribute('y','7'); shape.setAttribute('width','90'); shape.setAttribute('height','86'); shape.setAttribute('rx','3');
+  } else if (obj.type === 'ellipse') {
+    shape = document.createElementNS(svg.namespaceURI,'ellipse');
+    shape.setAttribute('cx','50'); shape.setAttribute('cy','50'); shape.setAttribute('rx','45'); shape.setAttribute('ry','43');
+  } else {
+    shape = document.createElementNS(svg.namespaceURI,'line');
+    shape.setAttribute('x1','8'); shape.setAttribute('y1','86'); shape.setAttribute('x2', obj.type === 'arrow' ? '82' : '92'); shape.setAttribute('y2','14');
+    if (obj.type === 'arrow') {
+      const marker = document.createElementNS(svg.namespaceURI,'marker');
+      const markerId = `arrow-${obj.id}`;
+      marker.setAttribute('id', markerId); marker.setAttribute('markerWidth','7'); marker.setAttribute('markerHeight','7'); marker.setAttribute('refX','5.5'); marker.setAttribute('refY','3.5'); marker.setAttribute('orient','auto'); marker.setAttribute('markerUnits','strokeWidth');
+      const p = document.createElementNS(svg.namespaceURI,'path'); p.setAttribute('d','M0,0 L7,3.5 L0,7 z'); p.setAttribute('fill',stroke); marker.appendChild(p);
+      const defs=document.createElementNS(svg.namespaceURI,'defs'); defs.appendChild(marker); svg.appendChild(defs);
+      shape.setAttribute('marker-end',`url(#${markerId})`);
+    }
+  }
+  shape.setAttribute('fill','none');
+  shape.setAttribute('stroke',stroke);
+  shape.setAttribute('stroke-width',String(sw));
+  shape.setAttribute('vector-effect','non-scaling-stroke');
+  shape.setAttribute('stroke-linecap','round');
+  shape.setAttribute('stroke-linejoin','round');
+  svg.appendChild(shape); wrap.appendChild(svg);
+  return wrap;
+}
+
 async function renderObjects() {
   const token = ++objectRenderToken;
   clearMediaObjectUrls();
   objectLayer.innerHTML = '';
-  const imageObjects = objects.filter(obj => obj.type === 'image');
-  for (const obj of imageObjects) {
-    const media = await idbGetMedia(obj.mediaId);
+  for (const obj of objects) {
     if (token !== objectRenderToken) return;
-    if (!media?.blob) continue;
-    const url = URL.createObjectURL(media.blob);
-    mediaObjectUrls.set(obj.id, url);
     const el = document.createElement('div');
-    el.className = 'page-object image-object';
+    el.className = `page-object ${obj.type === 'image' ? 'image-object' : 'shape-object'}`;
     if (obj.id === selectedObjectId) el.classList.add('selected');
     el.dataset.objectId = obj.id;
     objectStyle(el, obj);
-    const img = document.createElement('img');
-    img.alt = media.originalName || 'Immagine inserita';
-    img.draggable = false;
-    img.src = url;
-    const handle = document.createElement('span');
-    handle.className = 'object-resize';
-    handle.setAttribute('aria-hidden', 'true');
-    el.append(img, handle);
+    if (obj.type === 'image') {
+      const media = await idbGetMedia(obj.mediaId);
+      if (token !== objectRenderToken) return;
+      if (!media?.blob) continue;
+      const url = URL.createObjectURL(media.blob);
+      mediaObjectUrls.set(obj.id, url);
+      const img = document.createElement('img');
+      img.alt = media.originalName || 'Immagine inserita';
+      img.draggable = false; img.src = url; el.appendChild(img);
+    } else if (['rect','ellipse','line','arrow','sticky'].includes(obj.type)) {
+      el.appendChild(makeShapeVisual(obj));
+    } else {
+      continue;
+    }
+    appendResizeHandle(el);
     objectLayer.appendChild(el);
   }
   updateMediaUI();
@@ -1634,18 +1716,25 @@ function updateObjectInteraction(ev) {
 
   if (objectInteraction.mode === 'move') {
     obj.x = clampNumber(start.x + dx, 0, 1 - obj.w);
-    obj.y = clampNumber(start.y + dy, 0, 1 - obj.h);
+    const minY = protectedHeaderBoundary(canvas) / Math.max(1, rect.height);
+    obj.y = clampNumber(start.y + dy, minY, 1 - obj.h);
   } else {
-    const minW = 0.09;
+    const minW = 0.07;
+    const minH = 0.045;
     const maxW = Math.max(minW, 1 - start.x);
-    obj.w = clampNumber(start.w + dx, minW, maxW);
-    const aspect = Math.max(0.05, obj.aspect || 1);
-    obj.h = obj.w * rect.width / (aspect * rect.height);
-    if (obj.h > 1 - start.y) {
-      obj.h = 1 - start.y;
-      obj.w = obj.h * aspect * rect.height / rect.width;
+    if (obj.type === 'image') {
+      obj.w = clampNumber(start.w + dx, minW, maxW);
+      const aspect = Math.max(0.05, obj.aspect || 1);
+      obj.h = obj.w * rect.width / (aspect * rect.height);
+      if (obj.h > 1 - start.y) {
+        obj.h = 1 - start.y;
+        obj.w = obj.h * aspect * rect.height / rect.width;
+      }
+      obj.h = Math.max(minH, obj.h);
+    } else {
+      obj.w = clampNumber(start.w + dx, minW, maxW);
+      obj.h = clampNumber(start.h + dy, minH, Math.max(minH, 1 - start.y));
     }
-    obj.h = Math.max(0.06, obj.h);
   }
   objectStyle(objectInteraction.el, obj);
 }
@@ -1796,6 +1885,46 @@ async function rotateSelectedImage() {
   if (!obj || obj.type !== 'image') return;
   pushUndoSnapshot();
   obj.rotation = ((obj.rotation ?? 0) + 90) % 360;
+  await savePage(true);
+  await renderObjects();
+}
+
+
+function defaultShapeSize(kind) {
+  if (kind === 'line' || kind === 'arrow') return { w: .28, h: .12 };
+  if (kind === 'sticky') return { w: .24, h: .13 };
+  if (kind === 'ellipse') return { w: .22, h: .15 };
+  return { w: .26, h: .15 };
+}
+
+async function addShapeObject(kind) {
+  if (!['rect','ellipse','line','arrow','sticky'].includes(kind) || currentMode === 'password') return;
+  pushUndoSnapshot();
+  const rect = pageWrap.getBoundingClientRect();
+  const top = protectedHeaderBoundary(canvas) / Math.max(1, rect.height);
+  const size = defaultShapeSize(kind);
+  const obj = {
+    id: makeId(kind), type: kind,
+    x: clampNumber((1-size.w)/2, 0, 1-size.w),
+    y: clampNumber(Math.max(top + .08, .24), top, 1-size.h-.06),
+    w: size.w, h: size.h, rotation: 0,
+    strokeColor: color, strokeWidth: Math.max(2, baseWidth),
+    createdAt: new Date().toISOString()
+  };
+  objects.push(obj);
+  selectedObjectId = obj.id;
+  setTool('select');
+  await savePage(true);
+  await renderObjects();
+  setSettingsOpen(false);
+}
+
+async function deleteSelectedShape() {
+  const obj = selectedObjectId ? getObjectById(selectedObjectId) : null;
+  if (!obj || !['rect','ellipse','line','arrow','sticky'].includes(obj.type)) return;
+  pushUndoSnapshot();
+  objects = objects.filter(item => item.id !== obj.id);
+  selectedObjectId = null;
   await savePage(true);
   await renderObjects();
 }
@@ -2883,6 +3012,8 @@ importImageBtn.addEventListener('click', () => imageFileInput.click());
 capturePhotoBtn.addEventListener('click', () => cameraFileInput.click());
 rotateImageBtn.addEventListener('click', rotateSelectedImage);
 deleteImageBtn.addEventListener('click', deleteSelectedImage);
+document.querySelectorAll('.shape-add').forEach(btn => btn.addEventListener('click', () => addShapeObject(btn.dataset.shape)));
+deleteShapeBtn?.addEventListener('click', deleteSelectedShape);
 
 imageFileInput.addEventListener('change', async () => {
   const file = imageFileInput.files?.[0] ?? null;

@@ -1,4 +1,4 @@
-const CACHE = 'agenda-ipad-shell-0.1.2';
+const CACHE = 'agenda-ipad-shell-0.1.3';
 const CORE = [
   './',
   './index.html',

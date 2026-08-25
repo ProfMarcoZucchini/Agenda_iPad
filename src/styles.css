@@ -1247,3 +1247,14 @@ button:focus-visible, input:focus-visible {
 .page-transition-ghost.ghost-down-out { transform: translateY(62%) !important; opacity: 0 !important; }
 .page-header { z-index: 9; }
 .page-toolbar { z-index: 10; }
+
+/* 0.1.3 — forme e sticky */
+.shape-settings-body { min-width: 0; }
+.shape-buttons { flex-wrap: wrap; }
+.shape-info { margin-top: 5px; font-size: 10px; line-height: 1.35; opacity: .64; }
+.shape-visual, .shape-visual svg { width: 100%; height: 100%; display: block; pointer-events: none; overflow: visible; }
+.shape-sticky { position: relative; background: #f3d86a; border: 1px solid rgba(98,75,17,.48); border-radius: 3px; box-shadow: 0 2px 5px rgba(44,31,8,.16); color: var(--sticky-ink,#111); }
+.shape-sticky .sticky-fold { position:absolute; right:0; top:0; width:24%; aspect-ratio:1; background:linear-gradient(225deg,#fff2ad 0 48%,rgba(0,0,0,.13) 49% 52%,transparent 53%); }
+.shape-sticky .sticky-mark { position:absolute; inset:0; display:grid; place-items:center; font-family:Georgia,serif; font-weight:800; font-size:clamp(18px,4.2vw,46px); color:var(--sticky-ink,#111); }
+.page-wrap.object-editing .shape-object { cursor: move; }
+.companion-preview-object .object-resize { display:none !important; }
