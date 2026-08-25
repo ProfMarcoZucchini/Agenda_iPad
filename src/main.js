@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.1';
+const APP_VERSION = '0.1.2';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -29,6 +29,7 @@ app.innerHTML = `
   <div class="intro-screen cover-splash" id="coverSplash" aria-label="Copertina Agenda iPad">
     <div class="cover-card">
       <img src="./assets/cover-agenda-ipad.png" alt="Copertina ornamentale Agenda iPad" />
+      <div class="cover-owner" aria-label="Possessore agenda">di Marco Zucchini</div>
       <div class="cover-year" aria-label="Anno 2026">2026</div>
     </div>
   </div>
@@ -51,6 +52,7 @@ app.innerHTML = `
             <div class="day-text">
               <div class="day-name" id="dayName">LUNEDÌ</div>
               <div class="month-name" id="monthName">agosto</div>
+              <div class="saint-name" id="saintName" title="Santo principale del giorno"></div>
               <div class="page-kind-label" id="pageKindLabel"></div>
             </div>
           </div>
@@ -71,7 +73,7 @@ app.innerHTML = `
         <div class="object-layer" id="objectLayer" aria-label="Oggetti multimediali della pagina"></div>
         <canvas id="inkCanvas" aria-label="Pagina di scrittura. Apple Pencil per scrivere; dito per sfogliare. Su PC il mouse scrive per impostazione predefinita."></canvas>
 
-        <section class="mini-calendar" aria-label="Mini calendario">
+        <section class="mini-calendar" id="miniCalendar" aria-label="Mini calendario" hidden>
           <div class="mini-calendar-header">
             <button class="mini-month-nav" id="miniPrevMonth" type="button" aria-label="Mese precedente">‹</button>
             <button class="mini-month-label" id="miniMonthLabel" type="button" title="Scegli direttamente una data"></button>
@@ -93,6 +95,7 @@ app.innerHTML = `
           <button class="audio-page-button" id="audioPageBtn" type="button" aria-label="Registrazioni audio della pagina" title="Audio">
             <span aria-hidden="true">🎙</span><span class="audio-badge" id="audioBadge" hidden>0</span>
           </button>
+          <button class="calendar-toggle-button" id="calendarToggleBtn" type="button" aria-label="Mostra o nascondi mini calendario" title="Calendario">📅</button>
           <button class="view-mode-button" id="viewModeBtn" type="button" aria-label="Cambia visualizzazione" title="Pagina singola/doppia">▣</button>
           <button class="pin-page-button" id="pinPageBtn" type="button" aria-label="Fissa o sblocca pagina" title="Fissa pagina">📌</button>
           <button class="gear-button" id="gearBtn" type="button" aria-label="Impostazioni pagina e penna" aria-expanded="false">⚙</button>
@@ -310,6 +313,7 @@ app.innerHTML = `
             <div class="day-text">
               <div class="day-name" id="companionDayName">MARTEDÌ</div>
               <div class="month-name" id="companionMonthName">agosto</div>
+              <div class="saint-name" id="companionSaintName" title="Santo principale del giorno"></div>
               <div class="page-kind-label" id="companionKindLabel">Pagina di consultazione</div>
             </div>
           </div>
@@ -326,7 +330,7 @@ app.innerHTML = `
         </div>
         <div class="object-layer companion-object-layer" id="companionObjectLayer" aria-hidden="true"></div>
         <canvas id="companionCanvas" class="companion-canvas" aria-label="Seconda pagina. Tocca uno strumento per modificarla."></canvas>
-        <section class="mini-calendar companion-mini-calendar" aria-label="Mini calendario seconda pagina">
+        <section class="mini-calendar companion-mini-calendar" id="companionMiniCalendar" aria-label="Mini calendario seconda pagina" hidden>
           <div class="mini-calendar-header">
             <button class="mini-month-nav" id="companionPrevMonth" type="button" aria-label="Mese precedente">‹</button>
             <button class="mini-month-label" id="companionMonthLabel" type="button" aria-label="Data seconda pagina"></button>
@@ -336,6 +340,7 @@ app.innerHTML = `
           <div class="mini-days" id="companionMiniDays"></div>
         </section>
         <div class="page-statusbar companion-statusbar">
+          <button class="calendar-toggle-button" id="companionCalendarToggleBtn" type="button" aria-label="Mostra o nascondi mini calendario" title="Calendario">📅</button>
           <button class="pin-page-button" id="companionPinBtn" type="button" aria-label="Fissa questa pagina" title="Fissa questa pagina">📌</button>
           <button class="activate-page-button" id="activateCompanionBtn" type="button" aria-label="Attiva seconda pagina" title="Modifica questa pagina">✎</button>
           <span class="save-status" id="companionStatus">Consultazione</span>
@@ -352,6 +357,9 @@ const canvas = document.querySelector('#inkCanvas');
 const objectLayer = document.querySelector('#objectLayer');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
 const pageWrap = document.querySelector('#pageWrap');
+const pageHeader = pageWrap.querySelector('.page-header');
+const miniCalendar = document.querySelector('#miniCalendar');
+const calendarToggleBtn = document.querySelector('#calendarToggleBtn');
 const pageStage = document.querySelector('.page-stage');
 const companionPageWrap = document.querySelector('#companionPageWrap');
 const companionCanvas = document.querySelector('#companionCanvas');
@@ -360,6 +368,10 @@ const companionObjectLayer = document.querySelector('#companionObjectLayer');
 const companionDayNumber = document.querySelector('#companionDayNumber');
 const companionDayName = document.querySelector('#companionDayName');
 const companionMonthName = document.querySelector('#companionMonthName');
+const companionSaintName = document.querySelector('#companionSaintName');
+const companionMiniCalendar = document.querySelector('#companionMiniCalendar');
+const companionCalendarToggleBtn = document.querySelector('#companionCalendarToggleBtn');
+const companionPageHeader = companionPageWrap.querySelector('.page-header');
 const companionYearLabel = document.querySelector('#companionYearLabel');
 const companionKindLabel = document.querySelector('#companionKindLabel');
 const companionMiniDays = document.querySelector('#companionMiniDays');
@@ -377,6 +389,7 @@ const quickUndoBtn = document.querySelector('#quickUndoBtn');
 const dayNumber = document.querySelector('#dayNumber');
 const dayName = document.querySelector('#dayName');
 const monthName = document.querySelector('#monthName');
+const saintName = document.querySelector('#saintName');
 const pageKindLabel = document.querySelector('#pageKindLabel');
 const yearLabel = document.querySelector('#yearLabel');
 const saveStatus = document.querySelector('#saveStatus');
@@ -927,6 +940,7 @@ async function openPasswordBook(direction = 'next', fromEnd = false) {
     setSettingsOpen(false);
     renderVaultState();
     saveStatus.textContent = vaultKey ? 'Rubrica aperta' : 'Rubrica bloccata';
+    setMainCalendarVisible(false);
     notesBtn.hidden = true;
     vaultJumpBtn.hidden = true;
     audioPageBtn.hidden = true;
@@ -1124,6 +1138,60 @@ function applyPageAppearance() {
   pageWrap.classList.toggle('object-editing', tool === 'select');
 }
 
+function saintCacheKey(iso) { return `agenda-ipad:saint:${iso}`; }
+
+function extractSaintName(payload) {
+  const pick = value => {
+    if (!value) return '';
+    if (typeof value === 'string') return value.trim();
+    if (Array.isArray(value)) return value.length ? pick(value[0]) : '';
+    if (typeof value === 'object') {
+      for (const key of ['nome','name','santo','saint','titolo','title','NomeSanto','nome_santo']) {
+        const v = pick(value[key]); if (v) return v;
+      }
+      for (const key of ['santi','saints','results','result','data','items']) {
+        const v = pick(value[key]); if (v) return v;
+      }
+    }
+    return '';
+  };
+  return pick(payload);
+}
+
+async function updateSaintLabel(iso, element) {
+  if (!element || !iso) return;
+  element.dataset.saintDate = iso;
+  const cached = localStorage.getItem(saintCacheKey(iso));
+  if (cached) { element.textContent = `Santo del giorno · ${cached}`; return; }
+  element.textContent = 'Santo del giorno · …';
+  try {
+    const response = await fetch(`https://www.santodelgiorno.it/santi.json?data=${encodeURIComponent(iso)}`, { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const name = extractSaintName(payload);
+    if (!name) throw new Error('Santo non riconosciuto');
+    localStorage.setItem(saintCacheKey(iso), name);
+    if (element.dataset.saintDate === iso) element.textContent = `Santo del giorno · ${name}`;
+  } catch (error) {
+    console.warn('Santo del giorno non disponibile:', error);
+    if (element.dataset.saintDate === iso) element.textContent = cached ? `Santo del giorno · ${cached}` : 'Santo del giorno · non disponibile offline';
+  }
+}
+
+function setMainCalendarVisible(show) {
+  if (!miniCalendar) return;
+  miniCalendar.hidden = !show;
+  calendarToggleBtn?.classList.toggle('active', show);
+  calendarToggleBtn?.setAttribute('aria-pressed', String(show));
+}
+
+function setCompanionCalendarVisible(show) {
+  if (!companionMiniCalendar) return;
+  companionMiniCalendar.hidden = !show;
+  companionCalendarToggleBtn?.classList.toggle('active', show);
+  companionCalendarToggleBtn?.setAttribute('aria-pressed', String(show));
+}
+
 function updateDateUI() {
   const d = parseISODate(currentDate);
   dayNumber.textContent = d.getDate();
@@ -1137,6 +1205,8 @@ function updateDateUI() {
     monthName.textContent = month;
   }
   yearLabel.textContent = d.getFullYear();
+  updateSaintLabel(currentDate, saintName);
+  setMainCalendarVisible(false);
   quickDateInput.value = currentDate;
   calendarMonth = monthStart(currentDate);
   renderMiniCalendar();
@@ -1184,7 +1254,7 @@ function updateNotesUI() {
     nextNoteBtn.hidden = false;
     deleteNoteBtn.hidden = false;
     prevNoteBtn.disabled = pos <= 0;
-    nextNoteBtn.disabled = pos < 0 || pos >= count - 1;
+    nextNoteBtn.disabled = pos < 0;
   }
 }
 
@@ -1271,6 +1341,20 @@ function updateViewControls() {
   pinPageBtn.title = viewMode === 'pinned' && activeSide === pinnedSide ? 'Sblocca pagina fissata' : 'Fissa questa pagina';
 }
 
+function protectedHeaderBoundary(targetCanvas = canvas) {
+  const header = targetCanvas === companionCanvas ? companionPageHeader : pageHeader;
+  if (!header || !targetCanvas) return 0;
+  const canvasRect = targetCanvas.getBoundingClientRect();
+  const headerRect = header.getBoundingClientRect();
+  return Math.max(0, Math.min(canvasRect.height, headerRect.bottom - canvasRect.top));
+}
+
+function pointIsInProtectedHeader(ev, targetCanvas = canvas) {
+  const boundary = protectedHeaderBoundary(targetCanvas);
+  const rect = targetCanvas.getBoundingClientRect();
+  return (ev.clientY - rect.top) < boundary;
+}
+
 function drawStrokeOnCanvas(targetCtx, targetCanvas, stroke) {
   const pts = stroke?.points ?? [];
   if (!pts.length) return;
@@ -1278,6 +1362,10 @@ function drawStrokeOnCanvas(targetCtx, targetCanvas, stroke) {
   const px = point => ({x: point.x * rect.width, y: point.y * rect.height});
   const widthAt = pressure => stroke.pointerType === 'pen' ? stroke.width * (0.72 + Math.max(0.05, pressure ?? .5) * .72) : stroke.width;
   targetCtx.save();
+  const protectedTop = protectedHeaderBoundary(targetCanvas);
+  targetCtx.beginPath();
+  targetCtx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop));
+  targetCtx.clip();
   targetCtx.strokeStyle = stroke.color ?? '#111';
   targetCtx.fillStyle = stroke.color ?? '#111';
   targetCtx.globalAlpha = stroke.opacity ?? 1;
@@ -1363,6 +1451,8 @@ async function renderCompanionPage() {
   companionDayName.textContent=new Intl.DateTimeFormat('it-IT',{weekday:'long'}).format(d).toUpperCase();
   companionMonthName.textContent=new Intl.DateTimeFormat('it-IT',{month:'long'}).format(d);
   companionYearLabel.textContent=d.getFullYear();
+  updateSaintLabel(companionDate, companionSaintName);
+  setCompanionCalendarVisible(false);
   const companionSide=oppositeSide(activeSide);
   const isPinned=viewMode==='pinned' && companionSide===pinnedSide;
   companionKindLabel.textContent=isPinned ? '📌 PAGINA FISSATA' : 'Tocca uno strumento per modificarla';
@@ -2032,6 +2122,11 @@ function drawStroke(stroke) {
   const pts = stroke.points;
   if (!pts.length) return;
   ctx.save();
+  const canvasRect = canvas.getBoundingClientRect();
+  const protectedTop = protectedHeaderBoundary(canvas);
+  ctx.beginPath();
+  ctx.rect(0, protectedTop, canvasRect.width, Math.max(0, canvasRect.height - protectedTop));
+  ctx.clip();
   ctx.strokeStyle = stroke.color;
   ctx.fillStyle = stroke.color;
   ctx.globalAlpha = stroke.opacity ?? 1;
@@ -2066,6 +2161,11 @@ function drawActiveStrokeIncremental() {
   const pts = activeStroke.points;
   if (!pts.length) return;
   ctx.save();
+  const canvasRect = canvas.getBoundingClientRect();
+  const protectedTop = protectedHeaderBoundary(canvas);
+  ctx.beginPath();
+  ctx.rect(0, protectedTop, canvasRect.width, Math.max(0, canvasRect.height - protectedTop));
+  ctx.clip();
   ctx.strokeStyle = activeStroke.color;
   ctx.fillStyle = activeStroke.color;
   ctx.globalAlpha = activeStroke.opacity ?? 1;
@@ -2213,6 +2313,7 @@ function distancePointToSegment(p, a, b) {
 function eraseAt(point) {
   const rect = canvas.getBoundingClientRect();
   const p = {x: point.x * rect.width, y: point.y * rect.height};
+  if (p.y < protectedHeaderBoundary(canvas)) return;
   const radius = Math.max(10, baseWidth * 3.2);
   const before = strokes.length;
   strokes = strokes.filter(stroke => {
@@ -2248,6 +2349,7 @@ function canInk(ev) {
 
 function startPageGesture(ev) {
   pageGesture = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, x: ev.clientX, y: ev.clientY, t0: performance.now() };
+  pageWrap.style.setProperty('--drag-y', '0px');
   canvas.setPointerCapture(ev.pointerId);
   pageWrap.classList.add('dragging');
 }
@@ -2257,15 +2359,26 @@ function updatePageGesture(ev) {
   pageGesture.x = ev.clientX;
   pageGesture.y = ev.clientY;
   const rect = pageWrap.getBoundingClientRect();
-  const dx = Math.max(-rect.width * .38, Math.min(rect.width * .38, ev.clientX - pageGesture.x0));
-  const rot = dx / rect.width * 13;
-  pageWrap.style.setProperty('--drag-x', `${dx}px`);
-  pageWrap.style.setProperty('--drag-rot', `${rot}deg`);
+  const rawDx = ev.clientX - pageGesture.x0;
+  const rawDy = ev.clientY - pageGesture.y0;
+  if (Math.abs(rawDy) > Math.abs(rawDx) * 1.08) {
+    const dy = Math.max(-rect.height * .26, Math.min(rect.height * .26, rawDy));
+    pageWrap.style.setProperty('--drag-x', '0px');
+    pageWrap.style.setProperty('--drag-y', `${dy}px`);
+    pageWrap.style.setProperty('--drag-rot', '0deg');
+  } else {
+    const dx = Math.max(-rect.width * .38, Math.min(rect.width * .38, rawDx));
+    const rot = dx / rect.width * 13;
+    pageWrap.style.setProperty('--drag-x', `${dx}px`);
+    pageWrap.style.setProperty('--drag-y', '0px');
+    pageWrap.style.setProperty('--drag-rot', `${rot}deg`);
+  }
 }
 
 function clearPageGestureVisual() {
   pageWrap.classList.remove('dragging');
   pageWrap.style.setProperty('--drag-x', '0px');
+  pageWrap.style.setProperty('--drag-y', '0px');
   pageWrap.style.setProperty('--drag-rot', '0deg');
 }
 
@@ -2277,9 +2390,23 @@ async function finishPageGesture(ev) {
   const dy = ev.clientY - gesture.y0;
   const dt = performance.now() - gesture.t0;
   const rect = pageWrap.getBoundingClientRect();
-  const valid = Math.abs(dx) > Math.max(58, rect.width * .12) && Math.abs(dx) > Math.abs(dy) * 1.18 && dt < 1500;
-  if (!valid) { clearPageGestureVisual(); return; }
+  const horizontalValid = Math.abs(dx) > Math.max(58, rect.width * .12) && Math.abs(dx) > Math.abs(dy) * 1.18 && dt < 1500;
+  const verticalValid = Math.abs(dy) > Math.max(64, rect.height * .10) && Math.abs(dy) > Math.abs(dx) * 1.16 && dt < 1600;
+  if (!horizontalValid && !verticalValid) { clearPageGestureVisual(); return; }
   pendingGestureTransition = true;
+
+  if (verticalValid && currentMode !== 'password') {
+    if (dy < 0) {
+      if (currentMode === 'daily') await openOrCreateFirstNote();
+      else await nextNoteOrCreate();
+    } else if (currentMode === 'note') {
+      await previousNoteOrDaily('down');
+    } else {
+      pendingGestureTransition = false;
+      clearPageGestureVisual();
+    }
+    return;
+  }
 
   if (currentMode === 'daily' && viewMode === 'pinned' && activeSide === pinnedSide) {
     pendingGestureTransition = false;
@@ -2289,9 +2416,10 @@ async function finishPageGesture(ev) {
     return;
   }
 
+  // La navigazione orizzontale resta riservata ai giorni, anche quando si è in una nota.
   if (currentMode === 'note') {
-    if (dx > 0) await previousNoteOrDaily();
-    else await nextNote();
+    const targetDate = dx < 0 ? offsetDate(currentDate, 1) : offsetDate(currentDate, -1);
+    await animateSwitch(dx < 0 ? 'next' : 'prev', () => loadDailyPage(targetDate));
     return;
   }
   if (dx < 0 && currentDate === MAX_DATE) {
@@ -2314,6 +2442,7 @@ canvas.addEventListener('pointerdown', ev => {
     return;
   }
   if (!canInk(ev)) return;
+  if (pointIsInProtectedHeader(ev, canvas)) return;
   ev.preventDefault();
   activeInkPointerId = ev.pointerId;
   // Su Safari/iPad la pointer capture della Pencil può produrre interruzioni sporadiche.
@@ -2462,7 +2591,7 @@ async function animateGestureSwitch(direction, loader, saveCurrent = true) {
     // Il nuovo foglio viene mostrato solo quando dati, layout e companion sono pronti.
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     pageWrap.classList.remove('transition-target-hidden');
-    ghost.classList.add(direction === 'prev' ? 'ghost-prev-out' : 'ghost-next-out');
+    ghost.classList.add(direction === 'prev' ? 'ghost-prev-out' : direction === 'up' ? 'ghost-up-out' : direction === 'down' ? 'ghost-down-out' : 'ghost-next-out');
     await new Promise(resolve => setTimeout(resolve, 190));
   } finally {
     ghost.remove();
@@ -2485,8 +2614,8 @@ async function animateSwitch(direction, loader, saveCurrent = true) {
   pageChanging = true;
   if (saveCurrent) await savePage(true);
   setSettingsOpen(false);
-  const outClass = direction === 'prev' ? 'flip-prev-out' : 'flip-next-out';
-  const inClass = direction === 'prev' ? 'flip-prev-in' : 'flip-next-in';
+  const outClass = direction === 'prev' ? 'flip-prev-out' : direction === 'up' ? 'flip-up-out' : direction === 'down' ? 'flip-down-out' : 'flip-next-out';
+  const inClass = direction === 'prev' ? 'flip-prev-in' : direction === 'up' ? 'flip-up-in' : direction === 'down' ? 'flip-down-in' : 'flip-next-in';
   pageWrap.classList.add(outClass);
   await new Promise(r => setTimeout(r, 125));
   await loader();
@@ -2518,7 +2647,7 @@ async function returnToDaily(direction = 'prev') {
   await animateSwitch(direction, () => loadDailyPage(currentDate));
 }
 
-async function addNotePage() {
+async function addNotePage(direction = 'up') {
   if (pageChanging) return;
   await savePage(true);
   await refreshNotesForDate();
@@ -2540,22 +2669,37 @@ async function addNotePage() {
   };
   await idbPutNote(note);
   await refreshNotesForDate();
-  await openNote(note.id, 'next');
+  await openNote(note.id, direction);
 }
 
-async function previousNoteOrDaily() {
+async function openOrCreateFirstNote() {
+  if (currentMode !== 'daily') return;
+  await refreshNotesForDate();
+  if (notesForDate.length) await openNote(notesForDate[0].id, 'up');
+  else await addNotePage('up');
+}
+
+async function previousNoteOrDaily(direction = 'down') {
   if (currentMode !== 'note') return;
   await refreshNotesForDate();
   const pos = notesForDate.findIndex(n => n.id === currentNoteId);
-  if (pos > 0) await openNote(notesForDate[pos - 1].id, 'prev');
-  else await returnToDaily('prev');
+  if (pos > 0) await openNote(notesForDate[pos - 1].id, direction);
+  else await returnToDaily(direction);
 }
 
 async function nextNote() {
   if (currentMode !== 'note') return;
   await refreshNotesForDate();
   const pos = notesForDate.findIndex(n => n.id === currentNoteId);
-  if (pos >= 0 && pos < notesForDate.length - 1) await openNote(notesForDate[pos + 1].id, 'next');
+  if (pos >= 0 && pos < notesForDate.length - 1) await openNote(notesForDate[pos + 1].id, 'up');
+}
+
+async function nextNoteOrCreate() {
+  if (currentMode !== 'note') return;
+  await refreshNotesForDate();
+  const pos = notesForDate.findIndex(n => n.id === currentNoteId);
+  if (pos >= 0 && pos < notesForDate.length - 1) await openNote(notesForDate[pos + 1].id, 'up');
+  else await addNotePage('up');
 }
 
 async function deleteCurrentNote() {
@@ -2753,22 +2897,20 @@ cameraFileInput.addEventListener('change', async () => {
 
 notesBtn.addEventListener('click', async () => {
   if (currentMode === 'note') {
-    await returnToDaily('prev');
+    await returnToDaily('down');
     return;
   }
-  await refreshNotesForDate();
-  if (notesForDate.length) await openNote(notesForDate[0].id, 'next');
-  else await addNotePage();
+  await openOrCreateFirstNote();
 });
 
-addNoteBtn.addEventListener('click', addNotePage);
+addNoteBtn.addEventListener('click', () => addNotePage('up'));
 openNotesBtn.addEventListener('click', async () => {
   await refreshNotesForDate();
-  if (notesForDate.length) await openNote(notesForDate[0].id, 'next');
+  if (notesForDate.length) await openNote(notesForDate[0].id, 'up');
 });
-returnDailyBtn.addEventListener('click', () => returnToDaily('prev'));
-prevNoteBtn.addEventListener('click', previousNoteOrDaily);
-nextNoteBtn.addEventListener('click', nextNote);
+returnDailyBtn.addEventListener('click', () => returnToDaily('down'));
+prevNoteBtn.addEventListener('click', () => previousNoteOrDaily('down'));
+nextNoteBtn.addEventListener('click', nextNoteOrCreate);
 deleteNoteBtn.addEventListener('click', deleteCurrentNote);
 
 document.querySelectorAll('.tool-choice').forEach(btn => btn.addEventListener('click', () => setTool(btn.dataset.tool)));
@@ -2792,6 +2934,7 @@ companionPinBtn.addEventListener('click', () => {
 });
 companionCanvas.addEventListener('click', () => activateCompanion(tool === 'select' ? 'pen' : tool));
 companionMiniDays.addEventListener('click', async ev => {
+  setCompanionCalendarVisible(false);
   const btn = ev.target.closest('.mini-day[data-date]');
   if (!btn) return;
   const date = clampDate(btn.dataset.date);
@@ -2837,10 +2980,14 @@ undoBtn.addEventListener('click', performUndo);
 redoBtn.addEventListener('click', performRedo);
 quickUndoBtn?.addEventListener('click', performUndo);
 
+calendarToggleBtn?.addEventListener('click', () => setMainCalendarVisible(Boolean(miniCalendar?.hidden)));
+companionCalendarToggleBtn?.addEventListener('click', () => setCompanionCalendarVisible(Boolean(companionMiniCalendar?.hidden)));
+
 miniDays.addEventListener('click', ev => {
   const btn = ev.target.closest('.mini-day[data-date]');
   if (!btn) return;
   const next = btn.dataset.date;
+  setMainCalendarVisible(false);
   changeDate(next, next < currentDate ? 'prev' : 'next');
 });
 
