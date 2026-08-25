@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.1.1';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -489,6 +489,9 @@ let undoStack = [];
 let redoStack = [];
 let saveTimer = null;
 let pageGesture = null;
+let pendingGestureTransition = false;
+let activeInkPointerId = null;
+let activeStrokeRenderedUntil = 0;
 let eraserChanged = false;
 let pageChanging = false;
 let selectedObjectId = null;
@@ -2058,11 +2061,49 @@ function drawStroke(stroke) {
   ctx.restore();
 }
 
+function drawActiveStrokeIncremental() {
+  if (!activeStroke) return;
+  const pts = activeStroke.points;
+  if (!pts.length) return;
+  ctx.save();
+  ctx.strokeStyle = activeStroke.color;
+  ctx.fillStyle = activeStroke.color;
+  ctx.globalAlpha = activeStroke.opacity ?? 1;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (activeStrokeRenderedUntil === 0 && pts.length === 1) {
+    const p = pxPoint(pts[0]);
+    const w = strokeWidth(activeStroke, pts[0].p);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(.7, w / 2), 0, Math.PI * 2);
+    ctx.fill();
+    activeStrokeRenderedUntil = 1;
+    ctx.restore();
+    return;
+  }
+
+  let start = Math.max(1, activeStrokeRenderedUntil);
+  for (let i = start; i < pts.length; i++) {
+    const a = pxPoint(pts[i - 1]);
+    const b = pxPoint(pts[i]);
+    const pressure = ((pts[i - 1].p ?? .5) + (pts[i].p ?? .5)) / 2;
+    ctx.lineWidth = strokeWidth(activeStroke, pressure);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  activeStrokeRenderedUntil = pts.length;
+  ctx.restore();
+}
+
 function renderAll() {
   const rect = canvas.getBoundingClientRect();
   ctx.clearRect(0, 0, rect.width, rect.height);
   for (const stroke of strokes) drawStroke(stroke);
   if (activeStroke) drawStroke(activeStroke);
+  activeStrokeRenderedUntil = activeStroke?.points?.length ?? 0;
 }
 
 function pageSnapshot() {
@@ -2237,10 +2278,12 @@ async function finishPageGesture(ev) {
   const dt = performance.now() - gesture.t0;
   const rect = pageWrap.getBoundingClientRect();
   const valid = Math.abs(dx) > Math.max(58, rect.width * .12) && Math.abs(dx) > Math.abs(dy) * 1.18 && dt < 1500;
-  clearPageGestureVisual();
-  if (!valid) return;
+  if (!valid) { clearPageGestureVisual(); return; }
+  pendingGestureTransition = true;
 
   if (currentMode === 'daily' && viewMode === 'pinned' && activeSide === pinnedSide) {
+    pendingGestureTransition = false;
+    clearPageGestureVisual();
     saveStatus.textContent = 'Pagina fissata';
     setTimeout(() => { if (saveStatus.textContent === 'Pagina fissata') saveStatus.textContent = 'Salvato'; }, 900);
     return;
@@ -2272,7 +2315,12 @@ canvas.addEventListener('pointerdown', ev => {
   }
   if (!canInk(ev)) return;
   ev.preventDefault();
-  canvas.setPointerCapture(ev.pointerId);
+  activeInkPointerId = ev.pointerId;
+  // Su Safari/iPad la pointer capture della Pencil può produrre interruzioni sporadiche.
+  // Per la Pencil ascoltiamo gli eventi globalmente; manteniamo la capture solo per mouse.
+  if (ev.pointerType !== 'pen') {
+    try { canvas.setPointerCapture(ev.pointerId); } catch {}
+  }
   pushUndoSnapshot();
   const point = normalizedPointFromEvent(ev);
 
@@ -2293,16 +2341,17 @@ canvas.addEventListener('pointerdown', ev => {
     pointerType: ev.pointerType,
     points: [point]
   };
-  renderAll();
+  activeStrokeRenderedUntil = 0;
+  drawActiveStrokeIncremental();
 });
 
-canvas.addEventListener('pointermove', ev => {
+function handleGlobalPointerMove(ev) {
   if (pageGesture && pageGesture.id === ev.pointerId) {
     ev.preventDefault();
     updatePageGesture(ev);
     return;
   }
-  if (!canvas.hasPointerCapture(ev.pointerId) || !canInk(ev)) return;
+  if (activeInkPointerId !== ev.pointerId || !canInk(ev)) return;
   ev.preventDefault();
   const events = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [ev];
 
@@ -2312,9 +2361,13 @@ canvas.addEventListener('pointermove', ev => {
   }
 
   if (!activeStroke) return;
-  for (const e of events) activeStroke.points.push(normalizedPointFromEvent(e));
-  renderAll();
-});
+  for (const e of events) {
+    const pt = normalizedPointFromEvent(e);
+    const last = activeStroke.points[activeStroke.points.length - 1];
+    if (!last || pt.x !== last.x || pt.y !== last.y || pt.t !== last.t) activeStroke.points.push(pt);
+  }
+  drawActiveStrokeIncremental();
+}
 
 async function finishPointer(ev) {
   if (pageGesture && pageGesture.id === ev.pointerId) {
@@ -2322,34 +2375,108 @@ async function finishPointer(ev) {
     return;
   }
 
+  if (activeInkPointerId !== null && ev.pointerId !== activeInkPointerId && !pageGesture) return;
+
   if (tool === 'eraser') {
+    activeInkPointerId = null;
     if (eraserChanged) {
       eraserChanged = false;
       updateUndoRedo();
-      await savePage(true);
+      savePage();
     }
     return;
   }
 
-  if (!activeStroke) return;
+  if (!activeStroke) { activeInkPointerId = null; return; }
   strokes.push(activeStroke);
   activeStroke = null;
-  renderAll();
+  activeStrokeRenderedUntil = 0;
+  activeInkPointerId = null;
   updateUndoRedo();
-  await savePage(true);
+  // Salvataggio differito: evita I/O IndexedDB tra due tratti consecutivi di Pencil.
+  savePage();
 }
 
-canvas.addEventListener('pointerup', finishPointer);
-canvas.addEventListener('pointercancel', ev => {
+window.addEventListener('pointermove', handleGlobalPointerMove, { passive: false, capture: true });
+window.addEventListener('pointerup', finishPointer, { capture: true });
+window.addEventListener('pointercancel', ev => {
   if (pageGesture?.id === ev.pointerId) {
     pageGesture = null;
+    pendingGestureTransition = false;
     clearPageGestureVisual();
     return;
   }
+  // Safari può generare pointercancel durante rapidi cambi di contatto.
+  // Conserviamo comunque il tratto acquisito fino a quel momento.
   finishPointer(ev);
-});
+}, { capture: true });
+canvas.addEventListener('lostpointercapture', () => { /* la Pencil continua tramite listener globali */ });
+
+function makePageTransitionGhost() {
+  const rect = pageWrap.getBoundingClientRect();
+  const ghost = pageWrap.cloneNode(true);
+  ghost.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  ghost.removeAttribute('id');
+  ghost.classList.remove('dragging','flip-next-out','flip-prev-out','flip-next-in','flip-prev-in','transition-target-hidden');
+  ghost.classList.add('page-transition-ghost');
+  Object.assign(ghost.style, {
+    position: 'fixed',
+    left: rect.left + 'px',
+    top: rect.top + 'px',
+    width: rect.width + 'px',
+    height: rect.height + 'px',
+    margin: '0',
+    transform: 'none',
+    transformOrigin: 'center center'
+  });
+  const ghostCanvas = ghost.querySelector('canvas');
+  if (ghostCanvas) {
+    ghostCanvas.width = canvas.width;
+    ghostCanvas.height = canvas.height;
+    const gctx = ghostCanvas.getContext('2d');
+    if (gctx) gctx.drawImage(canvas, 0, 0);
+  }
+  ghost.querySelectorAll('button,input,textarea').forEach(el => { el.tabIndex = -1; el.disabled = true; });
+  document.body.appendChild(ghost);
+  return ghost;
+}
+
+async function animateGestureSwitch(direction, loader, saveCurrent = true) {
+  if (pageChanging) { clearPageGestureVisual(); return; }
+  if (recordingActive()) {
+    pendingGestureTransition = false;
+    clearPageGestureVisual();
+    window.alert('Termina la registrazione audio prima di cambiare pagina.');
+    return;
+  }
+  pageChanging = true;
+  if (saveCurrent) await savePage(true);
+  setSettingsOpen(false);
+
+  const ghost = makePageTransitionGhost();
+  pageWrap.classList.add('transition-target-hidden');
+  clearPageGestureVisual();
+
+  try {
+    await loader();
+    // Il nuovo foglio viene mostrato solo quando dati, layout e companion sono pronti.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    pageWrap.classList.remove('transition-target-hidden');
+    ghost.classList.add(direction === 'prev' ? 'ghost-prev-out' : 'ghost-next-out');
+    await new Promise(resolve => setTimeout(resolve, 190));
+  } finally {
+    ghost.remove();
+    pageWrap.classList.remove('transition-target-hidden');
+    pageChanging = false;
+  }
+}
 
 async function animateSwitch(direction, loader, saveCurrent = true) {
+  if (pendingGestureTransition) {
+    pendingGestureTransition = false;
+    await animateGestureSwitch(direction, loader, saveCurrent);
+    return;
+  }
   if (pageChanging) return;
   if (recordingActive()) {
     window.alert('Termina la registrazione audio prima di cambiare pagina.');

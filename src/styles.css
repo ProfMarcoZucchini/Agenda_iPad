@@ -1183,7 +1183,7 @@ button:focus-visible, input:focus-visible {
   left: 50%;
   bottom: 4.7%;
   transform: translateX(-50%);
-  color: #111;
+  color: #fff;
   font-family: Georgia, "Times New Roman", serif;
   font-weight: 900;
   font-size: clamp(24px, 4.4vh, 52px);
@@ -1192,3 +1192,14 @@ button:focus-visible, input:focus-visible {
   text-shadow: 0 1px 0 rgba(234,196,100,.65);
   pointer-events: none;
 }
+
+/* 0.1.1 — transizione swipe senza flash della pagina intermedia */
+.page-wrap.transition-target-hidden { opacity: 0 !important; transition: none !important; }
+.page-transition-ghost {
+  z-index: 95 !important;
+  pointer-events: none !important;
+  transition: transform 185ms cubic-bezier(.22,.72,.2,1), opacity 185ms ease-out !important;
+  will-change: transform, opacity;
+}
+.page-transition-ghost.ghost-next-out { transform: translateX(-62%) rotateY(-11deg) !important; opacity: 0 !important; }
+.page-transition-ghost.ghost-prev-out { transform: translateX(62%) rotateY(11deg) !important; opacity: 0 !important; }
