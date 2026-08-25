@@ -54,6 +54,8 @@ button { -webkit-tap-highlight-color: transparent; }
   --drag-x: 0px;
   --drag-y: 0px;
   --drag-rot: 0deg;
+  --drag-z: 0deg;
+  --turn-origin: 50% 50%;
   position: relative;
   width: min(
     calc(100vw - 8px - env(safe-area-inset-left) - env(safe-area-inset-right)),
@@ -64,12 +66,12 @@ button { -webkit-tap-highlight-color: transparent; }
   background: var(--paper-base);
   border: 1px solid rgba(94,72,37,.46);
   box-shadow: 0 10px 34px rgba(0,0,0,.42), inset 0 0 34px rgba(93,69,29,.08);
-  transform-origin: center center;
+  transform-origin: var(--turn-origin);
   overflow: hidden;
   color: var(--paper-text);
   user-select: none;
   -webkit-user-select: none;
-  transition: transform 165ms ease, opacity 165ms ease, box-shadow 165ms ease;
+  transition: transform 240ms cubic-bezier(.2,.72,.2,1), opacity 180ms ease, box-shadow 220ms ease;
 }
 
 .page-wrap[data-paper="white"] {
@@ -90,7 +92,10 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .page-wrap.dragging {
   transition: none;
-  transform: translate(var(--drag-x), var(--drag-y)) rotateY(var(--drag-rot));
+  transform-origin: var(--turn-origin);
+  transform: translate3d(var(--drag-x), var(--drag-y), 0) rotateY(var(--drag-rot)) rotateZ(var(--drag-z));
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
   box-shadow: 0 14px 40px rgba(0,0,0,.50), inset 0 0 34px rgba(93,69,29,.08);
 }
 .page-wrap.snap-back { transform: none; }
@@ -1306,4 +1311,89 @@ button:focus-visible, input:focus-visible {
   font-size: 10px;
   line-height: 1.35;
   opacity: .68;
+}
+
+
+/* 0.1.5 — versione in copertina */
+.cover-version {
+  position: absolute;
+  right: 6.8%;
+  bottom: 2.5%;
+  color: #11100d;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(8px, 1.15vh, 13px);
+  font-weight: 700;
+  font-style: italic;
+  letter-spacing: .035em;
+  text-shadow: 0 1px 1px rgba(244,214,142,.75);
+  pointer-events: none;
+}
+
+/* 0.1.5 — page turn più naturale: il foglio continua dal punto raggiunto dal dito. */
+.page-transition-ghost {
+  perspective: 2200px;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  overflow: hidden;
+  transition:
+    transform 420ms cubic-bezier(.16,.72,.18,1),
+    filter 420ms ease,
+    box-shadow 420ms ease,
+    opacity 360ms ease !important;
+  will-change: transform, filter, opacity;
+}
+.page-transition-ghost .page-turn-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 99;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(90deg, rgba(0,0,0,.28), rgba(255,255,255,.08) 18%, transparent 44%);
+  transition: opacity 360ms ease;
+}
+.page-transition-ghost.turn-prev .page-turn-shade {
+  background: linear-gradient(270deg, rgba(0,0,0,.28), rgba(255,255,255,.08) 18%, transparent 44%);
+}
+.page-transition-ghost.page-turn-horizontal.turn-next { transform-origin: 0% 50% !important; }
+.page-transition-ghost.page-turn-horizontal.turn-prev { transform-origin: 100% 50% !important; }
+.page-transition-ghost.page-turn-horizontal.turn-next.turn-complete {
+  transform: translate3d(-8%,0,0) rotateY(-88deg) rotateZ(-.7deg) !important;
+  filter: brightness(.84);
+  box-shadow: 18px 12px 40px rgba(0,0,0,.28);
+  opacity: .08 !important;
+}
+.page-transition-ghost.page-turn-horizontal.turn-prev.turn-complete {
+  transform: translate3d(8%,0,0) rotateY(88deg) rotateZ(.7deg) !important;
+  filter: brightness(.84);
+  box-shadow: -18px 12px 40px rgba(0,0,0,.28);
+  opacity: .08 !important;
+}
+.page-transition-ghost.page-turn-horizontal.turn-complete .page-turn-shade { opacity: 1; }
+.page-transition-ghost.page-turn-vertical.turn-up.turn-complete {
+  transform: translate3d(0,-78%,0) rotateX(7deg) !important;
+  opacity: .05 !important;
+}
+.page-transition-ghost.page-turn-vertical.turn-down.turn-complete {
+  transform: translate3d(0,78%,0) rotateX(-7deg) !important;
+  opacity: .05 !important;
+}
+
+/* Priorità assoluta al motore Ink durante il contatto Apple Pencil. */
+#inkCanvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  contain: strict;
+}
+html.pen-contact-active, html.pen-contact-active body {
+  overscroll-behavior: none;
+}
+.page-wrap.pen-contact-active {
+  cursor: crosshair;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-transition-ghost { transition-duration: 120ms !important; }
 }

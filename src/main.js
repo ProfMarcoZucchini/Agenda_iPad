@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.4';
+const APP_VERSION = '0.1.5';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -21,6 +21,8 @@ const WELCOME_SPLASH_MS = 2000;
 const MAX_IMAGE_DIMENSION = 2200;
 const IMAGE_WEBP_QUALITY = 0.86;
 const AUDIO_BITRATE = 64000;
+const INK_AUTOSAVE_IDLE_MS = 900;
+const INK_INTERPOLATION_MAX_POINTS = 18;
 const AUDIO_MIME_CANDIDATES = ['audio/mp4;codecs=mp4a.40.2', 'audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'];
 
 const splashStartedAt = performance.now();
@@ -31,6 +33,7 @@ app.innerHTML = `
       <img src="./assets/cover-agenda-ipad.png" alt="Copertina ornamentale Agenda iPad" />
       <div class="cover-owner" aria-label="Possessore agenda">di Marco Zucchini</div>
       <div class="cover-year" aria-label="Anno 2026">2026</div>
+      <div class="cover-version" aria-label="Versione applicazione">v${APP_VERSION}</div>
     </div>
   </div>
 
@@ -546,8 +549,14 @@ let redoStack = [];
 let saveTimer = null;
 let pageGesture = null;
 let pendingGestureTransition = false;
+let pendingGestureVisual = null;
 let activeInkPointerId = null;
 let activeStrokeRenderedUntil = 0;
+let penContactActive = false;
+let inkEventSerial = 0;
+let lastInkEventSignature = '';
+let lastPenCancelAt = 0;
+let recoverablePenStroke = null;
 let eraserChanged = false;
 let pageChanging = false;
 let selectedObjectId = null;
@@ -1072,7 +1081,7 @@ async function savePage(immediate = false) {
     }
   };
   if (immediate) await doSave();
-  else saveTimer = setTimeout(doSave, 160);
+  else saveTimer = setTimeout(doSave, INK_AUTOSAVE_IDLE_MS);
 }
 
 function layoutFromLegacyRecord(record, fallback = DEFAULT_LAYOUT) {
@@ -2271,7 +2280,7 @@ function normalizedPointFromEvent(ev) {
     x: Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width)),
     y: Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height)),
     p: ev.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : 0.5,
-    t: performance.now()
+    t: Number.isFinite(ev.timeStamp) ? ev.timeStamp : performance.now()
   };
 }
 
@@ -2321,6 +2330,58 @@ function drawStroke(stroke) {
     ctx.stroke();
   }
   ctx.restore();
+}
+
+function setPenContact(active) {
+  penContactActive = Boolean(active);
+  document.documentElement.classList.toggle('pen-contact-active', penContactActive);
+  pageWrap?.classList.toggle('pen-contact-active', penContactActive);
+}
+
+function inkEventSignature(ev) {
+  return `${ev.pointerId}:${Math.round(ev.clientX*10)}:${Math.round(ev.clientY*10)}:${Math.round((ev.timeStamp||0)*10)}`;
+}
+
+function appendInkPoint(point) {
+  if (!activeStroke) return;
+  const pts = activeStroke.points;
+  const last = pts[pts.length - 1];
+  if (!last) { pts.push(point); return; }
+  const rect = canvas.getBoundingClientRect();
+  const dxPx = (point.x - last.x) * rect.width;
+  const dyPx = (point.y - last.y) * rect.height;
+  const distPx = Math.hypot(dxPx, dyPx);
+  if (distPx < 0.08) return;
+  // Se Safari consegna campioni radi, interpola il segmento per evitare vuoti visivi.
+  const targetStep = Math.max(1.1, Math.min(3.2, activeStroke.width * 0.62));
+  const inserts = Math.min(INK_INTERPOLATION_MAX_POINTS, Math.max(0, Math.ceil(distPx / targetStep) - 1));
+  for (let i = 1; i <= inserts; i++) {
+    const q = i / (inserts + 1);
+    pts.push({
+      x: last.x + (point.x-last.x)*q,
+      y: last.y + (point.y-last.y)*q,
+      p: (last.p ?? .5) + ((point.p ?? .5)-(last.p ?? .5))*q,
+      t: (last.t ?? point.t) + ((point.t ?? last.t)-(last.t ?? point.t))*q
+    });
+  }
+  pts.push(point);
+}
+
+function collectInkEvents(ev) {
+  let events = [ev];
+  if (typeof ev.getCoalescedEvents === 'function') {
+    try {
+      const coalesced = ev.getCoalescedEvents();
+      if (coalesced?.length) events = coalesced;
+    } catch {}
+  }
+  return events;
+}
+
+function ensureInkPointerCapture(pointerId) {
+  try {
+    if (!canvas.hasPointerCapture(pointerId)) canvas.setPointerCapture(pointerId);
+  } catch {}
 }
 
 function drawActiveStrokeIncremental() {
@@ -2770,8 +2831,10 @@ function canInk(ev) {
 }
 
 function startPageGesture(ev) {
-  pageGesture = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, x: ev.clientX, y: ev.clientY, t0: performance.now() };
+  pageGesture = { id: ev.pointerId, x0: ev.clientX, y0: ev.clientY, x: ev.clientX, y: ev.clientY, t0: performance.now(), axis: null, baseRect: pageWrap.getBoundingClientRect() };
   pageWrap.style.setProperty('--drag-y', '0px');
+  pageWrap.style.setProperty('--drag-z', '0deg');
+  pageWrap.style.setProperty('--turn-origin', '50% 50%');
   canvas.setPointerCapture(ev.pointerId);
   pageWrap.classList.add('dragging');
 }
@@ -2784,16 +2847,25 @@ function updatePageGesture(ev) {
   const rawDx = ev.clientX - pageGesture.x0;
   const rawDy = ev.clientY - pageGesture.y0;
   if (Math.abs(rawDy) > Math.abs(rawDx) * 1.08) {
+    pageGesture.axis = 'vertical';
     const dy = Math.max(-rect.height * .26, Math.min(rect.height * .26, rawDy));
     pageWrap.style.setProperty('--drag-x', '0px');
     pageWrap.style.setProperty('--drag-y', `${dy}px`);
     pageWrap.style.setProperty('--drag-rot', '0deg');
+    pageWrap.style.setProperty('--drag-z', `${dy / rect.height * 1.4}deg`);
+    pageWrap.style.setProperty('--turn-origin', '50% 50%');
   } else {
-    const dx = Math.max(-rect.width * .38, Math.min(rect.width * .38, rawDx));
-    const rot = dx / rect.width * 13;
-    pageWrap.style.setProperty('--drag-x', `${dx}px`);
+    pageGesture.axis = 'horizontal';
+    const dx = Math.max(-rect.width * .42, Math.min(rect.width * .42, rawDx));
+    const progress = Math.min(.42, Math.abs(dx) / rect.width) / .42;
+    const direction = dx < 0 ? -1 : 1;
+    const rot = direction * progress * 24;
+    // La pagina segue il dito ma ruota soprattutto attorno al bordo, come un foglio reale.
+    pageWrap.style.setProperty('--drag-x', `${dx * .22}px`);
     pageWrap.style.setProperty('--drag-y', '0px');
     pageWrap.style.setProperty('--drag-rot', `${rot}deg`);
+    pageWrap.style.setProperty('--drag-z', `${direction * progress * .8}deg`);
+    pageWrap.style.setProperty('--turn-origin', dx < 0 ? '0% 50%' : '100% 50%');
   }
 }
 
@@ -2802,7 +2874,23 @@ function clearPageGestureVisual() {
   pageWrap.style.setProperty('--drag-x', '0px');
   pageWrap.style.setProperty('--drag-y', '0px');
   pageWrap.style.setProperty('--drag-rot', '0deg');
+  pageWrap.style.setProperty('--drag-z', '0deg');
+  pageWrap.style.setProperty('--turn-origin', '50% 50%');
 }
+
+function snapPageGestureVisual() {
+  pageWrap.classList.remove('dragging');
+  pageWrap.classList.add('gesture-snapback');
+  setTimeout(() => {
+    pageWrap.classList.remove('gesture-snapback');
+    pageWrap.style.setProperty('--drag-x', '0px');
+    pageWrap.style.setProperty('--drag-y', '0px');
+    pageWrap.style.setProperty('--drag-rot', '0deg');
+    pageWrap.style.setProperty('--drag-z', '0deg');
+    pageWrap.style.setProperty('--turn-origin', '50% 50%');
+  }, 260);
+}
+
 
 async function finishPageGesture(ev) {
   if (!pageGesture || pageGesture.id !== ev.pointerId) return;
@@ -2814,8 +2902,13 @@ async function finishPageGesture(ev) {
   const rect = pageWrap.getBoundingClientRect();
   const horizontalValid = Math.abs(dx) > Math.max(58, rect.width * .12) && Math.abs(dx) > Math.abs(dy) * 1.18 && dt < 1500;
   const verticalValid = Math.abs(dy) > Math.max(64, rect.height * .10) && Math.abs(dy) > Math.abs(dx) * 1.16 && dt < 1600;
-  if (!horizontalValid && !verticalValid) { clearPageGestureVisual(); return; }
+  if (!horizontalValid && !verticalValid) { snapPageGestureVisual(); return; }
   pendingGestureTransition = true;
+  pendingGestureVisual = {
+    baseRect: gesture.baseRect,
+    transform: getComputedStyle(pageWrap).transform,
+    transformOrigin: getComputedStyle(pageWrap).transformOrigin
+  };
 
   if (verticalValid && currentMode !== 'password') {
     if (dy < 0) {
@@ -2825,14 +2918,16 @@ async function finishPageGesture(ev) {
       await previousNoteOrDaily('down');
     } else {
       pendingGestureTransition = false;
-      clearPageGestureVisual();
+      pendingGestureVisual = null;
+      snapPageGestureVisual();
     }
     return;
   }
 
   if (currentMode === 'daily' && viewMode === 'pinned' && activeSide === pinnedSide) {
     pendingGestureTransition = false;
-    clearPageGestureVisual();
+    pendingGestureVisual = null;
+    snapPageGestureVisual();
     saveStatus.textContent = 'Pagina fissata';
     setTimeout(() => { if (saveStatus.textContent === 'Pagina fissata') saveStatus.textContent = 'Salvato'; }, 900);
     return;
@@ -2852,7 +2947,7 @@ async function finishPageGesture(ev) {
   else await changeDate(offsetDate(currentDate, -1), 'prev');
 }
 
-canvas.addEventListener('pointerdown', ev => {
+function handleInkPointerDown(ev) {
   if (tool === 'lasso' && beginLasso(ev)) return;
   if (tool === 'select' && ev.pointerType !== 'touch') {
     selectedObjectId = null;
@@ -2867,12 +2962,12 @@ canvas.addEventListener('pointerdown', ev => {
   if (!canInk(ev)) return;
   if (pointIsInProtectedHeader(ev, canvas)) return;
   ev.preventDefault();
+  if (ev.pointerType === 'pen') setPenContact(true);
   activeInkPointerId = ev.pointerId;
-  // Su Safari/iPad la pointer capture della Pencil può produrre interruzioni sporadiche.
-  // Per la Pencil ascoltiamo gli eventi globalmente; manteniamo la capture solo per mouse.
-  if (ev.pointerType !== 'pen') {
-    try { canvas.setPointerCapture(ev.pointerId); } catch {}
-  }
+  inkEventSerial += 1;
+  lastInkEventSignature = '';
+  // Pointer capture + listener globali: massima continuità se la Pencil attraversa overlay o bordi.
+  ensureInkPointerCapture(ev.pointerId);
   pushUndoSnapshot();
   const point = normalizedPointFromEvent(ev);
 
@@ -2884,6 +2979,25 @@ canvas.addEventListener('pointerdown', ev => {
   }
 
   const isHighlighter = tool === 'highlighter';
+  const now = performance.now();
+  const canRecover = ev.pointerType === 'pen' && recoverablePenStroke && (now - lastPenCancelAt) < 420;
+  if (canRecover) {
+    const last = recoverablePenStroke.points?.[recoverablePenStroke.points.length-1];
+    const rect = canvas.getBoundingClientRect();
+    const near = last && Math.hypot((point.x-last.x)*rect.width,(point.y-last.y)*rect.height) < 34;
+    if (near && recoverablePenStroke.tool === tool) {
+      // Il tratto cancellato da Safari era stato già salvato al cancel: lo rimuoviamo
+      // prima di proseguirlo per evitare duplicati.
+      strokes = strokes.filter(stroke => stroke.id !== recoverablePenStroke.id);
+      activeStroke = recoverablePenStroke;
+      recoverablePenStroke = null;
+      appendInkPoint(point);
+      activeStrokeRenderedUntil = Math.max(0, activeStroke.points.length-2);
+      drawActiveStrokeIncremental();
+      return;
+    }
+  }
+  recoverablePenStroke = null;
   activeStroke = {
     id: makeId('stroke'),
     tool,
@@ -2895,7 +3009,9 @@ canvas.addEventListener('pointerdown', ev => {
   };
   activeStrokeRenderedUntil = 0;
   drawActiveStrokeIncremental();
-});
+}
+
+canvas.addEventListener('pointerdown', handleInkPointerDown, { passive: false });
 
 function handleGlobalPointerMove(ev) {
   if (lassoPointerId === ev.pointerId && updateLasso(ev)) return;
@@ -2906,7 +3022,14 @@ function handleGlobalPointerMove(ev) {
   }
   if (activeInkPointerId !== ev.pointerId || !canInk(ev)) return;
   ev.preventDefault();
-  const events = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [ev];
+  if (ev.pointerType === 'pen') {
+    setPenContact(true);
+    ensureInkPointerCapture(ev.pointerId);
+  }
+  const sig = inkEventSignature(ev);
+  if (sig === lastInkEventSignature) return;
+  lastInkEventSignature = sig;
+  const events = collectInkEvents(ev);
 
   if (tool === 'eraser') {
     for (const e of events) eraseAt(normalizedPointFromEvent(e));
@@ -2914,15 +3037,12 @@ function handleGlobalPointerMove(ev) {
   }
 
   if (!activeStroke) return;
-  for (const e of events) {
-    const pt = normalizedPointFromEvent(e);
-    const last = activeStroke.points[activeStroke.points.length - 1];
-    if (!last || pt.x !== last.x || pt.y !== last.y || pt.t !== last.t) activeStroke.points.push(pt);
-  }
+  for (const e of events) appendInkPoint(normalizedPointFromEvent(e));
   drawActiveStrokeIncremental();
 }
 
 async function finishPointer(ev) {
+  if (ev.pointerType === 'pen' && ev.pointerId === activeInkPointerId) setPenContact(false);
   if (lassoPointerId === ev.pointerId && finishLasso(ev)) return;
   if (pageGesture && pageGesture.id === ev.pointerId) {
     await finishPageGesture(ev);
@@ -2932,6 +3052,7 @@ async function finishPointer(ev) {
   if (activeInkPointerId !== null && ev.pointerId !== activeInkPointerId && !pageGesture) return;
 
   if (tool === 'eraser') {
+    try { if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
     activeInkPointerId = null;
     if (eraserChanged) {
       eraserChanged = false;
@@ -2943,6 +3064,8 @@ async function finishPointer(ev) {
 
   if (!activeStroke) { activeInkPointerId = null; return; }
   strokes.push(activeStroke);
+  recoverablePenStroke = null;
+  try { if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
   activeStroke = null;
   activeStrokeRenderedUntil = 0;
   activeInkPointerId = null;
@@ -2952,22 +3075,47 @@ async function finishPointer(ev) {
 }
 
 window.addEventListener('pointermove', handleGlobalPointerMove, { passive: false, capture: true });
+if ('onpointerrawupdate' in window) {
+  window.addEventListener('pointerrawupdate', handleGlobalPointerMove, { passive: false, capture: true });
+}
 window.addEventListener('pointerup', finishPointer, { capture: true });
 window.addEventListener('pointercancel', ev => {
   if (pageGesture?.id === ev.pointerId) {
     pageGesture = null;
     pendingGestureTransition = false;
+    pendingGestureVisual = null;
     clearPageGestureVisual();
     return;
   }
-  // Safari può generare pointercancel durante rapidi cambi di contatto.
-  // Conserviamo comunque il tratto acquisito fino a quel momento.
+  if (ev.pointerType === 'pen' && ev.pointerId === activeInkPointerId) {
+    // Manteniamo un piccolo recovery window: se Safari cancella il contatto e la Pencil
+    // rientra subito vicino all'ultimo punto, il tratto viene ricucito senza buco evidente.
+    setPenContact(false);
+    lastPenCancelAt = performance.now();
+    const recovery = activeStroke ? structuredClone(activeStroke) : null;
+    Promise.resolve(finishPointer(ev)).finally(() => { recoverablePenStroke = recovery; });
+    return;
+  }
   finishPointer(ev);
 }, { capture: true });
-canvas.addEventListener('lostpointercapture', () => { /* la Pencil continua tramite listener globali */ });
+canvas.addEventListener('lostpointercapture', ev => {
+  if (penContactActive && activeInkPointerId !== null) ensureInkPointerCapture(activeInkPointerId);
+});
+// Durante il contatto Pencil, i tocchi del palmo non devono sottrarre priorità all'Ink.
+window.addEventListener('pointerdown', ev => {
+  if (penContactActive && ev.pointerType === 'touch') { ev.preventDefault(); ev.stopImmediatePropagation(); }
+}, { capture: true, passive: false });
+window.addEventListener('pointermove', ev => {
+  if (penContactActive && ev.pointerType === 'touch') { ev.preventDefault(); ev.stopImmediatePropagation(); }
+}, { capture: true, passive: false });
+canvas.addEventListener('contextmenu', ev => ev.preventDefault());
+for (const name of ['gesturestart','gesturechange','gestureend']) {
+  pageWrap.addEventListener(name, ev => { if (penContactActive) ev.preventDefault(); }, { passive: false });
+}
 
-function makePageTransitionGhost() {
-  const rect = pageWrap.getBoundingClientRect();
+function makePageTransitionGhost(preserveGestureTransform = false) {
+  const sourceStyle = getComputedStyle(pageWrap);
+  const rect = preserveGestureTransform && pendingGestureVisual?.baseRect ? pendingGestureVisual.baseRect : pageWrap.getBoundingClientRect();
   const ghost = pageWrap.cloneNode(true);
   ghost.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
   ghost.removeAttribute('id');
@@ -2980,8 +3128,8 @@ function makePageTransitionGhost() {
     width: rect.width + 'px',
     height: rect.height + 'px',
     margin: '0',
-    transform: 'none',
-    transformOrigin: 'center center'
+    transform: preserveGestureTransform ? (pendingGestureVisual?.transform || sourceStyle.transform) : 'none',
+    transformOrigin: preserveGestureTransform ? (pendingGestureVisual?.transformOrigin || sourceStyle.transformOrigin) : 'center center'
   });
   const ghostCanvas = ghost.querySelector('canvas');
   if (ghostCanvas) {
@@ -2991,7 +3139,11 @@ function makePageTransitionGhost() {
     if (gctx) gctx.drawImage(canvas, 0, 0);
   }
   ghost.querySelectorAll('button,input,textarea').forEach(el => { el.tabIndex = -1; el.disabled = true; });
+  const shade = document.createElement('div');
+  shade.className = 'page-turn-shade';
+  ghost.appendChild(shade);
   document.body.appendChild(ghost);
+  if (preserveGestureTransform) pendingGestureVisual = null;
   return ghost;
 }
 
@@ -3007,24 +3159,24 @@ async function animateGestureSwitch(direction, loader, saveCurrent = true) {
   if (saveCurrent) await savePage(true);
   setSettingsOpen(false);
 
-  const ghost = makePageTransitionGhost();
-  pageWrap.classList.add('transition-target-hidden');
+  // Il ghost nasce ESATTAMENTE nella posizione raggiunta dal dito: nessun salto al rilascio.
+  const ghost = makePageTransitionGhost(true);
+  const horizontal = direction === 'next' || direction === 'prev';
+  ghost.classList.add(horizontal ? 'page-turn-horizontal' : 'page-turn-vertical');
+  ghost.classList.add(`turn-${direction}`);
   clearPageGestureVisual();
 
   try {
+    // Il foglio di destinazione viene caricato sotto quello che sta girando.
     await loader();
-    // Il nuovo foglio viene mostrato solo quando dati, layout e companion sono pronti.
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    pageWrap.classList.remove('transition-target-hidden');
-    ghost.classList.add(direction === 'prev' ? 'ghost-prev-out' : direction === 'up' ? 'ghost-up-out' : direction === 'down' ? 'ghost-down-out' : 'ghost-next-out');
-    await new Promise(resolve => setTimeout(resolve, 190));
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    ghost.classList.add('turn-complete');
+    await new Promise(resolve => setTimeout(resolve, horizontal ? 430 : 320));
   } finally {
     ghost.remove();
-    pageWrap.classList.remove('transition-target-hidden');
     pageChanging = false;
   }
 }
-
 async function animateSwitch(direction, loader, saveCurrent = true) {
   if (pendingGestureTransition) {
     pendingGestureTransition = false;
@@ -3039,17 +3191,20 @@ async function animateSwitch(direction, loader, saveCurrent = true) {
   pageChanging = true;
   if (saveCurrent) await savePage(true);
   setSettingsOpen(false);
-  const outClass = direction === 'prev' ? 'flip-prev-out' : direction === 'up' ? 'flip-up-out' : direction === 'down' ? 'flip-down-out' : 'flip-next-out';
-  const inClass = direction === 'prev' ? 'flip-prev-in' : direction === 'up' ? 'flip-up-in' : direction === 'down' ? 'flip-down-in' : 'flip-next-in';
-  pageWrap.classList.add(outClass);
-  await new Promise(r => setTimeout(r, 125));
-  await loader();
-  pageWrap.classList.remove(outClass);
-  pageWrap.classList.add(inClass);
-  setTimeout(() => pageWrap.classList.remove(inClass), 200);
-  pageChanging = false;
+  const ghost = makePageTransitionGhost(false);
+  const horizontal = direction === 'next' || direction === 'prev';
+  ghost.classList.add(horizontal ? 'page-turn-horizontal' : 'page-turn-vertical');
+  ghost.classList.add(`turn-${direction}`);
+  try {
+    await loader();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    ghost.classList.add('turn-complete');
+    await new Promise(resolve => setTimeout(resolve, horizontal ? 430 : 320));
+  } finally {
+    ghost.remove();
+    pageChanging = false;
+  }
 }
-
 async function changeDate(nextDate, direction = null) {
   nextDate = clampDate(nextDate);
   if (nextDate === currentDate && currentMode === 'daily') return;
