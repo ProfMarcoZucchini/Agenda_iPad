@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.3';
+const APP_VERSION = '0.1.4';
 const SCHEMA_VERSION = 5;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
@@ -72,6 +72,10 @@ app.innerHTML = `
 
         <div class="object-layer" id="objectLayer" aria-label="Oggetti multimediali della pagina"></div>
         <canvas id="inkCanvas" aria-label="Pagina di scrittura. Apple Pencil per scrivere; dito per sfogliare. Su PC il mouse scrive per impostazione predefinita."></canvas>
+        <canvas id="strokeSelectionCanvas" class="stroke-selection-canvas" aria-hidden="true"></canvas>
+        <div id="strokeSelectionBox" class="stroke-selection-box" hidden aria-label="Selezione di tratti. Trascina per spostare.">
+          <span class="stroke-selection-grip" aria-hidden="true">⋮⋮</span>
+        </div>
 
         <section class="mini-calendar" id="miniCalendar" aria-label="Mini calendario" hidden>
           <div class="mini-calendar-header">
@@ -172,6 +176,7 @@ app.innerHTML = `
               <button class="setting-button tool-choice" data-tool="pen" type="button" aria-pressed="true">✎ Penna</button>
               <button class="setting-button tool-choice" data-tool="highlighter" type="button" aria-pressed="false">🖍 Evidenziatore</button>
               <button class="setting-button tool-choice" data-tool="eraser" type="button" aria-pressed="false">▭ Gomma</button>
+              <button class="setting-button tool-choice" data-tool="lasso" type="button" aria-pressed="false">⌁ Lazo</button>
               <button class="setting-button tool-choice" data-tool="select" type="button" aria-pressed="false">↖ Oggetti</button>
             </div>
           </div>
@@ -205,6 +210,19 @@ app.innerHTML = `
               <button class="setting-button paper-choice" data-paper="antique" type="button" aria-pressed="true">Giallino antico</button>
               <button class="setting-button paper-choice" data-paper="white" type="button" aria-pressed="false">Bianca</button>
               <button class="setting-button paper-choice" data-paper="dark" type="button" aria-pressed="false">Scura</button>
+            </div>
+          </div>
+
+          <div class="setting-row stroke-selection-setting-row">
+            <div class="setting-label">Selezione tratti</div>
+            <div class="stroke-selection-settings-body">
+              <div class="segmented stroke-selection-buttons">
+                <button class="setting-button" id="copyStrokesBtn" type="button" disabled>⧉ Copia</button>
+                <button class="setting-button" id="cutStrokesBtn" type="button" disabled>✂ Taglia</button>
+                <button class="setting-button" id="pasteStrokesBtn" type="button" disabled>▣ Incolla</button>
+                <button class="setting-button" id="clearStrokeSelectionBtn" type="button" disabled>× Deseleziona</button>
+              </div>
+              <div class="stroke-selection-info" id="strokeSelectionInfo">Attiva “Lazo” e circonda la scrittura da selezionare.</div>
             </div>
           </div>
 
@@ -370,6 +388,9 @@ const welcomePauseMark = document.querySelector('#welcomePauseMark');
 const appShell = document.querySelector('#appShell');
 const canvas = document.querySelector('#inkCanvas');
 const objectLayer = document.querySelector('#objectLayer');
+const strokeSelectionCanvas = document.querySelector('#strokeSelectionCanvas');
+const strokeSelectionCtx = strokeSelectionCanvas.getContext('2d', { alpha: true });
+const strokeSelectionBox = document.querySelector('#strokeSelectionBox');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
 const pageWrap = document.querySelector('#pageWrap');
 const pageHeader = pageWrap.querySelector('.page-header');
@@ -437,6 +458,11 @@ const rotateImageBtn = document.querySelector('#rotateImageBtn');
 const deleteImageBtn = document.querySelector('#deleteImageBtn');
 const mediaInfo = document.querySelector('#mediaInfo');
 const shapeInfo = document.querySelector('#shapeInfo');
+const copyStrokesBtn = document.querySelector('#copyStrokesBtn');
+const cutStrokesBtn = document.querySelector('#cutStrokesBtn');
+const pasteStrokesBtn = document.querySelector('#pasteStrokesBtn');
+const clearStrokeSelectionBtn = document.querySelector('#clearStrokeSelectionBtn');
+const strokeSelectionInfo = document.querySelector('#strokeSelectionInfo');
 const deleteShapeBtn = document.querySelector('#deleteShapeBtn');
 const imageFileInput = document.querySelector('#imageFileInput');
 const cameraFileInput = document.querySelector('#cameraFileInput');
@@ -527,6 +553,11 @@ let pageChanging = false;
 let selectedObjectId = null;
 let objectInteraction = null;
 let objectRenderToken = 0;
+let selectedStrokeIds = new Set();
+let strokeClipboard = [];
+let lassoPointerId = null;
+let lassoPoints = [];
+let strokeSelectionInteraction = null;
 const mediaObjectUrls = new Map();
 const audioObjectUrls = new Map();
 let mediaRecorder = null;
@@ -1089,6 +1120,7 @@ function loadContentFromRecord(record, fallbackLayout = DEFAULT_LAYOUT, fallback
   activeStroke = null;
   selectedObjectId = null;
   objectInteraction = null;
+  clearStrokeSelection(false);
   applyPageAppearance();
   updateSettingsUI();
   updateUndoRedo();
@@ -2223,8 +2255,14 @@ function resizeCanvas() {
     canvas.width = width;
     canvas.height = height;
   }
+  if (strokeSelectionCanvas.width !== width || strokeSelectionCanvas.height !== height) {
+    strokeSelectionCanvas.width = width;
+    strokeSelectionCanvas.height = height;
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  strokeSelectionCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderAll();
+  renderStrokeSelection();
 }
 
 function normalizedPointFromEvent(ev) {
@@ -2335,6 +2373,256 @@ function renderAll() {
   activeStrokeRenderedUntil = activeStroke?.points?.length ?? 0;
 }
 
+function strokeBounds(stroke) {
+  const pts = stroke?.points ?? [];
+  if (!pts.length) return null;
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function selectedStrokes() {
+  return strokes.filter(stroke => selectedStrokeIds.has(stroke.id));
+}
+
+function selectionBounds() {
+  const selected = selectedStrokes();
+  if (!selected.length) return null;
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (const stroke of selected) {
+    const b = strokeBounds(stroke);
+    if (!b) continue;
+    minX = Math.min(minX, b.minX); minY = Math.min(minY, b.minY);
+    maxX = Math.max(maxX, b.maxX); maxY = Math.max(maxY, b.maxY);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    const intersects = ((yi > point.y) !== (yj > point.y)) &&
+      (point.x < (xj - xi) * (point.y - yi) / ((yj - yi) || 1e-9) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function updateStrokeSelectionUI() {
+  const count = selectedStrokeIds.size;
+  copyStrokesBtn.disabled = count === 0;
+  cutStrokesBtn.disabled = count === 0;
+  clearStrokeSelectionBtn.disabled = count === 0;
+  pasteStrokesBtn.disabled = strokeClipboard.length === 0;
+  if (count) strokeSelectionInfo.textContent = `${count} ${count === 1 ? 'tratto selezionato' : 'tratti selezionati'} · trascina il riquadro per spostare.`;
+  else if (strokeClipboard.length) strokeSelectionInfo.textContent = `Appunti copiati: ${strokeClipboard.length} ${strokeClipboard.length === 1 ? 'tratto' : 'tratti'} · premi “Incolla”.`;
+  else strokeSelectionInfo.textContent = 'Attiva “Lazo” e circonda la scrittura da selezionare.';
+}
+
+function clearSelectionDrawing() {
+  const rect = strokeSelectionCanvas.getBoundingClientRect();
+  strokeSelectionCtx.clearRect(0, 0, rect.width, rect.height);
+}
+
+function renderLassoPath() {
+  clearSelectionDrawing();
+  if (lassoPoints.length < 2) return;
+  const rect = strokeSelectionCanvas.getBoundingClientRect();
+  strokeSelectionCtx.save();
+  strokeSelectionCtx.strokeStyle = '#9a6a19';
+  strokeSelectionCtx.lineWidth = 1.5;
+  strokeSelectionCtx.setLineDash([6, 5]);
+  strokeSelectionCtx.lineCap = 'round';
+  strokeSelectionCtx.lineJoin = 'round';
+  strokeSelectionCtx.beginPath();
+  strokeSelectionCtx.moveTo(lassoPoints[0].x * rect.width, lassoPoints[0].y * rect.height);
+  for (let i = 1; i < lassoPoints.length; i++) strokeSelectionCtx.lineTo(lassoPoints[i].x * rect.width, lassoPoints[i].y * rect.height);
+  strokeSelectionCtx.stroke();
+  strokeSelectionCtx.restore();
+}
+
+function renderStrokeSelection() {
+  clearSelectionDrawing();
+  const bounds = selectionBounds();
+  const visible = tool === 'lasso' && Boolean(bounds);
+  strokeSelectionBox.hidden = !visible;
+  pageWrap.classList.toggle('has-stroke-selection', visible);
+  if (!visible) { updateStrokeSelectionUI(); return; }
+  strokeSelectionBox.style.left = `${bounds.minX * 100}%`;
+  strokeSelectionBox.style.top = `${bounds.minY * 100}%`;
+  strokeSelectionBox.style.width = `${Math.max(.008, bounds.maxX - bounds.minX) * 100}%`;
+  strokeSelectionBox.style.height = `${Math.max(.008, bounds.maxY - bounds.minY) * 100}%`;
+  updateStrokeSelectionUI();
+}
+
+function clearStrokeSelection(update = true) {
+  selectedStrokeIds = new Set();
+  lassoPointerId = null;
+  lassoPoints = [];
+  strokeSelectionInteraction = null;
+  if (strokeSelectionBox) strokeSelectionBox.hidden = true;
+  if (strokeSelectionCanvas) clearSelectionDrawing();
+  pageWrap?.classList.remove('has-stroke-selection');
+  if (update && strokeSelectionInfo) updateStrokeSelectionUI();
+}
+
+function beginLasso(ev) {
+  if (tool !== 'lasso' || ev.pointerType === 'touch') return false;
+  if (ev.pointerType === 'mouse' && mouseMode !== 'ink') return false;
+  if (pointIsInProtectedHeader(ev, canvas)) return false;
+  ev.preventDefault();
+  selectedStrokeIds = new Set();
+  strokeSelectionBox.hidden = true;
+  lassoPointerId = ev.pointerId;
+  lassoPoints = [normalizedPointFromEvent(ev)];
+  if (ev.pointerType !== 'pen') { try { canvas.setPointerCapture(ev.pointerId); } catch {} }
+  renderLassoPath();
+  updateStrokeSelectionUI();
+  return true;
+}
+
+function updateLasso(ev) {
+  if (lassoPointerId !== ev.pointerId || tool !== 'lasso') return false;
+  ev.preventDefault();
+  const events = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [ev];
+  for (const e of events) {
+    const pt = normalizedPointFromEvent(e);
+    const last = lassoPoints[lassoPoints.length - 1];
+    if (!last || Math.hypot(pt.x-last.x, pt.y-last.y) > .002) lassoPoints.push(pt);
+  }
+  renderLassoPath();
+  return true;
+}
+
+function finishLasso(ev) {
+  if (lassoPointerId !== ev.pointerId) return false;
+  ev.preventDefault();
+  lassoPointerId = null;
+  if (lassoPoints.length >= 3) {
+    const polygon = lassoPoints;
+    const ids = new Set();
+    for (const stroke of strokes) {
+      const pts = stroke.points ?? [];
+      if (!pts.length) continue;
+      let insideCount = 0;
+      const step = Math.max(1, Math.floor(pts.length / 24));
+      let sampled = 0;
+      for (let i = 0; i < pts.length; i += step) {
+        sampled++;
+        if (pointInPolygon(pts[i], polygon)) insideCount++;
+      }
+      const b = strokeBounds(stroke);
+      const center = b ? { x:(b.minX+b.maxX)/2, y:(b.minY+b.maxY)/2 } : null;
+      if (insideCount > 0 && (insideCount / Math.max(1, sampled) >= .16 || (center && pointInPolygon(center, polygon)))) ids.add(stroke.id);
+    }
+    selectedStrokeIds = ids;
+  }
+  lassoPoints = [];
+  renderStrokeSelection();
+  return true;
+}
+
+function beginStrokeSelectionMove(ev) {
+  if (tool !== 'lasso' || selectedStrokeIds.size === 0) return;
+  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  const bounds = selectionBounds();
+  if (!bounds) return;
+  ev.preventDefault(); ev.stopPropagation();
+  pushUndoSnapshot();
+  const originals = new Map(selectedStrokes().map(stroke => [stroke.id, structuredClone(stroke.points)]));
+  strokeSelectionInteraction = { pointerId: ev.pointerId, x0: ev.clientX, y0: ev.clientY, bounds, originals };
+  try { strokeSelectionBox.setPointerCapture(ev.pointerId); } catch {}
+}
+
+function updateStrokeSelectionMove(ev) {
+  const interaction = strokeSelectionInteraction;
+  if (!interaction || interaction.pointerId !== ev.pointerId) return;
+  ev.preventDefault();
+  const rect = pageWrap.getBoundingClientRect();
+  let dx = (ev.clientX - interaction.x0) / rect.width;
+  let dy = (ev.clientY - interaction.y0) / rect.height;
+  const topMin = protectedHeaderBoundary(canvas) / Math.max(1, rect.height);
+  dx = clampNumber(dx, -interaction.bounds.minX, 1 - interaction.bounds.maxX);
+  dy = clampNumber(dy, topMin - interaction.bounds.minY, 1 - interaction.bounds.maxY);
+  for (const stroke of selectedStrokes()) {
+    const source = interaction.originals.get(stroke.id);
+    if (!source) continue;
+    stroke.points = source.map(p => ({ ...p, x: clampNumber(p.x + dx, 0, 1), y: clampNumber(p.y + dy, topMin, 1) }));
+  }
+  renderAll();
+  renderStrokeSelection();
+}
+
+function finishStrokeSelectionMove(ev) {
+  if (!strokeSelectionInteraction || strokeSelectionInteraction.pointerId !== ev.pointerId) return;
+  ev.preventDefault();
+  strokeSelectionInteraction = null;
+  try { strokeSelectionBox.releasePointerCapture(ev.pointerId); } catch {}
+  renderStrokeSelection();
+  savePage();
+}
+
+function copySelectedStrokes() {
+  const selected = selectedStrokes();
+  if (!selected.length) return;
+  strokeClipboard = structuredClone(selected);
+  updateStrokeSelectionUI();
+  saveStatus.textContent = `${selected.length} tratti copiati`;
+  setTimeout(() => { if (saveStatus.textContent.includes('copiati')) saveStatus.textContent = 'Salvato'; }, 900);
+}
+
+function cutSelectedStrokes() {
+  if (!selectedStrokeIds.size) return;
+  copySelectedStrokes();
+  pushUndoSnapshot();
+  strokes = strokes.filter(stroke => !selectedStrokeIds.has(stroke.id));
+  clearStrokeSelection();
+  renderAll();
+  savePage();
+}
+
+function pasteStrokeClipboard() {
+  if (!strokeClipboard.length) return;
+  pushUndoSnapshot();
+  const topMin = protectedHeaderBoundary(canvas) / Math.max(1, pageWrap.getBoundingClientRect().height);
+  const sourceBounds = (() => {
+    let minX=1,minY=1,maxX=0,maxY=0;
+    for (const stroke of strokeClipboard) {
+      const b=strokeBounds(stroke); if(!b) continue;
+      minX=Math.min(minX,b.minX); minY=Math.min(minY,b.minY); maxX=Math.max(maxX,b.maxX); maxY=Math.max(maxY,b.maxY);
+    }
+    return {minX,minY,maxX,maxY};
+  })();
+  let dx=.035, dy=.035;
+  if (sourceBounds.maxX + dx > .98) dx = Math.max(-sourceBounds.minX + .02, .02 - sourceBounds.minX);
+  if (sourceBounds.maxY + dy > .98) dy = Math.max(topMin - sourceBounds.minY, .02 - sourceBounds.minY);
+  const pasted = strokeClipboard.map(stroke => ({
+    ...structuredClone(stroke),
+    id: makeId('stroke'),
+    points: stroke.points.map(p => ({ ...p, x:clampNumber(p.x+dx,0,1), y:clampNumber(p.y+dy,topMin,1), t:performance.now() }))
+  }));
+  strokes.push(...pasted);
+  selectedStrokeIds = new Set(pasted.map(s=>s.id));
+  renderAll();
+  renderStrokeSelection();
+  savePage();
+}
+
+strokeSelectionBox.addEventListener('pointerdown', beginStrokeSelectionMove);
+strokeSelectionBox.addEventListener('pointermove', updateStrokeSelectionMove);
+strokeSelectionBox.addEventListener('pointerup', finishStrokeSelectionMove);
+strokeSelectionBox.addEventListener('pointercancel', ev => {
+  if (!strokeSelectionInteraction || strokeSelectionInteraction.pointerId !== ev.pointerId) return;
+  strokeSelectionInteraction = null;
+  renderAll(); renderStrokeSelection();
+});
+
 function pageSnapshot() {
   return structuredClone({
     strokes,
@@ -2350,6 +2638,7 @@ function restoreSnapshot(snapshot) {
   attachments = [...structuredClone(snapshot?.attachments ?? []), ...structuredClone(audioAttachments)];
   activeStroke = null;
   selectedObjectId = null;
+  clearStrokeSelection(false);
   renderAll();
   renderObjects().catch(console.error);
   renderAudioUI().catch(console.error);
@@ -2396,8 +2685,12 @@ function setTool(next) {
   });
   canvas.classList.toggle('eraser', tool === 'eraser' && mouseMode === 'ink');
   pageWrap.classList.toggle('object-editing', tool === 'select');
+  pageWrap.classList.toggle('stroke-selecting', tool === 'lasso');
   if (tool !== 'select') selectedObjectId = null;
+  if (tool !== 'lasso') { lassoPointerId = null; lassoPoints = []; renderStrokeSelection(); }
+  else renderStrokeSelection();
   updateObjectSelectionVisual();
+  updateStrokeSelectionUI();
 }
 
 function setColor(next) {
@@ -2560,6 +2853,7 @@ async function finishPageGesture(ev) {
 }
 
 canvas.addEventListener('pointerdown', ev => {
+  if (tool === 'lasso' && beginLasso(ev)) return;
   if (tool === 'select' && ev.pointerType !== 'touch') {
     selectedObjectId = null;
     updateObjectSelectionVisual();
@@ -2604,6 +2898,7 @@ canvas.addEventListener('pointerdown', ev => {
 });
 
 function handleGlobalPointerMove(ev) {
+  if (lassoPointerId === ev.pointerId && updateLasso(ev)) return;
   if (pageGesture && pageGesture.id === ev.pointerId) {
     ev.preventDefault();
     updatePageGesture(ev);
@@ -2628,6 +2923,7 @@ function handleGlobalPointerMove(ev) {
 }
 
 async function finishPointer(ev) {
+  if (lassoPointerId === ev.pointerId && finishLasso(ev)) return;
   if (pageGesture && pageGesture.id === ev.pointerId) {
     await finishPageGesture(ev);
     return;
@@ -3013,6 +3309,10 @@ capturePhotoBtn.addEventListener('click', () => cameraFileInput.click());
 rotateImageBtn.addEventListener('click', rotateSelectedImage);
 deleteImageBtn.addEventListener('click', deleteSelectedImage);
 document.querySelectorAll('.shape-add').forEach(btn => btn.addEventListener('click', () => addShapeObject(btn.dataset.shape)));
+copyStrokesBtn.addEventListener('click', copySelectedStrokes);
+cutStrokesBtn.addEventListener('click', cutSelectedStrokes);
+pasteStrokesBtn.addEventListener('click', pasteStrokeClipboard);
+clearStrokeSelectionBtn.addEventListener('click', () => clearStrokeSelection());
 deleteShapeBtn?.addEventListener('click', deleteSelectedShape);
 
 imageFileInput.addEventListener('change', async () => {
@@ -3147,7 +3447,10 @@ document.addEventListener('keydown', ev => {
     ev.preventDefault();
     if (ev.shiftKey) redoBtn.click(); else undoBtn.click();
   }
-  if (ev.key === 'Escape') setSettingsOpen(false);
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'c' && selectedStrokeIds.size) { ev.preventDefault(); copySelectedStrokes(); }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'x' && selectedStrokeIds.size) { ev.preventDefault(); cutSelectedStrokes(); }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'v' && strokeClipboard.length) { ev.preventDefault(); pasteStrokeClipboard(); }
+  if (ev.key === 'Escape') { clearStrokeSelection(); setSettingsOpen(false); }
 });
 
 const resizeObserver = new ResizeObserver(resizeCanvas);

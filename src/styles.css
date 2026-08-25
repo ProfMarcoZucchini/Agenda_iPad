@@ -1258,3 +1258,52 @@ button:focus-visible, input:focus-visible {
 .shape-sticky .sticky-mark { position:absolute; inset:0; display:grid; place-items:center; font-family:Georgia,serif; font-weight:800; font-size:clamp(18px,4.2vw,46px); color:var(--sticky-ink,#111); }
 .page-wrap.object-editing .shape-object { cursor: move; }
 .companion-preview-object .object-resize { display:none !important; }
+
+
+/* 0.1.4 — selezione/lazo dei tratti */
+.stroke-selection-canvas {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.stroke-selection-box {
+  position: absolute;
+  z-index: 6;
+  border: 2px dashed #9a6a19;
+  border-radius: 5px;
+  background: rgba(255, 224, 139, .08);
+  box-shadow: 0 0 0 1px rgba(255,255,255,.72), 0 2px 7px rgba(55,39,15,.10);
+  cursor: move;
+  touch-action: none;
+  min-width: 12px;
+  min-height: 12px;
+}
+.stroke-selection-box[hidden] { display: none; }
+.stroke-selection-grip {
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  transform: translateX(-50%);
+  min-width: 28px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px 7px 0 0;
+  background: #9a6a19;
+  color: #fff8e7;
+  font-size: 9px;
+  letter-spacing: -2px;
+  line-height: 1;
+  pointer-events: none;
+}
+.page-wrap.stroke-selecting #inkCanvas { cursor: crosshair; }
+.stroke-selection-settings-body { min-width: 0; }
+.stroke-selection-info {
+  margin-top: 5px;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: .68;
+}
