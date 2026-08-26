@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.14';
+const APP_VERSION = '0.1.15';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -45,6 +45,11 @@ const stylePanelTitle = document.getElementById('stylePanelTitle');
 const styleGroups = [...document.querySelectorAll('[data-style-for]')];
 const colorSwatches = [...document.querySelectorAll('[data-style-color]')];
 const widthChoices = [...document.querySelectorAll('[data-style-width]')];
+const startupOverlay = document.getElementById('startupOverlay');
+const coverScreen = document.getElementById('coverScreen');
+const creditsScreen = document.getElementById('creditsScreen');
+const creditsHint = document.getElementById('creditsHint');
+
 
 let db = null;
 let currentDate = localISODate(new Date());
@@ -1279,7 +1284,7 @@ async function loadInitialPage() {
   }
 }
 
-async function boot() {
+async function bootAgenda() {
   updateHeader();
   updateToolUi();
   updateStyleUi();
@@ -1292,5 +1297,71 @@ async function boot() {
   }
 }
 
-boot();
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 5 · Ink baseline + sfoglio + Note del giorno + strumenti base + stili`);
+const startup = {
+  phase: 'cover',
+  timer: 0,
+  creditsPaused: false,
+  bootPromise: null,
+  finishing: false
+};
+
+function clearStartupTimer() {
+  if (startup.timer) window.clearTimeout(startup.timer);
+  startup.timer = 0;
+}
+
+function beginAgendaBoot() {
+  if (!startup.bootPromise) startup.bootPromise = bootAgenda();
+  return startup.bootPromise;
+}
+
+function showCredits() {
+  if (startup.phase !== 'cover') return;
+  clearStartupTimer();
+  startup.phase = 'credits';
+  coverScreen.hidden = true;
+  creditsScreen.hidden = false;
+  creditsScreen.classList.add('startup-enter');
+  beginAgendaBoot();
+  startup.timer = window.setTimeout(() => finishStartup(), 2200);
+}
+
+async function finishStartup() {
+  if (startup.finishing || startup.phase === 'done') return;
+  startup.finishing = true;
+  clearStartupTimer();
+  try {
+    await beginAgendaBoot();
+  } finally {
+    startup.phase = 'done';
+    startupOverlay.classList.add('startup-exit');
+    document.body.classList.remove('startup-active');
+    window.setTimeout(() => {
+      startupOverlay.hidden = true;
+      startupOverlay.remove();
+    }, 260);
+  }
+}
+
+function handleStartupClick(ev) {
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (startup.phase === 'cover') {
+    showCredits();
+    return;
+  }
+  if (startup.phase !== 'credits') return;
+  if (!startup.creditsPaused) {
+    startup.creditsPaused = true;
+    clearStartupTimer();
+    creditsScreen.classList.add('paused');
+    creditsHint.textContent = 'In pausa · tocca ancora per entrare';
+    return;
+  }
+  finishStartup();
+}
+
+startupOverlay.addEventListener('click', handleStartupClick);
+startup.timer = window.setTimeout(showCredits, 1900);
+
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 6 · Ink baseline + sfoglio + Note del giorno + strumenti + stili + copertina/crediti`);

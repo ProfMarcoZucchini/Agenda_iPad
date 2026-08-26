@@ -189,3 +189,64 @@ button { font: inherit; }
   .page-meta { margin-right: 170px; }
   .style-button::after { right: 2px; bottom: 2px; width: 6px; height: 6px; }
 }
+
+
+/* 0.1.15 — sequenza di avvio: Copertina → Crediti → Agenda.
+   Lo stage Agenda resta invisibile finché la pagina corrente è pronta. */
+body.startup-active .stage { visibility: hidden; pointer-events: none; }
+.startup-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  background: radial-gradient(circle at 50% 42%, #473625 0, #201b16 58%, #100e0c 100%);
+  opacity: 1; transition: opacity 240ms ease;
+  touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+}
+.startup-overlay.startup-exit { opacity: 0; pointer-events: none; }
+.startup-screen { position: absolute; inset: 0; display: grid; place-items: center; overflow: hidden; }
+.startup-screen[hidden] { display: none !important; }
+.cover-card {
+  position: relative; height: min(96vh, 900px); max-width: 94vw; aspect-ratio: 377 / 559;
+  filter: drop-shadow(0 20px 38px rgba(0,0,0,.42));
+  user-select: none; -webkit-user-select: none;
+}
+.cover-card img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+.cover-owner {
+  position: absolute; left: 50%; bottom: 8.6%; transform: translateX(-50%);
+  padding: 2px 9px 3px; border-radius: 999px; white-space: nowrap;
+  background: rgba(226,177,99,.58); color: #17100b;
+  font: italic 600 clamp(10px,1.6vh,15px)/1.1 Georgia, "Times New Roman", serif;
+  letter-spacing: .025em; text-shadow: 0 1px rgba(255,244,214,.44);
+}
+.cover-year {
+  position: absolute; left: 50%; bottom: 4.45%; transform: translateX(-50%);
+  color: #080706; font: 800 clamp(15px,2.25vh,21px)/1 Georgia, "Times New Roman", serif;
+  letter-spacing: .18em; text-shadow: 0 1px 0 rgba(231,187,109,.64);
+}
+.cover-version {
+  position: absolute; right: 4.7%; bottom: 2.2%;
+  color: rgba(12,9,7,.82); font: 700 clamp(8px,1.25vh,11px)/1 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  letter-spacing: .04em;
+}
+.credits-screen { background: #191511; opacity: 0; transform: scale(.995); }
+.credits-screen.startup-enter { animation: creditsIn 260ms ease forwards; }
+.credits-screen img {
+  display: block; max-width: min(88vw, 760px); max-height: 88vh; width: auto; height: auto; object-fit: contain;
+  filter: drop-shadow(0 16px 34px rgba(0,0,0,.38)); pointer-events: none;
+}
+.credits-hint {
+  position: absolute; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  padding: 6px 11px; border-radius: 999px; white-space: nowrap;
+  color: rgba(255,246,225,.78); background: rgba(14,12,10,.46);
+  font-size: 10px; letter-spacing: .025em; opacity: .64;
+}
+.credits-screen.paused .credits-hint { opacity: .96; }
+@keyframes creditsIn { to { opacity: 1; transform: scale(1); } }
+@media (orientation: portrait) {
+  .cover-card { width: min(96vw, 600px); height: auto; }
+  .credits-screen img { max-width: 92vw; max-height: 88vh; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .startup-overlay { transition-duration: 120ms; }
+  .credits-screen.startup-enter { animation-duration: 120ms; }
+}

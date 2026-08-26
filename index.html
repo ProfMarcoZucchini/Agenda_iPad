@@ -9,10 +9,25 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.14</title>
+  <title>Agenda iPad · 0.1.15</title>
 </head>
-<body>
-  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Stili Ink">
+<body class="startup-active">
+  <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
+    <div id="coverScreen" class="startup-screen cover-screen">
+      <div class="cover-card">
+        <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
+        <div class="cover-owner">di Marco Zucchini</div>
+        <div class="cover-year">2026</div>
+        <div class="cover-version">v0.1.15</div>
+      </div>
+    </div>
+    <div id="creditsScreen" class="startup-screen credits-screen" hidden>
+      <img src="./assets/welcome-agenda-ipad.png" alt="Crediti Agenda iPad · sviluppatore Marco Zucchini · Telegram @MarcoZucchini" draggable="false" />
+      <div id="creditsHint" class="credits-hint">Tocca una volta per fermare · ancora per entrare</div>
+    </div>
+  </section>
+
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Copertina e crediti">
     <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
@@ -81,17 +96,17 @@
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
       <footer class="baseline-footer">
-        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE</span>
+        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE + STARTUP</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.14</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.15</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.14</h2>
+      <h2>Diagnostica Pencil 0.1.15</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
