@@ -1,30 +1,27 @@
-const APP_VERSION = '0.1.9';
-const TEST_DB_NAME = 'AgendaIPadInkRobustDB';
-const TEST_DB_VERSION = 1;
-const TEST_STORE = 'pages';
+const APP_VERSION = '0.1.10';
+const DB_NAME = 'AgendaIPadReintegrationDB';
+const DB_VERSION = 1;
+const STORE = 'pages';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const SAVE_IDLE_MS = 2400;
-const CACHE_PREFIX = 'agenda-ipad-ink-robust-';
-const FOOTER_PX = 50;
+const FOOTER_PX = 46;
 
 const paper = document.getElementById('paper');
 const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
-const coldResetButton = document.getElementById('coldResetButton');
-const inkOnlyButton = document.getElementById('inkOnlyButton');
-const inkStorageButton = document.getElementById('inkStorageButton');
-const lagButton = document.getElementById('lagButton');
-const reportButton = document.getElementById('reportButton');
+const versionButton = document.getElementById('versionButton');
+const statusLabel = document.getElementById('statusLabel');
 const reportPanel = document.getElementById('reportPanel');
 const reportText = document.getElementById('reportText');
 const copyReportButton = document.getElementById('copyReportButton');
 const closeReportButton = document.getElementById('closeReportButton');
+const markLagButton = document.getElementById('markLagButton');
+const clearPageButton = document.getElementById('clearPageButton');
 
 let db = null;
 let currentDate = localISODate(new Date());
-let mode = 'ink-only';
 let strokes = [];
 let drawing = false;
 let pointerId = null;
@@ -35,8 +32,8 @@ let activeStroke = null;
 let saveTimer = 0;
 let idleHandle = 0;
 let dpr = 1;
-let resetInProgress = false;
 let storageBusy = false;
+let ready = false;
 let rafPrev = performance.now();
 let currentStrokeDiag = null;
 let completedDiagnostics = [];
@@ -53,6 +50,7 @@ const session = {
   recoveredPointerSwitch: 0,
   strokesCompleted: 0,
   storageWrites: 0,
+  storageReads: 0,
   storageErrors: 0,
   maxStorageCallMs: 0,
   maxStorageTxMs: 0,
@@ -83,23 +81,42 @@ function updateHeader() {
   document.getElementById('yearLabel').textContent = String(d.getFullYear());
 }
 
-function openTestDb() {
+function openDb() {
   if (db) return Promise.resolve(db);
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(TEST_DB_NAME, TEST_DB_VERSION);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const database = req.result;
-      if (!database.objectStoreNames.contains(TEST_STORE)) database.createObjectStore(TEST_STORE, { keyPath: 'date' });
+      if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE, { keyPath: 'date' });
     };
     req.onsuccess = () => { db = req.result; resolve(db); };
     req.onerror = () => reject(req.error);
   });
 }
 
+function getRecord(date) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get(date);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 function putRecord(record) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(TEST_STORE, 'readwrite');
-    tx.objectStore(TEST_STORE).put(record);
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Transazione IndexedDB annullata'));
+  });
+}
+
+function deleteRecord(date) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(date);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -278,18 +295,18 @@ function cancelPendingSave() {
 }
 
 async function persistNow() {
-  if (mode !== 'ink-storage' || resetInProgress || drawing) return;
+  if (!ready || drawing) return;
   try {
-    await openTestDb();
+    await openDb();
     const snapshot = strokes;
     const txStart = performance.now();
     storageBusy = true;
     const putStart = performance.now();
     const promise = putRecord({
       date: currentDate,
-      kind: 'ink-robust',
+      kind: 'agenda-day-ink',
       version: APP_VERSION,
-      pipeline: 'coalesced-retina',
+      pipeline: 'coalesced-retina-storage',
       strokes: snapshot,
       modifiedAt: new Date().toISOString()
     });
@@ -298,17 +315,20 @@ async function persistNow() {
     await promise;
     session.maxStorageTxMs = Math.max(session.maxStorageTxMs, performance.now() - txStart);
     session.storageWrites++;
+    statusLabel.textContent = 'salvato';
   } catch (err) {
     session.storageErrors++;
-    console.warn('Persistenza diagnostica non riuscita', err);
+    statusLabel.textContent = 'errore salvataggio';
+    console.warn('Persistenza reintegrazione non riuscita', err);
   } finally {
     storageBusy = false;
   }
 }
 
 function scheduleSave() {
-  if (mode !== 'ink-storage' || resetInProgress) return;
+  if (!ready) return;
   cancelPendingSave();
+  statusLabel.textContent = 'da salvare';
   saveTimer = window.setTimeout(() => {
     saveTimer = 0;
     const task = () => {
@@ -323,28 +343,15 @@ function scheduleSave() {
 
 function newStrokeDiag(ev, reason) {
   return {
-    id: makeId(),
-    reason,
-    startedAt: performance.now(),
-    pointerId: ev.pointerId,
-    pointerType: ev.pointerType,
-    samples: 1,
-    batches: 0,
-    maxSampleGapMs: 0,
-    sampleGapsOver24: 0,
-    sampleGapsOver40: 0,
-    sampleGapsOver80: 0,
-    maxHandlerGapMs: 0,
-    maxDrawBatchMs: 0,
-    maxRafGapMs: 0,
-    endedBy: '',
-    durationMs: 0,
-    points: 1
+    id: makeId(), reason, startedAt: performance.now(), pointerId: ev.pointerId, pointerType: ev.pointerType,
+    samples: 1, batches: 0, maxSampleGapMs: 0, sampleGapsOver24: 0, sampleGapsOver40: 0,
+    sampleGapsOver80: 0, maxHandlerGapMs: 0, maxDrawBatchMs: 0, maxRafGapMs: 0,
+    endedBy: '', durationMs: 0, points: 1
   };
 }
 
 function startStroke(ev, reason = 'pointerdown') {
-  if (resetInProgress) return false;
+  if (!ready) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -367,13 +374,8 @@ function startStroke(ev, reason = 'pointerdown') {
   }
   lastPoint = point;
   activeStroke = {
-    id: makeId(),
-    tool: 'pen',
-    color: PEN_COLOR,
-    width: PEN_WIDTH,
-    opacity: 1,
-    pointerType: ev.pointerType,
-    points: [point]
+    id: makeId(), tool: 'pen', color: PEN_COLOR, width: PEN_WIDTH, opacity: 1,
+    pointerType: ev.pointerType, points: [point]
   };
   currentStrokeDiag = newStrokeDiag(ev, reason);
   currentStrokeDiag.lastSampleTs = point.t;
@@ -392,7 +394,7 @@ function finalizeStroke(reason = 'pointerup') {
     currentStrokeDiag.points = activeStroke?.points?.length ?? 0;
     delete currentStrokeDiag.lastSampleTs;
     completedDiagnostics.push(currentStrokeDiag);
-    if (completedDiagnostics.length > 120) completedDiagnostics.shift();
+    if (completedDiagnostics.length > 160) completedDiagnostics.shift();
     session.strokesCompleted++;
   }
   activeStroke = null;
@@ -449,8 +451,7 @@ function handlePointerUp(ev) {
   if (ev.pointerType === 'touch') return;
   session.totalPointerUp++;
   noteHandlerArrival();
-  if (!drawing) return;
-  if (ev.pointerId !== pointerId) return;
+  if (!drawing || ev.pointerId !== pointerId) return;
   finalizeStroke('pointerup');
   ev.preventDefault();
 }
@@ -459,29 +460,14 @@ function handlePointerCancel(ev) {
   if (ev.pointerType === 'touch') return;
   session.totalPointerCancel++;
   noteHandlerArrival();
-  if (!drawing) return;
-  if (ev.pointerId !== pointerId) return;
+  if (!drawing || ev.pointerId !== pointerId) return;
   finalizeStroke('pointercancel');
   ev.preventDefault();
 }
 
-function setMode(nextMode) {
-  if (drawing || resetInProgress) return;
-  mode = nextMode;
-  cancelPendingSave();
-  inkOnlyButton.classList.toggle('active', mode === 'ink-only');
-  inkStorageButton.classList.toggle('active', mode === 'ink-storage');
-  if (mode === 'ink-storage') openTestDb().catch(() => {});
-}
-
 function markLag() {
   if (drawing) finalizeStroke('manual-lag-mark');
-  lagMarks.push({
-    at: new Date().toISOString(),
-    mode,
-    strokeIndex: completedDiagnostics.length,
-    recent: completedDiagnostics.slice(-4)
-  });
+  lagMarks.push({ at: new Date().toISOString(), strokeIndex: completedDiagnostics.length, recent: completedDiagnostics.slice(-4) });
 }
 
 function fmt(value, digits = 1) {
@@ -489,24 +475,26 @@ function fmt(value, digits = 1) {
 }
 
 function buildReport() {
-  const recent = completedDiagnostics.slice(-20);
-  const lines = [
-    `Agenda iPad INK ROBUST v${APP_VERSION}`,
+  const recent = completedDiagnostics.slice(-24);
+  return [
+    `Agenda iPad REINTEGRATION v${APP_VERSION}`,
+    `Data pagina: ${currentDate}`,
     `Sessione: ${session.startedAt}`,
-    `Modalità attuale: ${mode === 'ink-storage' ? 'INK + STORAGE' : 'INK ONLY'}`,
+    `Pipeline: Coalesced + Retina + Storage differito`,
     `DPR canvas: ${fmt(dpr, 2)}`,
-    `Tratti completati: ${session.strokesCompleted}`,
+    `Tratti pagina: ${strokes.length}`,
+    `Tratti completati sessione: ${session.strokesCompleted}`,
     `pointerdown/up/cancel: ${session.totalPointerDown}/${session.totalPointerUp}/${session.totalPointerCancel}`,
     `Recovery stale-down: ${session.recoveredStaleDown}`,
     `Recovery da pointermove: ${session.recoveredMoveStart}`,
     `Recovery cambio pointerId: ${session.recoveredPointerSwitch}`,
-    `Max gap handler: ${fmt(session.maxHandlerGapMs)} ms (>${34} ms: ${session.handlerGapsOver34})`,
+    `Max gap handler: ${fmt(session.maxHandlerGapMs)} ms (>34 ms: ${session.handlerGapsOver34})`,
     `Max gap RAF: ${fmt(session.maxRafGapMs)} ms (>34: ${session.rafGapsOver34}, >60: ${session.rafGapsOver60})`,
-    `Storage writes/errori: ${session.storageWrites}/${session.storageErrors}`,
+    `Storage read/write/errori: ${session.storageReads}/${session.storageWrites}/${session.storageErrors}`,
     `Max put() call: ${fmt(session.maxStorageCallMs)} ms`,
     `Max transazione storage: ${fmt(session.maxStorageTxMs)} ms`,
     `Tratti iniziati mentre storage busy: ${session.strokesStartedWhileStorageBusy}`,
-    `Lag segnalati manualmente: ${lagMarks.length}`,
+    `Lag segnalati: ${lagMarks.length}`,
     '',
     'ULTIMI TRATTI:',
     ...recent.map((d, i) => {
@@ -515,9 +503,8 @@ function buildReport() {
     }),
     '',
     'LAG SEGNALATI:',
-    ...(lagMarks.length ? lagMarks.map((m, i) => `L${i + 1} ${m.at} ${m.mode} dopo tratto #${m.strokeIndex}`) : ['nessuno'])
-  ];
-  return lines.join('\n');
+    ...(lagMarks.length ? lagMarks.map((m, i) => `L${i + 1} ${m.at} dopo tratto #${m.strokeIndex}`) : ['nessuno'])
+  ].join('\n');
 }
 
 function showReport() {
@@ -538,55 +525,19 @@ async function copyReport() {
   }
 }
 
-function deleteTestDatabase() {
-  return new Promise((resolve, reject) => {
-    if (db) {
-      try { db.close(); } catch {}
-      db = null;
-    }
-    const req = indexedDB.deleteDatabase(TEST_DB_NAME);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error || new Error('Cancellazione IndexedDB non riuscita'));
-    req.onblocked = () => reject(new Error('Database bloccato da un’altra istanza dell’app'));
-  });
-}
-
-async function clearRobustCaches() {
-  if (!('caches' in window)) return;
-  const keys = await caches.keys();
-  await Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX)).map((key) => caches.delete(key)));
-}
-
-async function unregisterCurrentServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
-  const scope = new URL('./', window.location.href).href;
-  const registrations = await navigator.serviceWorker.getRegistrations();
-  await Promise.all(registrations.filter((registration) => registration.scope === scope).map((registration) => registration.unregister()));
-}
-
-async function resetAsFirstRun() {
-  if (resetInProgress) return;
-  resetInProgress = true;
+async function clearCurrentPage() {
+  if (drawing || !ready) return;
+  if (!window.confirm('Cancellare soltanto la pagina di test di oggi?')) return;
   cancelPendingSave();
-  finalizeStroke('cold-reset');
   strokes = [];
-  completedDiagnostics = [];
-  lagMarks = [];
   renderAll();
-  coldResetButton.disabled = true;
-  coldResetButton.textContent = 'RESET…';
   try {
-    await deleteTestDatabase();
-    await clearRobustCaches();
-    await unregisterCurrentServiceWorker();
-    const freshUrl = new URL(window.location.href);
-    freshUrl.searchParams.set('coldstart', String(Date.now()));
-    window.location.replace(freshUrl.href);
+    await openDb();
+    await deleteRecord(currentDate);
+    statusLabel.textContent = 'pagina vuota';
   } catch (err) {
-    console.error('Reset da zero non riuscito', err);
-    resetInProgress = false;
-    coldResetButton.disabled = false;
-    coldResetButton.textContent = 'RIPROVA RESET';
+    statusLabel.textContent = 'errore cancellazione';
+    console.warn(err);
   }
 }
 
@@ -607,18 +558,16 @@ window.addEventListener('pointermove', handlePointerMove, { passive: false, capt
 window.addEventListener('pointerup', handlePointerUp, { passive: false, capture: true });
 window.addEventListener('pointercancel', handlePointerCancel, { passive: false, capture: true });
 
-inkOnlyButton.addEventListener('click', () => setMode('ink-only'));
-inkStorageButton.addEventListener('click', () => setMode('ink-storage'));
-lagButton.addEventListener('click', markLag);
-reportButton.addEventListener('click', showReport);
-copyReportButton.addEventListener('click', copyReport);
-closeReportButton.addEventListener('click', () => { reportPanel.hidden = true; });
-coldResetButton.addEventListener('click', resetAsFirstRun);
-
 document.addEventListener('touchmove', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gesturechange', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gestureend', (ev) => ev.preventDefault(), { passive: false });
+
+versionButton.addEventListener('click', showReport);
+markLagButton.addEventListener('click', markLag);
+copyReportButton.addEventListener('click', copyReport);
+closeReportButton.addEventListener('click', () => { reportPanel.hidden = true; });
+clearPageButton.addEventListener('click', clearCurrentPage);
 
 window.addEventListener('resize', () => {
   if (drawing) return;
@@ -632,27 +581,43 @@ window.addEventListener('blur', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (drawing) finalizeStroke('visibility-hidden');
-    if (mode === 'ink-storage' && !resetInProgress) persistNow();
+    if (ready) persistNow();
   }
 });
 
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
-  if (mode === 'ink-storage' && !resetInProgress) persistNow();
+  if (ready) persistNow();
 });
 
-async function boot() {
-  if (window.location.search.includes('coldstart=')) {
-    history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+async function loadToday() {
+  statusLabel.textContent = 'caricamento';
+  try {
+    await openDb();
+    const record = await getRecord(currentDate);
+    session.storageReads++;
+    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    renderAll();
+    statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
+  } catch (err) {
+    session.storageErrors++;
+    strokes = [];
+    renderAll();
+    statusLabel.textContent = 'storage non disponibile';
+    console.warn('Caricamento pagina non riuscito', err);
   }
+}
+
+async function boot() {
   updateHeader();
   resizeCanvas();
-  setMode('ink-only');
   requestAnimationFrame(rafWatchdog);
+  await loadToday();
+  ready = true;
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}), { once: true });
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
 }
 
 boot();
-console.info(`Agenda iPad Ink Robust ${APP_VERSION} · Coalesced + Retina · global pointer recovery`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 1 · Coalesced + Retina + storage differito`);

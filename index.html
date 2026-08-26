@@ -9,11 +9,11 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · Ink Robust 0.1.9</title>
+  <title>Agenda iPad · 0.1.10</title>
 </head>
 <body>
-  <main class="stage" aria-label="Agenda iPad - test robustezza Apple Pencil">
-    <section id="paper" class="paper" aria-label="Pagina Agenda per test Apple Pencil">
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata">
+    <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
           <div id="dayNumber" class="day-number">26</div>
@@ -34,25 +34,20 @@
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
       <footer class="baseline-footer">
-        <div class="mode-group" aria-label="Modalità test">
-          <button id="inkOnlyButton" class="mode-button active" type="button">INK ONLY</button>
-          <button id="inkStorageButton" class="mode-button" type="button">INK + STORAGE</button>
-        </div>
-        <div class="action-group">
-          <button id="lagButton" class="small-button" type="button">SEGNALA LAG</button>
-          <button id="reportButton" class="small-button" type="button">REPORT</button>
-          <button id="coldResetButton" class="small-button danger" type="button">RESET DA ZERO</button>
-        </div>
-        <span class="version" aria-hidden="true">v0.1.9</span>
+        <span class="baseline-label">AGENDA · INK BASELINE</span>
+        <span id="statusLabel" class="status-label">avvio</span>
+        <button id="markLagButton" class="footer-button" type="button">LAG</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.10</button>
       </footer>
     </section>
   </main>
 
-  <section id="reportPanel" class="report-panel" hidden aria-label="Report diagnostico">
+  <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.9</h2>
+      <h2>Diagnostica Pencil 0.1.10</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
+        <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
         <button id="copyReportButton" type="button">COPIA REPORT</button>
         <button id="closeReportButton" type="button">CHIUDI</button>
       </div>

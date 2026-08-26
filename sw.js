@@ -1,5 +1,5 @@
-const CACHE_PREFIX = 'agenda-ipad-ink-robust-';
-const CACHE = 'agenda-ipad-ink-robust-0.1.9';
+const CACHE_PREFIX = 'agenda-ipad-reintegration-';
+const CACHE = 'agenda-ipad-reintegration-0.1.10';
 const CORE = ['./', './index.html', './src/main.js', './src/styles.css', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)).then(() => self.skipWaiting()));
