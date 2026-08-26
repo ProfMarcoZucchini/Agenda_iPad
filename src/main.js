@@ -1,9 +1,14 @@
-const APP_VERSION = '0.1.12';
+const APP_VERSION = '0.1.13';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
+const HIGHLIGHTER_COLOR = '#f0d84f';
+const HIGHLIGHTER_WIDTH = 15;
+const HIGHLIGHTER_OPACITY = 0.30;
+const ERASER_WIDTH = 22;
+const UNDO_LIMIT = 5;
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
 const MIN_DATE = '2026-01-01';
@@ -26,6 +31,8 @@ const closeReportButton = document.getElementById('closeReportButton');
 const markLagButton = document.getElementById('markLagButton');
 const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
+const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
+const undoButton = document.getElementById('undoButton');
 
 let db = null;
 let currentDate = localISODate(new Date());
@@ -54,6 +61,8 @@ let dirty = false;
 let pageSwipe = null;
 let pageTurning = false;
 let previewPage = null;
+let activeTool = 'pen';
+let undoHistory = [];
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -111,7 +120,7 @@ function updateHeader() {
   if (baselineLabel) {
     baselineLabel.textContent = currentPageKind === 'note'
       ? `NOTE DEL GIORNO ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
-      : 'AGENDA · INK + PAGE TURN + NOTE';
+      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS';
   }
 }
 
@@ -231,13 +240,66 @@ async function persistNotesCount(dateString, count) {
   }
 }
 
-function setupStrokeStyle(stroke) {
-  ctx.strokeStyle = stroke.color ?? PEN_COLOR;
-  ctx.fillStyle = stroke.color ?? PEN_COLOR;
-  ctx.globalAlpha = stroke.opacity ?? 1;
-  ctx.lineWidth = stroke.width ?? PEN_WIDTH;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+function setupStrokeStyle(stroke, targetCtx = ctx) {
+  const tool = stroke?.tool ?? 'pen';
+  targetCtx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
+  targetCtx.strokeStyle = stroke?.color ?? PEN_COLOR;
+  targetCtx.fillStyle = stroke?.color ?? PEN_COLOR;
+  targetCtx.globalAlpha = stroke?.opacity ?? 1;
+  targetCtx.lineWidth = stroke?.width ?? PEN_WIDTH;
+  targetCtx.lineCap = 'round';
+  targetCtx.lineJoin = 'round';
+}
+
+function toolStrokeStyle(tool = activeTool) {
+  if (tool === 'highlighter') {
+    return { tool, color: HIGHLIGHTER_COLOR, width: HIGHLIGHTER_WIDTH, opacity: HIGHLIGHTER_OPACITY };
+  }
+  if (tool === 'eraser') {
+    return { tool, color: '#000000', width: ERASER_WIDTH, opacity: 1 };
+  }
+  return { tool: 'pen', color: PEN_COLOR, width: PEN_WIDTH, opacity: 1 };
+}
+
+function updateToolUi() {
+  for (const button of toolButtons) {
+    const selected = button.dataset.tool === activeTool;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+  if (undoButton) undoButton.disabled = undoHistory.length === 0;
+}
+
+function selectTool(tool) {
+  if (!['pen', 'highlighter', 'eraser'].includes(tool) || drawing || pageTurning) return;
+  activeTool = tool;
+  updateToolUi();
+  statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : 'penna';
+}
+
+function resetUndoHistory() {
+  undoHistory = [];
+  updateToolUi();
+}
+
+function rememberUndo(action) {
+  undoHistory.push(action);
+  if (undoHistory.length > UNDO_LIMIT) undoHistory.shift();
+  updateToolUi();
+}
+
+function undoLastModification() {
+  if (drawing || pageTurning || !ready || !undoHistory.length) return;
+  const action = undoHistory.pop();
+  if (action?.type === 'add-stroke') {
+    const index = strokes.findIndex((stroke) => stroke.id === action.strokeId);
+    if (index >= 0) strokes.splice(index, 1);
+  }
+  renderAll();
+  dirty = true;
+  statusLabel.textContent = 'annullato';
+  updateToolUi();
+  scheduleSave();
 }
 
 function cssPoint(point) {
@@ -348,10 +410,9 @@ function drawDot(point) {
   ctx.beginPath();
   ctx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop - FOOTER_PX));
   ctx.clip();
-  ctx.fillStyle = PEN_COLOR;
-  ctx.globalAlpha = 1;
+  setupStrokeStyle(activeStroke);
   ctx.beginPath();
-  ctx.arc(p.x, p.y, Math.max(.7, PEN_WIDTH / 2), 0, Math.PI * 2);
+  ctx.arc(p.x, p.y, Math.max(.7, (activeStroke?.width ?? PEN_WIDTH) / 2), 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
@@ -363,11 +424,7 @@ function drawBatch(events) {
   ctx.beginPath();
   ctx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop - FOOTER_PX));
   ctx.clip();
-  ctx.strokeStyle = PEN_COLOR;
-  ctx.globalAlpha = 1;
-  ctx.lineWidth = PEN_WIDTH;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  setupStrokeStyle(activeStroke);
   ctx.beginPath();
   const lp = pointToCss(lastPoint);
   ctx.moveTo(lp.x, lp.y);
@@ -493,9 +550,9 @@ function startStroke(ev, reason = 'pointerdown') {
     return false;
   }
   lastPoint = point;
+  const style = toolStrokeStyle(activeTool);
   activeStroke = {
-    id: makeId(), tool: 'pen', color: PEN_COLOR, width: PEN_WIDTH, opacity: 1,
-    pointerType: ev.pointerType, points: [point]
+    id: makeId(), ...style, pointerType: ev.pointerType, points: [point]
   };
   currentStrokeDiag = newStrokeDiag(ev, reason);
   currentStrokeDiag.lastSampleTs = point.t;
@@ -507,7 +564,11 @@ function startStroke(ev, reason = 'pointerdown') {
 function finalizeStroke(reason = 'pointerup') {
   if (!drawing) return;
   drawing = false;
-  if (activeStroke?.points?.length) strokes.push(activeStroke);
+  const completedStroke = activeStroke?.points?.length ? activeStroke : null;
+  if (completedStroke) {
+    strokes.push(completedStroke);
+    rememberUndo({ type: 'add-stroke', strokeId: completedStroke.id });
+  }
   if (currentStrokeDiag) {
     currentStrokeDiag.endedBy = reason;
     currentStrokeDiag.durationMs = performance.now() - currentStrokeDiag.startedAt;
@@ -604,6 +665,8 @@ function buildReport() {
     `Chiave pagina: ${currentPageKey()}`,
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
+    `Strumento attivo: ${activeTool}`,
+    `Undo disponibili: ${undoHistory.length}/${UNDO_LIMIT}`,
     `DPR canvas: ${fmt(dpr, 2)}`,
     `Tratti pagina: ${strokes.length}`,
     `Tratti completati sessione: ${session.strokesCompleted}`,
@@ -657,6 +720,7 @@ async function clearCurrentPage() {
   if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
   cancelPendingSave();
   strokes = [];
+  resetUndoHistory();
   renderAll();
   try {
     await openDb();
@@ -707,12 +771,7 @@ function drawPreviewInk(preview, previewStrokes) {
     pctx.beginPath();
     pctx.rect(0, pTop, pr.width, Math.max(0, pr.height - pTop - FOOTER_PX));
     pctx.clip();
-    pctx.strokeStyle = stroke.color ?? PEN_COLOR;
-    pctx.fillStyle = stroke.color ?? PEN_COLOR;
-    pctx.globalAlpha = stroke.opacity ?? 1;
-    pctx.lineWidth = stroke.width ?? PEN_WIDTH;
-    pctx.lineCap = 'round';
-    pctx.lineJoin = 'round';
+    setupStrokeStyle(stroke, pctx);
     const css = (pt) => ({ x: pt.x * pr.width, y: pt.y * pr.height });
     if (points.length === 1) {
       const q = css(points[0]);
@@ -994,6 +1053,7 @@ async function commitPageTurn() {
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetStrokes) ? targetStrokes : [];
+  resetUndoHistory();
   dirty = false;
   if (target.createNote) session.notesCreated++;
   updateHeader();
@@ -1051,6 +1111,12 @@ copyReportButton.addEventListener('click', copyReport);
 closeReportButton.addEventListener('click', () => { reportPanel.hidden = true; });
 clearPageButton.addEventListener('click', clearCurrentPage);
 
+
+for (const button of toolButtons) {
+  button.addEventListener('click', () => selectTool(button.dataset.tool));
+}
+undoButton?.addEventListener('click', undoLastModification);
+
 window.addEventListener('resize', () => {
   if (drawing || pageTurning) return;
   removePreview();
@@ -1085,6 +1151,7 @@ async function loadInitialPage() {
     ]);
     session.storageReads++;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    resetUndoHistory();
     dirty = false;
     renderAll();
     statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
@@ -1099,6 +1166,7 @@ async function loadInitialPage() {
 
 async function boot() {
   updateHeader();
+  updateToolUi();
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
@@ -1109,4 +1177,4 @@ async function boot() {
 }
 
 boot();
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 3 · Ink baseline + sfoglio giorni + Note del giorno`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 4 · Ink baseline + sfoglio + Note del giorno + strumenti base`);

@@ -71,3 +71,63 @@ button { font: inherit; }
   .page-kind-label { font-size: 9px; letter-spacing: .095em; }
   .note-counter { font-size: 18px; }
 }
+
+/* 0.1.13 — strumenti base, senza lavoro DOM durante il tratto Pencil */
+.quick-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid rgba(86,72,53,.18);
+  border-radius: 12px;
+  background: rgba(249,242,225,.90);
+  box-shadow: 0 2px 9px rgba(55,43,29,.10);
+  pointer-events: auto;
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+.tool-button {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 48px;
+  height: 34px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #514536;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.tool-button span { font-size: 9px; letter-spacing: .01em; }
+.tool-button.active {
+  border-color: rgba(75,61,43,.42);
+  background: rgba(255,255,255,.68);
+  box-shadow: inset 0 -2px 0 rgba(75,61,43,.12);
+}
+.tool-button[data-tool="highlighter"].active { background: rgba(240,216,79,.34); }
+.tool-button[data-tool="eraser"].active { background: rgba(224,215,201,.78); }
+.tool-button:disabled { opacity: .30; }
+.tool-button:not(:disabled):active { transform: translateY(1px); }
+.page-header { padding-right: 250px; }
+.page-meta { margin-right: 205px; }
+@media (max-width: 760px) {
+  .quick-toolbar { top: 7px; right: 7px; gap: 2px; padding: 3px; }
+  .tool-button { min-width: 34px; width: 34px; height: 32px; padding: 2px; font-size: 15px; }
+  .tool-button span { display: none; }
+  .page-header { padding-right: 160px; }
+  .page-meta { margin-right: 138px; }
+}
+.eraser-symbol { font-size: 16px !important; line-height: 1; }
+@media (max-width: 760px) { .tool-button .eraser-symbol { display: inline !important; } }
