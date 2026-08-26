@@ -79,8 +79,26 @@ body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none
   font-size: 10px;
   letter-spacing: .06em;
   z-index: 3;
-  pointer-events: none;
+  pointer-events: auto;
 }
+.baseline-label { pointer-events: none; }
+.cold-reset {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid rgba(92, 77, 54, .32);
+  border-radius: 999px;
+  background: rgba(255,255,255,.28);
+  color: rgba(50, 42, 33, .82);
+  font: inherit;
+  font-weight: 700;
+  letter-spacing: .055em;
+  padding: 5px 11px;
+  line-height: 1;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.cold-reset:active { transform: translateY(1px); background: rgba(255,255,255,.5); }
+.cold-reset[disabled] { opacity: .55; }
 @media (max-width: 700px) {
   :root { --header-h: 100px; }
   .stage { padding: 0; }

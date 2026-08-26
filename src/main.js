@@ -5,11 +5,13 @@ const TEST_STORE = 'pages';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const SAVE_IDLE_MS = 2200;
+const BASELINE_CACHE_PREFIX = 'agenda-ipad-ink-baseline-';
 
 const paper = document.getElementById('paper');
 const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+const coldResetButton = document.getElementById('coldResetButton');
 
 let db = null;
 let currentDate = localISODate(new Date());
@@ -24,6 +26,7 @@ let activeStroke = null;
 let saveTimer = 0;
 let idleHandle = 0;
 let dpr = 1;
+let resetInProgress = false;
 
 function localISODate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -209,6 +212,7 @@ function cancelPendingSave() {
 }
 
 async function persistNow() {
+  if (resetInProgress) return;
   if (!db || drawing) return scheduleSave();
   try {
     await putRecord({
@@ -225,6 +229,7 @@ async function persistNow() {
 }
 
 function scheduleSave() {
+  if (resetInProgress) return;
   cancelPendingSave();
   saveTimer = window.setTimeout(() => {
     saveTimer = 0;
@@ -239,6 +244,7 @@ function scheduleSave() {
 }
 
 function beginStroke(ev) {
+  if (resetInProgress) return;
   if (ev.pointerType === 'touch') return;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   if (drawing) return;
@@ -289,8 +295,78 @@ function endStroke(ev) {
   ev.preventDefault();
 }
 
+
+function deleteTestDatabase() {
+  return new Promise((resolve, reject) => {
+    if (db) {
+      try { db.close(); } catch {}
+      db = null;
+    }
+    const req = indexedDB.deleteDatabase(TEST_DB_NAME);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error || new Error('Cancellazione IndexedDB non riuscita'));
+    req.onblocked = () => reject(new Error('Database bloccato da un’altra istanza dell’app'));
+  });
+}
+
+async function clearBaselineCaches() {
+  if (!('caches' in window)) return;
+  const keys = await caches.keys();
+  await Promise.all(keys
+    .filter((key) => key.startsWith(BASELINE_CACHE_PREFIX))
+    .map((key) => caches.delete(key)));
+}
+
+async function unregisterCurrentServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  const scope = new URL('./', window.location.href).href;
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  await Promise.all(registrations
+    .filter((registration) => registration.scope === scope)
+    .map((registration) => registration.unregister()));
+}
+
+async function resetAsFirstRun() {
+  if (resetInProgress) return;
+  resetInProgress = true;
+  cancelPendingSave();
+  drawing = false;
+  activeStroke = null;
+  pointerId = null;
+  pointerType = null;
+  rect = null;
+  lastPoint = null;
+  strokes = [];
+  renderAll();
+
+  if (coldResetButton) {
+    coldResetButton.disabled = true;
+    coldResetButton.textContent = 'RESET…';
+  }
+
+  try {
+    // Reset volutamente limitato alla build diagnostica: il database AgendaIPadDB
+    // della versione completa non viene aperto né cancellato.
+    await deleteTestDatabase();
+    await clearBaselineCaches();
+    await unregisterCurrentServiceWorker();
+
+    const freshUrl = new URL(window.location.href);
+    freshUrl.searchParams.set('coldstart', String(Date.now()));
+    window.location.replace(freshUrl.href);
+  } catch (err) {
+    console.error('Reset da zero non riuscito', err);
+    resetInProgress = false;
+    if (coldResetButton) {
+      coldResetButton.disabled = false;
+      coldResetButton.textContent = 'RIPROVA RESET';
+    }
+  }
+}
+
 canvas.addEventListener('pointerdown', beginStroke, { passive: false });
 canvas.addEventListener('pointermove', moveStroke, { passive: false });
+if (coldResetButton) coldResetButton.addEventListener('click', resetAsFirstRun);
 window.addEventListener('pointerup', endStroke, { passive: false, capture: true });
 window.addEventListener('pointercancel', endStroke, { passive: false, capture: true });
 
@@ -305,13 +381,16 @@ window.addEventListener('resize', () => {
 });
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && !drawing) persistNow();
+  if (document.visibilityState === 'hidden' && !drawing && !resetInProgress) persistNow();
 });
 window.addEventListener('pagehide', () => {
-  if (!drawing) persistNow();
+  if (!drawing && !resetInProgress) persistNow();
 });
 
 async function boot() {
+  if (window.location.search.includes('coldstart=')) {
+    history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+  }
   updateHeader();
   resizeCanvas();
   try {
@@ -328,4 +407,4 @@ async function boot() {
 }
 
 boot();
-console.info(`Agenda iPad Ink Baseline ${APP_VERSION} · Coalesced + Retina`);
+console.info(`Agenda iPad Ink Baseline ${APP_VERSION} RESET TEST · Coalesced + Retina`);

@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · Ink Baseline 0.1.8</title>
+  <title>Agenda iPad · Ink Baseline 0.1.8 RESET TEST</title>
 </head>
 <body>
   <main class="stage" aria-label="Agenda iPad - test baseline scrittura">
@@ -33,9 +33,10 @@
 
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
-      <footer class="baseline-footer" aria-hidden="true">
-        <span>INK BASELINE · Coalesced + Retina</span>
-        <span>v0.1.8</span>
+      <footer class="baseline-footer">
+        <span class="baseline-label" aria-hidden="true">INK BASELINE · Coalesced + Retina</span>
+        <button id="coldResetButton" class="cold-reset" type="button" aria-label="Cancella il test e riavvia come al primo avvio">RESET DA ZERO</button>
+        <span aria-hidden="true">v0.1.8 RESET</span>
       </footer>
     </section>
   </main>
