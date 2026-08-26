@@ -2,33 +2,17 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda giornaliera handwriting-first per iPad, Apple Pencil e uso offline.",
+  "description": "Build diagnostica Apple Pencil - Ink Test 0.1.7",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "display_override": [
-    "standalone",
-    "fullscreen"
-  ],
+  "display_override": ["standalone", "fullscreen"],
   "orientation": "any",
-  "background_color": "#211f1b",
-  "theme_color": "#221f1a",
-  "categories": [
-    "productivity",
-    "utilities"
-  ],
+  "background_color": "#f4eddc",
+  "theme_color": "#f4eddc",
+  "categories": ["productivity", "utilities"],
   "icons": [
-    {
-      "src": "./icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "./icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    }
+    {"src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+    {"src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
   ]
 }
