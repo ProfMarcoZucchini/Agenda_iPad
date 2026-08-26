@@ -9,10 +9,10 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.13</title>
+  <title>Agenda iPad · 0.1.14</title>
 </head>
 <body>
-  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Strumenti base">
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Stili Ink">
     <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
@@ -34,28 +34,64 @@
         <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore">▰<span>Evid.</span></button>
         <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><span class="eraser-symbol" aria-hidden="true">▱</span><span>Gomma</span></button>
         <button id="undoButton" class="tool-button undo-button" type="button" title="Annulla ultima modifica">↶<span>Undo</span></button>
+        <button id="styleButton" class="tool-button style-button" type="button" aria-expanded="false" title="Colore e spessore">●<span>Stile</span></button>
       </nav>
 
+      <section id="stylePanel" class="style-panel" hidden aria-label="Colore e spessore dello strumento">
+        <div class="style-panel-title"><strong id="stylePanelTitle">Stile Penna</strong><span>impostazioni applicate ai nuovi tratti</span></div>
+        <div id="penStyleGroup" class="style-group" data-style-for="pen">
+          <div class="style-row"><span>Colore</span><div class="style-options">
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#111111" aria-label="Nero" style="--swatch:#111111"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#174f9b" aria-label="Blu" style="--swatch:#174f9b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#a52b2b" aria-label="Rosso" style="--swatch:#a52b2b"></button>
+          </div></div>
+          <div class="style-row"><span>Spessore</span><div class="style-options">
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="1.8">Fine</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="2.5">Medio</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="3.6">Largo</button>
+          </div></div>
+        </div>
+        <div id="highlighterStyleGroup" class="style-group" data-style-for="highlighter" hidden>
+          <div class="style-row"><span>Colore</span><div class="style-options">
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f0d84f" aria-label="Giallo" style="--swatch:#f0d84f"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fd38b" aria-label="Verde" style="--swatch:#7fd38b"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ef91b2" aria-label="Rosa" style="--swatch:#ef91b2"></button>
+          </div></div>
+          <div class="style-row"><span>Spessore</span><div class="style-options">
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="12">Fine</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="15">Medio</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="20">Largo</button>
+          </div></div>
+        </div>
+        <div id="eraserStyleGroup" class="style-group" data-style-for="eraser" hidden>
+          <div class="style-row"><span>Dimensione</span><div class="style-options">
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="16">Fine</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="22">Media</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="30">Larga</button>
+          </div></div>
+        </div>
+      </section>
+
       <div class="hours" aria-hidden="true">
-        <span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span><span>12:00</span>
-        <span>13:00</span><span>14:00</span><span>15:00</span><span>16:00</span><span>17:00</span>
-        <span>18:00</span><span>19:00</span><span>20:00</span>
+        <span>07:00</span><span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span>
+        <span>12:00</span><span>13:00</span><span>14:00</span><span>15:00</span><span>16:00</span>
+        <span>17:00</span><span>18:00</span><span>19:00</span>
       </div>
 
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
       <footer class="baseline-footer">
-        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS</span>
+        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.13</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.14</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.13</h2>
+      <h2>Diagnostica Pencil 0.1.14</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

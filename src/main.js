@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.13';
+const APP_VERSION = '0.1.14';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -8,6 +8,12 @@ const HIGHLIGHTER_COLOR = '#f0d84f';
 const HIGHLIGHTER_WIDTH = 15;
 const HIGHLIGHTER_OPACITY = 0.30;
 const ERASER_WIDTH = 22;
+const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
+const ALLOWED_STYLE_VALUES = Object.freeze({
+  pen: { colors: ['#111111', '#174f9b', '#a52b2b'], widths: [1.8, 2.5, 3.6] },
+  highlighter: { colors: ['#f0d84f', '#7fd38b', '#ef91b2'], widths: [12, 15, 20] },
+  eraser: { widths: [16, 22, 30] }
+});
 const UNDO_LIMIT = 5;
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
@@ -33,6 +39,12 @@ const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const undoButton = document.getElementById('undoButton');
+const styleButton = document.getElementById('styleButton');
+const stylePanel = document.getElementById('stylePanel');
+const stylePanelTitle = document.getElementById('stylePanelTitle');
+const styleGroups = [...document.querySelectorAll('[data-style-for]')];
+const colorSwatches = [...document.querySelectorAll('[data-style-color]')];
+const widthChoices = [...document.querySelectorAll('[data-style-width]')];
 
 let db = null;
 let currentDate = localISODate(new Date());
@@ -63,6 +75,7 @@ let pageTurning = false;
 let previewPage = null;
 let activeTool = 'pen';
 let undoHistory = [];
+let toolStyles = loadToolStyles();
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -99,6 +112,100 @@ function makeId() {
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+
+function nearestAllowedWidth(tool, value, fallback) {
+  const widths = ALLOWED_STYLE_VALUES[tool]?.widths ?? [];
+  const n = Number(value);
+  return widths.includes(n) ? n : fallback;
+}
+
+function allowedColor(tool, value, fallback) {
+  const colors = ALLOWED_STYLE_VALUES[tool]?.colors ?? [];
+  return colors.includes(String(value).toLowerCase()) ? String(value).toLowerCase() : fallback;
+}
+
+function loadToolStyles() {
+  const defaults = {
+    pen: { color: PEN_COLOR, width: PEN_WIDTH, opacity: 1 },
+    highlighter: { color: HIGHLIGHTER_COLOR, width: HIGHLIGHTER_WIDTH, opacity: HIGHLIGHTER_OPACITY },
+    eraser: { color: '#000000', width: ERASER_WIDTH, opacity: 1 }
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(TOOL_STYLE_STORAGE_KEY) || 'null');
+    if (!saved || typeof saved !== 'object') return defaults;
+    return {
+      pen: {
+        ...defaults.pen,
+        color: allowedColor('pen', saved.pen?.color, defaults.pen.color),
+        width: nearestAllowedWidth('pen', saved.pen?.width, defaults.pen.width)
+      },
+      highlighter: {
+        ...defaults.highlighter,
+        color: allowedColor('highlighter', saved.highlighter?.color, defaults.highlighter.color),
+        width: nearestAllowedWidth('highlighter', saved.highlighter?.width, defaults.highlighter.width)
+      },
+      eraser: {
+        ...defaults.eraser,
+        width: nearestAllowedWidth('eraser', saved.eraser?.width, defaults.eraser.width)
+      }
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveToolStyles() {
+  try {
+    localStorage.setItem(TOOL_STYLE_STORAGE_KEY, JSON.stringify(toolStyles));
+  } catch {}
+}
+
+function updateStyleUi() {
+  if (!stylePanel) return;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma' };
+  if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
+  for (const group of styleGroups) group.hidden = group.dataset.styleFor !== activeTool;
+  for (const swatch of colorSwatches) {
+    const matches = swatch.dataset.styleTool === activeTool && swatch.dataset.styleColor?.toLowerCase() === toolStyles[activeTool]?.color?.toLowerCase();
+    swatch.classList.toggle('selected', matches);
+    swatch.setAttribute('aria-pressed', matches ? 'true' : 'false');
+  }
+  for (const choice of widthChoices) {
+    const matches = choice.dataset.styleTool === activeTool && Number(choice.dataset.styleWidth) === Number(toolStyles[activeTool]?.width);
+    choice.classList.toggle('selected', matches);
+    choice.setAttribute('aria-pressed', matches ? 'true' : 'false');
+  }
+  if (styleButton) {
+    const color = activeTool === 'eraser' ? '#e7dfd1' : toolStyles[activeTool]?.color ?? PEN_COLOR;
+    styleButton.style.setProperty('--active-style-color', color);
+  }
+}
+
+function setStyleColor(tool, color) {
+  if (drawing || pageTurning || !ALLOWED_STYLE_VALUES[tool]?.colors?.includes(color)) return;
+  toolStyles[tool] = { ...toolStyles[tool], color };
+  saveToolStyles();
+  updateStyleUi();
+  statusLabel.textContent = 'colore impostato';
+}
+
+function setStyleWidth(tool, width) {
+  const n = Number(width);
+  if (drawing || pageTurning || !ALLOWED_STYLE_VALUES[tool]?.widths?.includes(n)) return;
+  toolStyles[tool] = { ...toolStyles[tool], width: n };
+  saveToolStyles();
+  updateStyleUi();
+  statusLabel.textContent = 'spessore impostato';
+}
+
+function toggleStylePanel() {
+  if (!stylePanel || drawing || pageTurning) return;
+  const willOpen = stylePanel.hidden;
+  stylePanel.hidden = !willOpen;
+  styleButton?.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+  if (willOpen) updateStyleUi();
+}
+
 function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0) {
   const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
@@ -120,7 +227,7 @@ function updateHeader() {
   if (baselineLabel) {
     baselineLabel.textContent = currentPageKind === 'note'
       ? `NOTE DEL GIORNO ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
-      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS';
+      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE';
   }
 }
 
@@ -252,13 +359,8 @@ function setupStrokeStyle(stroke, targetCtx = ctx) {
 }
 
 function toolStrokeStyle(tool = activeTool) {
-  if (tool === 'highlighter') {
-    return { tool, color: HIGHLIGHTER_COLOR, width: HIGHLIGHTER_WIDTH, opacity: HIGHLIGHTER_OPACITY };
-  }
-  if (tool === 'eraser') {
-    return { tool, color: '#000000', width: ERASER_WIDTH, opacity: 1 };
-  }
-  return { tool: 'pen', color: PEN_COLOR, width: PEN_WIDTH, opacity: 1 };
+  const style = toolStyles[tool] ?? toolStyles.pen;
+  return { tool: tool === 'eraser' ? 'eraser' : tool === 'highlighter' ? 'highlighter' : 'pen', ...style };
 }
 
 function updateToolUi() {
@@ -274,6 +376,7 @@ function selectTool(tool) {
   if (!['pen', 'highlighter', 'eraser'].includes(tool) || drawing || pageTurning) return;
   activeTool = tool;
   updateToolUi();
+  updateStyleUi();
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : 'penna';
 }
 
@@ -588,7 +691,11 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function handlePointerDown(ev) {
-  if (ev.pointerType === 'touch') { startPageSwipe(ev); return; }
+  if (ev.pointerType === 'touch') {
+    if (ev.target instanceof Element && ev.target.closest('button, .style-panel, .report-panel')) return;
+    startPageSwipe(ev);
+    return;
+  }
   session.totalPointerDown++;
   noteHandlerArrival();
   if (startStroke(ev, 'pointerdown')) ev.preventDefault();
@@ -666,6 +773,7 @@ function buildReport() {
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
     `Strumento attivo: ${activeTool}`,
+    `Stile attivo: ${toolStyles[activeTool]?.color ?? 'n/a'} · ${toolStyles[activeTool]?.width ?? 'n/a'} px`,
     `Undo disponibili: ${undoHistory.length}/${UNDO_LIMIT}`,
     `DPR canvas: ${fmt(dpr, 2)}`,
     `Tratti pagina: ${strokes.length}`,
@@ -1116,6 +1224,13 @@ for (const button of toolButtons) {
   button.addEventListener('click', () => selectTool(button.dataset.tool));
 }
 undoButton?.addEventListener('click', undoLastModification);
+styleButton?.addEventListener('click', toggleStylePanel);
+for (const swatch of colorSwatches) {
+  swatch.addEventListener('click', () => setStyleColor(swatch.dataset.styleTool, swatch.dataset.styleColor?.toLowerCase()));
+}
+for (const choice of widthChoices) {
+  choice.addEventListener('click', () => setStyleWidth(choice.dataset.styleTool, choice.dataset.styleWidth));
+}
 
 window.addEventListener('resize', () => {
   if (drawing || pageTurning) return;
@@ -1167,6 +1282,7 @@ async function loadInitialPage() {
 async function boot() {
   updateHeader();
   updateToolUi();
+  updateStyleUi();
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
@@ -1177,4 +1293,4 @@ async function boot() {
 }
 
 boot();
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 4 · Ink baseline + sfoglio + Note del giorno + strumenti base`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 5 · Ink baseline + sfoglio + Note del giorno + strumenti base + stili`);
