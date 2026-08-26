@@ -1,410 +1,547 @@
-const APP_VERSION = '0.1.8';
-const TEST_DB_NAME = 'AgendaIPadInkBaselineDB';
-const TEST_DB_VERSION = 1;
-const TEST_STORE = 'pages';
-const PEN_COLOR = '#111111';
-const PEN_WIDTH = 2.5;
-const SAVE_IDLE_MS = 2200;
-const BASELINE_CACHE_PREFIX = 'agenda-ipad-ink-baseline-';
+const VERSION = '0.1.9';
+const DB_NAME = 'AgendaIPadInkStorageTestDB';
+const DB_VERSION = 1;
+const STORE = 'strokes';
+const SESSION = 'ink-storage-test';
 
-const paper = document.getElementById('paper');
-const header = document.getElementById('pageHeader');
+// Baseline fissata dal test reale 0.1.7: Coalesced + Retina.
+const MAX_DPR = 2;
+const FLOATS_PER_POINT = 4; // x, y, pressure, dt
+const MAX_POINTS_PER_STROKE = 16384;
+const POOL_SIZE = 24;
+const STORAGE_IDLE_MS = 1600;
+
 const canvas = document.getElementById('inkCanvas');
+const paper = document.getElementById('paper');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
-const coldResetButton = document.getElementById('coldResetButton');
+const hint = document.getElementById('startHint');
+const supportInfo = document.getElementById('supportInfo');
+const strokeInfo = document.getElementById('strokeInfo');
+const storageInfo = document.getElementById('storageInfo');
+const clearBtn = document.getElementById('clearBtn');
+const resetStorageBtn = document.getElementById('resetStorageBtn');
+const widthSlider = document.getElementById('widthSlider');
+const modeButtons = [...document.querySelectorAll('.mode-btn')];
+
+let mode = 'ink';
+let scale = 1;
+let drawing = false;
+let activePointerId = null;
+let activePointerType = null;
+let rect = null;
+let lastX = 0;
+let lastY = 0;
+let strokeStartStamp = 0;
+let strokeStartedAt = 0;
+let sampleCount = 0;
+let eventCount = 0;
+let maxGap = 0;
+let lastEventStamp = 0;
+let truncated = false;
 
 let db = null;
-let currentDate = localISODate(new Date());
-let strokes = [];
-let drawing = false;
-let pointerId = null;
-let pointerType = null;
-let rect = null;
-let protectedTop = 0;
-let lastPoint = null;
-let activeStroke = null;
-let saveTimer = 0;
+let dbReady = false;
+let storageInitializing = false;
+let persistedCount = 0;
+let storageTimer = 0;
 let idleHandle = 0;
-let dpr = 1;
-let resetInProgress = false;
+let storageBusy = false;
+let lastStorageMs = 0;
+let maxStorageMs = 0;
 
-function localISODate(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-}
+// Pool preallocato: nessuna nuova struttura per campione nel percorso realtime.
+const buffers = Array.from(
+  { length: POOL_SIZE },
+  () => new Float32Array(MAX_POINTS_PER_STROKE * FLOATS_PER_POINT)
+);
+const freeBufferIds = Array.from({ length: POOL_SIZE }, (_, index) => index);
+const pending = [];
+let activeBufferId = -1;
+let activeBuffer = null;
+let activePointCount = 0;
+
+const coalescedSupported = typeof PointerEvent !== 'undefined' && 'getCoalescedEvents' in PointerEvent.prototype;
+supportInfo.textContent = `Coalesced ${coalescedSupported ? '✓' : '✗'} · Retina ≤${MAX_DPR}× · pool ${POOL_SIZE}×${MAX_POINTS_PER_STROKE}`;
 
 function makeId() {
   if (globalThis.crypto?.randomUUID) return `stroke-${crypto.randomUUID()}`;
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function updateHeader() {
-  const d = new Date(`${currentDate}T12:00:00`);
-  const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
-  const monthName = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
-  document.getElementById('dayNumber').textContent = String(d.getDate());
-  document.getElementById('dayName').textContent = dayName;
-  document.getElementById('monthName').textContent = monthName;
-  document.getElementById('yearLabel').textContent = String(d.getFullYear());
+function currentPenWidth() {
+  return Number(widthSlider.value) || 2.5;
 }
 
-function openTestDb() {
+function resizeCanvas({ preserve = false } = {}) {
+  if (drawing) return;
+  const r = paper.getBoundingClientRect();
+  let snapshot = null;
+  if (preserve && canvas.width > 0 && canvas.height > 0) {
+    snapshot = document.createElement('canvas');
+    snapshot.width = canvas.width;
+    snapshot.height = canvas.height;
+    snapshot.getContext('2d').drawImage(canvas, 0, 0);
+  }
+
+  scale = Math.max(1, Math.min(window.devicePixelRatio || 1, MAX_DPR));
+  canvas.width = Math.max(1, Math.round(r.width * scale));
+  canvas.height = Math.max(1, Math.round(r.height * scale));
+  canvas.style.width = `${r.width}px`;
+  canvas.style.height = `${r.height}px`;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#111111';
+
+  if (snapshot) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(snapshot, 0, 0, snapshot.width, snapshot.height, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  }
+}
+
+function clearCanvas() {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  hint.classList.remove('hidden');
+}
+
+function drawDot(x, y, width) {
+  ctx.save();
+  ctx.fillStyle = '#111111';
+  ctx.beginPath();
+  ctx.arc(x, y, Math.max(0.6, width / 2), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function storePoint(x, y, pressure, stamp) {
+  if (mode !== 'storage' || !activeBuffer) return;
+  if (activePointCount >= MAX_POINTS_PER_STROKE) {
+    truncated = true;
+    return;
+  }
+  const offset = activePointCount * FLOATS_PER_POINT;
+  activeBuffer[offset] = x;
+  activeBuffer[offset + 1] = y;
+  activeBuffer[offset + 2] = Number.isFinite(pressure) ? pressure : 0.5;
+  activeBuffer[offset + 3] = Math.max(0, stamp - strokeStartStamp);
+  activePointCount += 1;
+}
+
+function acquireStorageBuffer() {
+  if (mode !== 'storage') return;
+  activeBufferId = freeBufferIds.length ? freeBufferIds.pop() : -1;
+  activeBuffer = activeBufferId >= 0 ? buffers[activeBufferId] : null;
+  activePointCount = 0;
+  truncated = activeBuffer === null;
+}
+
+function releaseBuffer(bufferId) {
+  if (bufferId >= 0) freeBufferIds.push(bufferId);
+}
+
+function beginStroke(e) {
+  if (storageInitializing) return;
+  if (e.pointerType === 'touch') return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (drawing) return;
+
+  cancelStorageSchedule();
+  drawing = true;
+  activePointerId = e.pointerId;
+  activePointerType = e.pointerType;
+  rect = canvas.getBoundingClientRect(); // una sola lettura per tratto
+  lastX = e.clientX - rect.left;
+  lastY = e.clientY - rect.top;
+  strokeStartStamp = Number.isFinite(e.timeStamp) ? e.timeStamp : performance.now();
+  strokeStartedAt = performance.now();
+  sampleCount = 1;
+  eventCount = 1;
+  maxGap = 0;
+  lastEventStamp = strokeStartStamp;
+  truncated = false;
+
+  acquireStorageBuffer();
+  storePoint(lastX, lastY, e.pressure, strokeStartStamp);
+
+  hint.classList.add('hidden');
+  drawDot(lastX, lastY, currentPenWidth());
+  e.preventDefault();
+}
+
+function drawEventBatch(hostEvent) {
+  if (!drawing || hostEvent.pointerId !== activePointerId || !rect) return;
+
+  let list = null;
+  if (coalescedSupported && typeof hostEvent.getCoalescedEvents === 'function') {
+    try {
+      const coalesced = hostEvent.getCoalescedEvents();
+      if (coalesced && coalesced.length) list = coalesced;
+    } catch {}
+  }
+  if (!list) list = [hostEvent];
+
+  const width = currentPenWidth();
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(lastX, lastY);
+
+  let accepted = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const sample = list[i];
+    if (sample.pointerId !== activePointerId) continue;
+    const x = sample.clientX - rect.left;
+    const y = sample.clientY - rect.top;
+    const dx = x - lastX;
+    const dy = y - lastY;
+    if ((dx * dx + dy * dy) < 0.0001) continue;
+
+    ctx.lineTo(x, y);
+    lastX = x;
+    lastY = y;
+    storePoint(x, y, sample.pressure, Number.isFinite(sample.timeStamp) ? sample.timeStamp : hostEvent.timeStamp);
+    accepted += 1;
+  }
+
+  if (accepted) {
+    ctx.stroke();
+    sampleCount += accepted;
+  }
+
+  eventCount += 1;
+  const stamp = Number.isFinite(hostEvent.timeStamp) ? hostEvent.timeStamp : performance.now();
+  const gap = Math.max(0, stamp - lastEventStamp);
+  if (gap > maxGap) maxGap = gap;
+  lastEventStamp = stamp;
+  hostEvent.preventDefault();
+}
+
+function endStroke(e, reason = 'up') {
+  if (!drawing || e.pointerId !== activePointerId) return;
+
+  const finishedMode = mode;
+  const finishedPointerType = activePointerType || e.pointerType;
+  const finishedSampleCount = sampleCount;
+  const finishedEventCount = eventCount;
+  const finishedMaxGap = maxGap;
+  const finishedStartedAt = strokeStartedAt;
+  const finishedTruncated = truncated;
+  const finishedRectWidth = rect?.width || canvas.clientWidth;
+  const finishedRectHeight = rect?.height || canvas.clientHeight;
+  const finishedPenWidth = currentPenWidth();
+  const finishedBufferId = activeBufferId;
+  const finishedPointCount = activePointCount;
+
+  drawing = false;
+  activePointerId = null;
+  activePointerType = null;
+  rect = null;
+  activeBufferId = -1;
+  activeBuffer = null;
+  activePointCount = 0;
+
+  if (finishedMode === 'storage' && finishedBufferId >= 0 && finishedPointCount > 0) {
+    pending.push({
+      id: makeId(),
+      bufferId: finishedBufferId,
+      pointCount: finishedPointCount,
+      pageWidth: finishedRectWidth,
+      pageHeight: finishedRectHeight,
+      width: finishedPenWidth,
+      createdAt: Date.now(),
+      truncated: finishedTruncated
+    });
+    scheduleStorageDrain();
+  } else if (finishedBufferId >= 0) {
+    releaseBuffer(finishedBufferId);
+  }
+
+  // Diagnostica solo fuori dal percorso Pencil.
+  requestAnimationFrame(() => {
+    if (drawing) return;
+    const duration = Math.max(1, performance.now() - finishedStartedAt);
+    const sampleRate = Math.round((finishedSampleCount * 1000) / duration);
+    strokeInfo.textContent = `${finishedPointerType} · ${finishedMode === 'storage' ? 'INK+STORAGE' : 'INK ONLY'} · ${finishedSampleCount} campioni · ${sampleRate} camp/s · max gap ${finishedMaxGap.toFixed(1)} ms · eventi ${finishedEventCount}${finishedTruncated ? ' · BUFFER LIMIT' : ''}${reason === 'cancel' ? ' · CANCEL' : ''}`;
+    updateStorageInfo();
+  });
+
+  e.preventDefault();
+}
+
+function openDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(TEST_DB_NAME, TEST_DB_VERSION);
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const database = req.result;
-      if (!database.objectStoreNames.contains(TEST_STORE)) database.createObjectStore(TEST_STORE, { keyPath: 'date' });
+      let store;
+      if (!database.objectStoreNames.contains(STORE)) {
+        store = database.createObjectStore(STORE, { keyPath: 'id' });
+      } else {
+        store = req.transaction.objectStore(STORE);
+      }
+      if (!store.indexNames.contains('session')) store.createIndex('session', 'session', { unique: false });
+      if (!store.indexNames.contains('createdAt')) store.createIndex('createdAt', 'createdAt', { unique: false });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-function loadRecord(date) {
+function getStoredStrokes() {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(TEST_STORE, 'readonly');
-    const req = tx.objectStore(TEST_STORE).get(date);
-    req.onsuccess = () => resolve(req.result ?? null);
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve((req.result || []).filter((item) => item.session === SESSION).sort((a, b) => a.createdAt - b.createdAt));
     req.onerror = () => reject(req.error);
   });
 }
 
-function putRecord(record) {
+function putStrokeRecord(record) {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(TEST_STORE, 'readwrite');
-    tx.objectStore(TEST_STORE).put(record);
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+  });
+}
+
+function clearStorageRecords() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      if (cursor.value?.session === SESSION) cursor.delete();
+      cursor.continue();
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
 }
 
-function cssPoint(point) {
-  return { x: point.x * canvas.clientWidth, y: point.y * canvas.clientHeight };
-}
+function drawStoredRecord(record) {
+  if (!record?.data || !record.pointCount) return;
+  const values = new Float32Array(record.data);
+  const sx = canvas.clientWidth / Math.max(1, record.pageWidth || canvas.clientWidth);
+  const sy = canvas.clientHeight / Math.max(1, record.pageHeight || canvas.clientHeight);
+  const width = Number(record.width) || 2.5;
+  const count = Math.min(record.pointCount, Math.floor(values.length / FLOATS_PER_POINT));
+  if (count < 1) return;
 
-function setupStrokeStyle(stroke) {
-  ctx.strokeStyle = stroke.color ?? PEN_COLOR;
-  ctx.fillStyle = stroke.color ?? PEN_COLOR;
-  ctx.globalAlpha = stroke.opacity ?? 1;
-  ctx.lineWidth = stroke.width ?? PEN_WIDTH;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-}
-
-function drawStoredStroke(stroke) {
-  const points = stroke?.points ?? [];
-  if (!points.length) return;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, protectedTop, canvas.clientWidth, Math.max(0, canvas.clientHeight - protectedTop - 34));
-  ctx.clip();
-  setupStrokeStyle(stroke);
-  if (points.length === 1) {
-    const p = cssPoint(points[0]);
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, Math.max(.7, (stroke.width ?? PEN_WIDTH) / 2), 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+  let offset = 0;
+  let x = values[offset] * sx;
+  let y = values[offset + 1] * sy;
+  if (count === 1) {
+    drawDot(x, y, width);
     return;
   }
+
+  ctx.save();
+  ctx.strokeStyle = '#111111';
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.beginPath();
-  let p = cssPoint(points[0]);
-  ctx.moveTo(p.x, p.y);
-  for (let i = 1; i < points.length; i++) {
-    p = cssPoint(points[i]);
-    ctx.lineTo(p.x, p.y);
+  ctx.moveTo(x, y);
+  for (let i = 1; i < count; i += 1) {
+    offset = i * FLOATS_PER_POINT;
+    x = values[offset] * sx;
+    y = values[offset + 1] * sy;
+    ctx.lineTo(x, y);
   }
   ctx.stroke();
   ctx.restore();
 }
 
-function renderAll() {
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.restore();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  for (const stroke of strokes) drawStoredStroke(stroke);
-}
-
-function resizeCanvas() {
-  const r = paper.getBoundingClientRect();
-  const hr = header.getBoundingClientRect();
-  dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
-  canvas.width = Math.max(1, Math.round(r.width * dpr));
-  canvas.height = Math.max(1, Math.round(r.height * dpr));
-  canvas.style.width = `${r.width}px`;
-  canvas.style.height = `${r.height}px`;
-  protectedTop = Math.max(0, Math.min(r.height, hr.bottom - r.top));
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  renderAll();
-}
-
-function normalizeEvent(ev) {
-  return {
-    x: Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width)),
-    y: Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height)),
-    p: ev.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : 0.5,
-    t: Number.isFinite(ev.timeStamp) ? ev.timeStamp : performance.now()
-  };
-}
-
-function pointToCss(point) {
-  return { x: point.x * rect.width, y: point.y * rect.height };
-}
-
-function pointAllowed(point) {
-  const y = point.y * rect.height;
-  return y >= protectedTop && y <= rect.height - 34;
-}
-
-function drawDot(point) {
-  if (!pointAllowed(point)) return;
-  const p = pointToCss(point);
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop - 34));
-  ctx.clip();
-  ctx.fillStyle = PEN_COLOR;
-  ctx.globalAlpha = 1;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, Math.max(.7, PEN_WIDTH / 2), 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function drawBatch(events) {
-  if (!drawing || !activeStroke || !events.length) return;
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop - 34));
-  ctx.clip();
-  ctx.strokeStyle = PEN_COLOR;
-  ctx.globalAlpha = 1;
-  ctx.lineWidth = PEN_WIDTH;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  let lp = pointToCss(lastPoint);
-  ctx.moveTo(lp.x, lp.y);
-  let accepted = 0;
-  for (const sample of events) {
-    if (sample.pointerId !== pointerId) continue;
-    const point = normalizeEvent(sample);
-    if (!pointAllowed(point)) continue;
-    const dx = (point.x - lastPoint.x) * rect.width;
-    const dy = (point.y - lastPoint.y) * rect.height;
-    if ((dx * dx + dy * dy) < 0.01) continue;
-    const cp = pointToCss(point);
-    ctx.lineTo(cp.x, cp.y);
-    activeStroke.points.push(point);
-    lastPoint = point;
-    accepted++;
-  }
-  if (accepted) ctx.stroke();
-  ctx.restore();
-}
-
-function cancelPendingSave() {
-  clearTimeout(saveTimer);
-  saveTimer = 0;
+function cancelStorageSchedule() {
+  clearTimeout(storageTimer);
+  storageTimer = 0;
   if (idleHandle && 'cancelIdleCallback' in window) cancelIdleCallback(idleHandle);
   idleHandle = 0;
 }
 
-async function persistNow() {
-  if (resetInProgress) return;
-  if (!db || drawing) return scheduleSave();
-  try {
-    await putRecord({
-      date: currentDate,
-      kind: 'ink-baseline',
-      version: APP_VERSION,
-      pipeline: 'coalesced-retina',
-      strokes,
-      modifiedAt: new Date().toISOString()
-    });
-  } catch (err) {
-    console.warn('Persistenza baseline non riuscita', err);
-  }
-}
-
-function scheduleSave() {
-  if (resetInProgress) return;
-  cancelPendingSave();
-  saveTimer = window.setTimeout(() => {
-    saveTimer = 0;
-    const task = () => {
+function scheduleStorageDrain() {
+  cancelStorageSchedule();
+  if (!pending.length) return;
+  storageTimer = window.setTimeout(() => {
+    storageTimer = 0;
+    const run = () => {
       idleHandle = 0;
-      if (drawing) return scheduleSave();
-      persistNow();
+      if (drawing) {
+        scheduleStorageDrain();
+        return;
+      }
+      drainOneStroke();
     };
-    if ('requestIdleCallback' in window) idleHandle = requestIdleCallback(task, { timeout: 1800 });
-    else task();
-  }, SAVE_IDLE_MS);
-}
-
-function beginStroke(ev) {
-  if (resetInProgress) return;
-  if (ev.pointerType === 'touch') return;
-  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-  if (drawing) return;
-  rect = canvas.getBoundingClientRect();
-  const point = normalizeEvent(ev);
-  if (!pointAllowed(point)) return;
-  cancelPendingSave();
-  drawing = true;
-  pointerId = ev.pointerId;
-  pointerType = ev.pointerType;
-  lastPoint = point;
-  activeStroke = {
-    id: makeId(),
-    tool: 'pen',
-    color: PEN_COLOR,
-    width: PEN_WIDTH,
-    opacity: 1,
-    pointerType,
-    points: [point]
-  };
-  drawDot(point);
-  ev.preventDefault();
-}
-
-function moveStroke(ev) {
-  if (!drawing || ev.pointerId !== pointerId) return;
-  let events = [ev];
-  if (typeof ev.getCoalescedEvents === 'function') {
-    try {
-      const coalesced = ev.getCoalescedEvents();
-      if (coalesced?.length) events = coalesced;
-    } catch {}
-  }
-  drawBatch(events);
-  ev.preventDefault();
-}
-
-function endStroke(ev) {
-  if (!drawing || ev.pointerId !== pointerId) return;
-  drawing = false;
-  if (activeStroke?.points?.length) strokes.push(activeStroke);
-  activeStroke = null;
-  pointerId = null;
-  pointerType = null;
-  rect = null;
-  lastPoint = null;
-  scheduleSave();
-  ev.preventDefault();
-}
-
-
-function deleteTestDatabase() {
-  return new Promise((resolve, reject) => {
-    if (db) {
-      try { db.close(); } catch {}
-      db = null;
+    if ('requestIdleCallback' in window) {
+      idleHandle = requestIdleCallback(run, { timeout: 1200 });
+    } else {
+      run();
     }
-    const req = indexedDB.deleteDatabase(TEST_DB_NAME);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error || new Error('Cancellazione IndexedDB non riuscita'));
-    req.onblocked = () => reject(new Error('Database bloccato da un’altra istanza dell’app'));
-  });
+  }, STORAGE_IDLE_MS);
 }
 
-async function clearBaselineCaches() {
-  if (!('caches' in window)) return;
-  const keys = await caches.keys();
-  await Promise.all(keys
-    .filter((key) => key.startsWith(BASELINE_CACHE_PREFIX))
-    .map((key) => caches.delete(key)));
-}
-
-async function unregisterCurrentServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
-  const scope = new URL('./', window.location.href).href;
-  const registrations = await navigator.serviceWorker.getRegistrations();
-  await Promise.all(registrations
-    .filter((registration) => registration.scope === scope)
-    .map((registration) => registration.unregister()));
-}
-
-async function resetAsFirstRun() {
-  if (resetInProgress) return;
-  resetInProgress = true;
-  cancelPendingSave();
-  drawing = false;
-  activeStroke = null;
-  pointerId = null;
-  pointerType = null;
-  rect = null;
-  lastPoint = null;
-  strokes = [];
-  renderAll();
-
-  if (coldResetButton) {
-    coldResetButton.disabled = true;
-    coldResetButton.textContent = 'RESET…';
+async function drainOneStroke() {
+  if (storageBusy || drawing || !pending.length || !dbReady) {
+    if (pending.length) scheduleStorageDrain();
+    return;
   }
 
+  storageBusy = true;
+  const item = pending.shift();
+  const started = performance.now();
   try {
-    // Reset volutamente limitato alla build diagnostica: il database AgendaIPadDB
-    // della versione completa non viene aperto né cancellato.
-    await deleteTestDatabase();
-    await clearBaselineCaches();
-    await unregisterCurrentServiceWorker();
-
-    const freshUrl = new URL(window.location.href);
-    freshUrl.searchParams.set('coldstart', String(Date.now()));
-    window.location.replace(freshUrl.href);
+    // La compattazione avviene esclusivamente fuori dal contatto Pencil.
+    const full = buffers[item.bufferId];
+    const compact = full.slice(0, item.pointCount * FLOATS_PER_POINT);
+    await putStrokeRecord({
+      id: item.id,
+      session: SESSION,
+      version: VERSION,
+      pipeline: 'coalesced-retina-float32-per-stroke',
+      createdAt: item.createdAt,
+      pageWidth: item.pageWidth,
+      pageHeight: item.pageHeight,
+      width: item.width,
+      pointCount: item.pointCount,
+      truncated: item.truncated,
+      data: compact.buffer
+    });
+    persistedCount += 1;
+    lastStorageMs = performance.now() - started;
+    maxStorageMs = Math.max(maxStorageMs, lastStorageMs);
   } catch (err) {
-    console.error('Reset da zero non riuscito', err);
-    resetInProgress = false;
-    if (coldResetButton) {
-      coldResetButton.disabled = false;
-      coldResetButton.textContent = 'RIPROVA RESET';
-    }
+    console.warn('Salvataggio tratto non riuscito', err);
+  } finally {
+    releaseBuffer(item.bufferId);
+    storageBusy = false;
+    updateStorageInfo();
   }
+
+  if (pending.length) {
+    // Un solo tratto per tranche: mai una lunga transazione cumulativa.
+    scheduleStorageDrain();
+  }
+}
+
+function updateStorageInfo() {
+  storageInfo.textContent = `Storage ${dbReady ? '✓' : '…'} · salvati ${persistedCount} · coda ${pending.length}${storageBusy ? ' +1 I/O' : ''} · last ${lastStorageMs.toFixed(1)} ms · max ${maxStorageMs.toFixed(1)} ms`;
+}
+
+async function ensureStorageReady() {
+  if (dbReady) return true;
+  if (storageInitializing) return false;
+  storageInitializing = true;
+  storageInfo.textContent = 'Storage: inizializzazione…';
+  try {
+    db = await openDb();
+    const stored = await getStoredStrokes();
+    persistedCount = stored.length;
+    // Il replay avviene prima di abilitare la modalità Storage, mai durante un tratto.
+    for (const record of stored) drawStoredRecord(record);
+    if (stored.length) hint.classList.add('hidden');
+    dbReady = true;
+    if (pending.length) scheduleStorageDrain();
+  } catch (err) {
+    console.warn('Storage test non disponibile', err);
+    dbReady = false;
+  } finally {
+    storageInitializing = false;
+    updateStorageInfo();
+  }
+  return dbReady;
 }
 
 canvas.addEventListener('pointerdown', beginStroke, { passive: false });
-canvas.addEventListener('pointermove', moveStroke, { passive: false });
-if (coldResetButton) coldResetButton.addEventListener('click', resetAsFirstRun);
-window.addEventListener('pointerup', endStroke, { passive: false, capture: true });
-window.addEventListener('pointercancel', endStroke, { passive: false, capture: true });
+canvas.addEventListener('pointermove', drawEventBatch, { passive: false });
+window.addEventListener('pointerup', (e) => endStroke(e, 'up'), { passive: false, capture: true });
+window.addEventListener('pointercancel', (e) => endStroke(e, 'cancel'), { passive: false, capture: true });
 
-document.addEventListener('touchmove', (ev) => ev.preventDefault(), { passive: false });
-document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
-document.addEventListener('gesturechange', (ev) => ev.preventDefault(), { passive: false });
-document.addEventListener('gestureend', (ev) => ev.preventDefault(), { passive: false });
+// Blocca gesture/browser scroll senza aggiungere lavoro al percorso Pencil.
+document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gesturestart', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gesturechange', (e) => e.preventDefault(), { passive: false });
+document.addEventListener('gestureend', (e) => e.preventDefault(), { passive: false });
 
-window.addEventListener('resize', () => {
+modeButtons.forEach((btn) => btn.addEventListener('click', async () => {
+  if (drawing || storageInitializing) return;
+  const requested = btn.dataset.mode === 'storage' ? 'storage' : 'ink';
+  if (requested === 'storage' && !dbReady) {
+    strokeInfo.textContent = 'Inizializzazione storage di test…';
+    const ok = await ensureStorageReady();
+    if (!ok) {
+      mode = 'ink';
+      modeButtons.forEach((b) => b.classList.toggle('active', b.dataset.mode === 'ink'));
+      strokeInfo.textContent = 'Storage non disponibile · resta attivo INK ONLY';
+      return;
+    }
+  }
+  mode = requested;
+  modeButtons.forEach((b) => b.classList.toggle('active', b === btn));
+  strokeInfo.textContent = mode === 'storage'
+    ? 'INK + STORAGE attivo · buffer Float32 + record per singolo tratto'
+    : 'INK ONLY attivo · nessuna registrazione/persistenza';
+  updateStorageInfo();
+}));
+
+clearBtn.addEventListener('click', () => {
   if (drawing) return;
-  resizeCanvas();
+  clearCanvas();
+  strokeInfo.textContent = 'Schermo pulito · storage non modificato';
 });
 
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && !drawing && !resetInProgress) persistNow();
-});
-window.addEventListener('pagehide', () => {
-  if (!drawing && !resetInProgress) persistNow();
-});
-
-async function boot() {
-  if (window.location.search.includes('coldstart=')) {
-    history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+resetStorageBtn.addEventListener('click', async () => {
+  if (drawing || !dbReady) return;
+  cancelStorageSchedule();
+  if (storageBusy) {
+    strokeInfo.textContent = 'Attendi la conclusione del salvataggio in corso e riprova.';
+    return;
   }
-  updateHeader();
-  resizeCanvas();
+  while (pending.length) {
+    const item = pending.shift();
+    releaseBuffer(item.bufferId);
+  }
   try {
-    db = await openTestDb();
-    const record = await loadRecord(currentDate);
-    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
-    renderAll();
+    await clearStorageRecords();
+    persistedCount = 0;
+    lastStorageMs = 0;
+    maxStorageMs = 0;
+    clearCanvas();
+    strokeInfo.textContent = 'Storage test azzerato';
   } catch (err) {
-    console.warn('Baseline avviata senza persistenza', err);
+    console.warn('Reset storage non riuscito', err);
+    strokeInfo.textContent = 'Errore durante azzeramento storage';
   }
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}), { once: true });
-  }
+  updateStorageInfo();
+});
+
+window.addEventListener('resize', () => resizeCanvas({ preserve: true }));
+window.addEventListener('pagehide', () => {
+  // Nessun flush sincrono: non introdurre percorsi speciali che possano alterare il test.
+});
+
+resizeCanvas();
+updateStorageInfo();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }
 
-boot();
-console.info(`Agenda iPad Ink Baseline ${APP_VERSION} RESET TEST · Coalesced + Retina`);
+console.info(`Agenda iPad Ink Storage Test ${VERSION}`, {
+  pipeline: 'Coalesced + Retina',
+  coalescedSupported,
+  devicePixelRatio: window.devicePixelRatio,
+  maxDpr: MAX_DPR,
+  poolSize: POOL_SIZE,
+  maxPointsPerStroke: MAX_POINTS_PER_STROKE
+});

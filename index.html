@@ -5,40 +5,43 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="theme-color" content="#e9dfc8" />
+  <meta name="theme-color" content="#f4eddc" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · Ink Baseline 0.1.8 RESET TEST</title>
+  <title>Agenda iPad · Ink Storage Test 0.1.9</title>
 </head>
 <body>
-  <main class="stage" aria-label="Agenda iPad - test baseline scrittura">
-    <section id="paper" class="paper" aria-label="Pagina Agenda per test Apple Pencil">
-      <header id="pageHeader" class="page-header" aria-hidden="true">
-        <div class="date-block">
-          <div id="dayNumber" class="day-number">26</div>
-          <div class="day-text">
-            <div id="dayName" class="day-name">MERCOLEDÌ</div>
-            <div id="monthName" class="month-name">agosto</div>
-          </div>
-        </div>
-        <div id="yearLabel" class="year-label">2026</div>
-      </header>
-
-      <div class="hours" aria-hidden="true">
-        <span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span><span>12:00</span>
-        <span>13:00</span><span>14:00</span><span>15:00</span><span>16:00</span><span>17:00</span>
-        <span>18:00</span><span>19:00</span><span>20:00</span>
+  <main id="app" class="app-shell">
+    <header class="testbar" aria-label="Controlli test scrittura">
+      <div class="brand">
+        <strong>Agenda iPad</strong>
+        <span>INK STORAGE TEST 0.1.9</span>
       </div>
 
-      <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
+      <div class="mode-group" role="group" aria-label="Modalità test">
+        <button class="mode-btn active" data-mode="ink" type="button">INK ONLY</button>
+        <button class="mode-btn" data-mode="storage" type="button">INK + STORAGE</button>
+      </div>
 
-      <footer class="baseline-footer">
-        <span class="baseline-label" aria-hidden="true">INK BASELINE · Coalesced + Retina</span>
-        <button id="coldResetButton" class="cold-reset" type="button" aria-label="Cancella il test e riavvia come al primo avvio">RESET DA ZERO</button>
-        <span aria-hidden="true">v0.1.8 RESET</span>
-      </footer>
+      <label class="width-control">Tratto
+        <input id="widthSlider" type="range" min="1" max="7" step="0.5" value="2.5" />
+      </label>
+
+      <button id="clearBtn" class="clear-btn" type="button">Pulisci schermo</button>
+      <button id="resetStorageBtn" class="reset-btn" type="button">Azzera storage</button>
+    </header>
+
+    <section id="paper" class="paper" aria-label="Area test Apple Pencil">
+      <canvas id="inkCanvas"></canvas>
+      <div id="startHint" class="start-hint">Coalesced + Retina · scrivi qui con Apple Pencil</div>
     </section>
+
+    <footer class="diagnostics" aria-live="polite">
+      <span id="supportInfo">Rilevamento API…</span>
+      <span id="strokeInfo">Nessun tratto acquisito</span>
+      <span id="storageInfo">Storage: inizializzazione…</span>
+    </footer>
   </main>
   <script type="module" src="./src/main.js"></script>
 </body>
