@@ -5,44 +5,60 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="theme-color" content="#f4eddc" />
+  <meta name="theme-color" content="#e9dfc8" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · Ink Storage Test 0.1.9</title>
+  <title>Agenda iPad · Ink Robust 0.1.9</title>
 </head>
 <body>
-  <main id="app" class="app-shell">
-    <header class="testbar" aria-label="Controlli test scrittura">
-      <div class="brand">
-        <strong>Agenda iPad</strong>
-        <span>INK STORAGE TEST 0.1.9</span>
+  <main class="stage" aria-label="Agenda iPad - test robustezza Apple Pencil">
+    <section id="paper" class="paper" aria-label="Pagina Agenda per test Apple Pencil">
+      <header id="pageHeader" class="page-header" aria-hidden="true">
+        <div class="date-block">
+          <div id="dayNumber" class="day-number">26</div>
+          <div class="day-text">
+            <div id="dayName" class="day-name">MERCOLEDÌ</div>
+            <div id="monthName" class="month-name">agosto</div>
+          </div>
+        </div>
+        <div id="yearLabel" class="year-label">2026</div>
+      </header>
+
+      <div class="hours" aria-hidden="true">
+        <span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span><span>12:00</span>
+        <span>13:00</span><span>14:00</span><span>15:00</span><span>16:00</span><span>17:00</span>
+        <span>18:00</span><span>19:00</span><span>20:00</span>
       </div>
 
-      <div class="mode-group" role="group" aria-label="Modalità test">
-        <button class="mode-btn active" data-mode="ink" type="button">INK ONLY</button>
-        <button class="mode-btn" data-mode="storage" type="button">INK + STORAGE</button>
-      </div>
+      <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
-      <label class="width-control">Tratto
-        <input id="widthSlider" type="range" min="1" max="7" step="0.5" value="2.5" />
-      </label>
-
-      <button id="clearBtn" class="clear-btn" type="button">Pulisci schermo</button>
-      <button id="resetStorageBtn" class="reset-btn" type="button">Azzera storage</button>
-    </header>
-
-    <section id="paper" class="paper" aria-label="Area test Apple Pencil">
-      <canvas id="inkCanvas"></canvas>
-      <div id="startHint" class="start-hint">Coalesced + Retina · scrivi qui con Apple Pencil</div>
+      <footer class="baseline-footer">
+        <div class="mode-group" aria-label="Modalità test">
+          <button id="inkOnlyButton" class="mode-button active" type="button">INK ONLY</button>
+          <button id="inkStorageButton" class="mode-button" type="button">INK + STORAGE</button>
+        </div>
+        <div class="action-group">
+          <button id="lagButton" class="small-button" type="button">SEGNALA LAG</button>
+          <button id="reportButton" class="small-button" type="button">REPORT</button>
+          <button id="coldResetButton" class="small-button danger" type="button">RESET DA ZERO</button>
+        </div>
+        <span class="version" aria-hidden="true">v0.1.9</span>
+      </footer>
     </section>
-
-    <footer class="diagnostics" aria-live="polite">
-      <span id="supportInfo">Rilevamento API…</span>
-      <span id="strokeInfo">Nessun tratto acquisito</span>
-      <span id="storageInfo">Storage: inizializzazione…</span>
-    </footer>
   </main>
+
+  <section id="reportPanel" class="report-panel" hidden aria-label="Report diagnostico">
+    <div class="report-card">
+      <h2>Diagnostica Pencil 0.1.9</h2>
+      <textarea id="reportText" readonly spellcheck="false"></textarea>
+      <div class="report-actions">
+        <button id="copyReportButton" type="button">COPIA REPORT</button>
+        <button id="closeReportButton" type="button">CHIUDI</button>
+      </div>
+    </div>
+  </section>
+
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
