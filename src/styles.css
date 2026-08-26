@@ -11,7 +11,7 @@
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; background: #d6ccb8; }
 body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 button { font: inherit; }
-.stage { width: 100%; height: 100%; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); display: grid; place-items: center; }
+.stage { position: relative; width: 100%; height: 100%; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); display: grid; place-items: center; }
 .paper { position: relative; width: min(100%, 1120px); height: 100%; overflow: hidden; background-color: var(--paper); border-radius: 4px; box-shadow: 0 8px 30px rgba(42,34,24,.18); touch-action: none; }
 .paper::before { content: ""; position: absolute; inset: var(--header-h) 0 var(--footer-h) 0; pointer-events: none; background-image: linear-gradient(to right, transparent 0, transparent 76px, var(--margin) 77px, transparent 78px), repeating-linear-gradient(to bottom, transparent 0, transparent 35px, var(--line) 36px, transparent 37px); z-index: 0; }
 .page-header { position: absolute; inset: 0 0 auto 0; height: var(--header-h); padding: 18px 30px 14px 34px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(92,77,54,.22); background: linear-gradient(to bottom, rgba(247,239,220,.96), rgba(243,232,205,.93)); z-index: 3; pointer-events: none; }
@@ -48,4 +48,13 @@ button { font: inherit; }
   .baseline-footer { padding-left: 62px; gap: 5px; }
   .baseline-label { display: none; }
   .status-label { margin-left: 0; flex: 1; text-align: left; }
+}
+
+
+/* 0.1.11 — sfoglio giorno isolato dal motore Ink */
+.paper { backface-visibility: hidden; -webkit-backface-visibility: hidden; transform-style: preserve-3d; -webkit-transform-style: preserve-3d; }
+.page-preview { box-shadow: 0 8px 30px rgba(42,34,24,.13); }
+.page-preview #inkCanvas, .page-preview canvas { pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .paper, .page-preview { transition-duration: 120ms !important; }
 }

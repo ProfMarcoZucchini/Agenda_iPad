@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.10';
+const APP_VERSION = '0.1.11';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -6,7 +6,11 @@ const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
+const MIN_DATE = '2026-01-01';
+const MAX_DATE = '2028-12-31';
+const PAGE_TURN_MS = 280;
 
+const stage = document.querySelector('.stage');
 const paper = document.getElementById('paper');
 const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
@@ -39,6 +43,10 @@ let currentStrokeDiag = null;
 let completedDiagnostics = [];
 let lagMarks = [];
 let lastHandlerArrival = 0;
+let dirty = false;
+let pageSwipe = null;
+let pageTurning = false;
+let previewPage = null;
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -59,7 +67,9 @@ const session = {
   rafGapsOver34: 0,
   rafGapsOver60: 0,
   handlerGapsOver34: 0,
-  maxHandlerGapMs: 0
+  maxHandlerGapMs: 0,
+  pageTurns: 0,
+  pageTurnCancels: 0
 };
 
 function localISODate(date) {
@@ -71,14 +81,28 @@ function makeId() {
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function updateHeader() {
-  const d = new Date(`${currentDate}T12:00:00`);
+function setHeaderFor(root, dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
   const monthName = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
-  document.getElementById('dayNumber').textContent = String(d.getDate());
-  document.getElementById('dayName').textContent = dayName;
-  document.getElementById('monthName').textContent = monthName;
-  document.getElementById('yearLabel').textContent = String(d.getFullYear());
+  root.querySelector('.day-number').textContent = String(d.getDate());
+  root.querySelector('.day-name').textContent = dayName;
+  root.querySelector('.month-name').textContent = monthName;
+  root.querySelector('.year-label').textContent = String(d.getFullYear());
+}
+
+function updateHeader() {
+  setHeaderFor(document, currentDate);
+}
+
+function addDays(dateString, delta) {
+  const d = new Date(`${dateString}T12:00:00`);
+  d.setDate(d.getDate() + delta);
+  return localISODate(d);
+}
+
+function dateInRange(dateString) {
+  return dateString >= MIN_DATE && dateString <= MAX_DATE;
 }
 
 function openDb() {
@@ -294,20 +318,18 @@ function cancelPendingSave() {
   idleHandle = 0;
 }
 
-async function persistNow() {
-  if (!ready || drawing) return;
+async function persistSnapshot(dateString, pageStrokes, updateStatus = true) {
   try {
     await openDb();
-    const snapshot = strokes;
     const txStart = performance.now();
     storageBusy = true;
     const putStart = performance.now();
     const promise = putRecord({
-      date: currentDate,
+      date: dateString,
       kind: 'agenda-day-ink',
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage',
-      strokes: snapshot,
+      strokes: pageStrokes,
       modifiedAt: new Date().toISOString()
     });
     const putCallMs = performance.now() - putStart;
@@ -315,14 +337,24 @@ async function persistNow() {
     await promise;
     session.maxStorageTxMs = Math.max(session.maxStorageTxMs, performance.now() - txStart);
     session.storageWrites++;
-    statusLabel.textContent = 'salvato';
+    if (updateStatus) statusLabel.textContent = 'salvato';
+    return true;
   } catch (err) {
     session.storageErrors++;
-    statusLabel.textContent = 'errore salvataggio';
+    if (updateStatus) statusLabel.textContent = 'errore salvataggio';
     console.warn('Persistenza reintegrazione non riuscita', err);
+    return false;
   } finally {
     storageBusy = false;
   }
+}
+
+async function persistNow() {
+  if (!ready || drawing || pageTurning) return;
+  const saveDate = currentDate;
+  const snapshot = strokes;
+  const ok = await persistSnapshot(saveDate, snapshot, true);
+  if (ok && currentDate === saveDate && strokes === snapshot) dirty = false;
 }
 
 function scheduleSave() {
@@ -351,7 +383,7 @@ function newStrokeDiag(ev, reason) {
 }
 
 function startStroke(ev, reason = 'pointerdown') {
-  if (!ready) return false;
+  if (!ready || pageTurning) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -402,18 +434,19 @@ function finalizeStroke(reason = 'pointerup') {
   pointerId = null;
   lastPoint = null;
   lastHandlerArrival = 0;
+  dirty = true;
   scheduleSave();
 }
 
 function handlePointerDown(ev) {
-  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'touch') { startPageSwipe(ev); return; }
   session.totalPointerDown++;
   noteHandlerArrival();
   if (startStroke(ev, 'pointerdown')) ev.preventDefault();
 }
 
 function handlePointerMove(ev) {
-  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'touch') { movePageSwipe(ev); return; }
   noteHandlerArrival();
 
   const penIsDown = ev.pointerType === 'pen' && (ev.pressure > 0 || (ev.buttons & 1) === 1);
@@ -448,7 +481,7 @@ function handlePointerMove(ev) {
 }
 
 function handlePointerUp(ev) {
-  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'touch') { endPageSwipe(ev, false); return; }
   session.totalPointerUp++;
   noteHandlerArrival();
   if (!drawing || ev.pointerId !== pointerId) return;
@@ -457,7 +490,7 @@ function handlePointerUp(ev) {
 }
 
 function handlePointerCancel(ev) {
-  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'touch') { endPageSwipe(ev, true); return; }
   session.totalPointerCancel++;
   noteHandlerArrival();
   if (!drawing || ev.pointerId !== pointerId) return;
@@ -494,6 +527,7 @@ function buildReport() {
     `Max put() call: ${fmt(session.maxStorageCallMs)} ms`,
     `Max transazione storage: ${fmt(session.maxStorageTxMs)} ms`,
     `Tratti iniziati mentre storage busy: ${session.strokesStartedWhileStorageBusy}`,
+    `Cambi giorno completati/annullati: ${session.pageTurns}/${session.pageTurnCancels}`,
     `Lag segnalati: ${lagMarks.length}`,
     '',
     'ULTIMI TRATTI:',
@@ -534,6 +568,7 @@ async function clearCurrentPage() {
   try {
     await openDb();
     await deleteRecord(currentDate);
+    dirty = false;
     statusLabel.textContent = 'pagina vuota';
   } catch (err) {
     statusLabel.textContent = 'errore cancellazione';
@@ -553,6 +588,268 @@ function rafWatchdog(now) {
   requestAnimationFrame(rafWatchdog);
 }
 
+function removePreview() {
+  if (previewPage?.isConnected) previewPage.remove();
+  previewPage = null;
+  paper.style.zIndex = '';
+}
+
+function drawPreviewInk(preview, previewStrokes) {
+  const previewCanvas = preview.querySelector('canvas');
+  const previewHeader = preview.querySelector('.page-header');
+  const pr = preview.getBoundingClientRect();
+  const hr = previewHeader.getBoundingClientRect();
+  const pdpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+  previewCanvas.width = Math.max(1, Math.round(pr.width * pdpr));
+  previewCanvas.height = Math.max(1, Math.round(pr.height * pdpr));
+  previewCanvas.style.width = `${pr.width}px`;
+  previewCanvas.style.height = `${pr.height}px`;
+  const pctx = previewCanvas.getContext('2d', { alpha: true, desynchronized: true });
+  const pTop = Math.max(0, hr.bottom - pr.top);
+  pctx.setTransform(pdpr, 0, 0, pdpr, 0, 0);
+  for (const stroke of previewStrokes) {
+    const points = stroke?.points ?? [];
+    if (!points.length) continue;
+    pctx.save();
+    pctx.beginPath();
+    pctx.rect(0, pTop, pr.width, Math.max(0, pr.height - pTop - FOOTER_PX));
+    pctx.clip();
+    pctx.strokeStyle = stroke.color ?? PEN_COLOR;
+    pctx.fillStyle = stroke.color ?? PEN_COLOR;
+    pctx.globalAlpha = stroke.opacity ?? 1;
+    pctx.lineWidth = stroke.width ?? PEN_WIDTH;
+    pctx.lineCap = 'round';
+    pctx.lineJoin = 'round';
+    const css = (pt) => ({ x: pt.x * pr.width, y: pt.y * pr.height });
+    if (points.length === 1) {
+      const q = css(points[0]);
+      pctx.beginPath();
+      pctx.arc(q.x, q.y, Math.max(.7, (stroke.width ?? PEN_WIDTH) / 2), 0, Math.PI * 2);
+      pctx.fill();
+    } else {
+      let q = css(points[0]);
+      pctx.beginPath();
+      pctx.moveTo(q.x, q.y);
+      for (let i = 1; i < points.length; i++) {
+        q = css(points[i]);
+        pctx.lineTo(q.x, q.y);
+      }
+      pctx.stroke();
+    }
+    pctx.restore();
+  }
+}
+
+function createPreview(targetDate) {
+  removePreview();
+  const clone = paper.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.classList.add('page-preview');
+  clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+  clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
+  setHeaderFor(clone, targetDate);
+  const footer = clone.querySelector('.baseline-footer');
+  if (footer) footer.innerHTML = `<span class="baseline-label">AGENDA · ANTEPRIMA</span><span class="status-label">${targetDate}</span>`;
+  const r = paper.getBoundingClientRect();
+  Object.assign(clone.style, {
+    position: 'fixed',
+    left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`,
+    margin: '0', zIndex: '1', pointerEvents: 'none'
+  });
+  paper.style.zIndex = '2';
+  stage.appendChild(clone);
+  previewPage = clone;
+  return clone;
+}
+
+async function loadPageForPreview(targetDate, preview) {
+  try {
+    await openDb();
+    const record = await getRecord(targetDate);
+    session.storageReads++;
+    const targetStrokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    if (preview?.isConnected) drawPreviewInk(preview, targetStrokes);
+    return targetStrokes;
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Anteprima pagina non disponibile', err);
+    return [];
+  }
+}
+
+function resetTurnStyles() {
+  paper.style.transition = '';
+  paper.style.transform = '';
+  paper.style.transformOrigin = '';
+  paper.style.filter = '';
+  paper.style.boxShadow = '';
+  if (previewPage) {
+    previewPage.style.transition = '';
+    previewPage.style.transform = '';
+    previewPage.style.filter = '';
+  }
+}
+
+function applySwipeVisual(dx) {
+  if (!pageSwipe?.locked || !previewPage) return;
+  const width = pageSwipe.width;
+  const direction = pageSwipe.direction; // +1 = giorno successivo (swipe a sinistra), -1 = precedente
+  const signed = direction === 1 ? Math.min(0, dx) : Math.max(0, dx);
+  const progress = Math.min(1, Math.abs(signed) / width);
+  const angle = (direction === 1 ? -1 : 1) * 13 * progress;
+  paper.style.transition = 'none';
+  paper.style.transformOrigin = direction === 1 ? '0% 50%' : '100% 50%';
+  paper.style.transform = `perspective(1500px) translateX(${signed * 0.94}px) rotateY(${angle}deg)`;
+  paper.style.filter = `brightness(${1 - progress * 0.055})`;
+  paper.style.boxShadow = `${direction === 1 ? 18 : -18}px 10px ${28 + progress * 18}px rgba(42,34,24,${0.16 + progress * .18})`;
+  previewPage.style.transition = 'none';
+  previewPage.style.transform = `translateX(${direction * 18 * (1 - progress)}px) scale(${0.992 + progress * .008})`;
+  previewPage.style.filter = `brightness(${0.96 + progress * .04})`;
+}
+
+function startPageSwipe(ev) {
+  if (!ready || drawing || pageTurning || reportPanel.hidden === false) return;
+  if (ev.target.closest?.('button')) return;
+  if (!paper.contains(ev.target)) return;
+  cancelPendingSave();
+  const r = paper.getBoundingClientRect();
+  pageSwipe = {
+    pointerId: ev.pointerId,
+    startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY,
+    startedAt: performance.now(), lastAt: performance.now(), width: r.width,
+    locked: false, direction: 0, targetDate: '', targetStrokes: null, previewPromise: null
+  };
+}
+
+function movePageSwipe(ev) {
+  if (!pageSwipe || ev.pointerId !== pageSwipe.pointerId || pageTurning) return;
+  const dx = ev.clientX - pageSwipe.startX;
+  const dy = ev.clientY - pageSwipe.startY;
+  pageSwipe.lastX = ev.clientX;
+  pageSwipe.lastY = ev.clientY;
+  pageSwipe.lastAt = performance.now();
+
+  if (!pageSwipe.locked) {
+    if (Math.hypot(dx, dy) < 10) return;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.12) {
+      pageSwipe = null;
+      if (dirty) scheduleSave();
+      return;
+    }
+    const direction = dx < 0 ? 1 : -1;
+    const targetDate = addDays(currentDate, direction);
+    if (!dateInRange(targetDate)) {
+      pageSwipe = null;
+      if (dirty) scheduleSave();
+      return;
+    }
+    pageSwipe.locked = true;
+    pageSwipe.direction = direction;
+    pageSwipe.targetDate = targetDate;
+    const preview = createPreview(targetDate);
+    preview.style.transform = `translateX(${direction * 18}px) scale(.992)`;
+    preview.style.filter = 'brightness(.96)';
+    pageSwipe.previewPromise = loadPageForPreview(targetDate, preview).then((targetStrokes) => {
+      if (pageSwipe?.targetDate === targetDate) pageSwipe.targetStrokes = targetStrokes;
+      return targetStrokes;
+    });
+    statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
+  }
+
+  applySwipeVisual(dx);
+  ev.preventDefault();
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function cancelPageTurn() {
+  if (!pageSwipe) return;
+  session.pageTurnCancels++;
+  pageTurning = true;
+  paper.style.transition = `transform 220ms cubic-bezier(.22,.7,.22,1), filter 220ms ease, box-shadow 220ms ease`;
+  paper.style.transform = 'perspective(1500px) translateX(0) rotateY(0deg)';
+  paper.style.filter = 'brightness(1)';
+  paper.style.boxShadow = '';
+  if (previewPage) {
+    previewPage.style.transition = 'transform 220ms cubic-bezier(.22,.7,.22,1), filter 220ms ease';
+    previewPage.style.transform = `translateX(${pageSwipe.direction * 18}px) scale(.992)`;
+    previewPage.style.filter = 'brightness(.96)';
+  }
+  await waitMs(230);
+  resetTurnStyles();
+  removePreview();
+  pageSwipe = null;
+  pageTurning = false;
+  statusLabel.textContent = dirty ? 'da salvare' : 'salvato';
+  if (dirty) scheduleSave();
+}
+
+async function commitPageTurn() {
+  if (!pageSwipe?.locked || pageTurning) return;
+  const swipe = pageSwipe;
+  pageTurning = true;
+  cancelPendingSave();
+  const oldDate = currentDate;
+  const oldStrokes = strokes;
+  const targetDate = swipe.targetDate;
+  const targetPromise = swipe.previewPromise ?? Promise.resolve([]);
+  const savePromise = dirty ? persistSnapshot(oldDate, oldStrokes, false) : Promise.resolve(true);
+
+  const finalX = swipe.direction === 1 ? -swipe.width * 1.02 : swipe.width * 1.02;
+  const finalAngle = swipe.direction === 1 ? -18 : 18;
+  paper.style.transition = `transform ${PAGE_TURN_MS}ms cubic-bezier(.2,.72,.18,1), filter ${PAGE_TURN_MS}ms ease, box-shadow ${PAGE_TURN_MS}ms ease`;
+  paper.style.transform = `perspective(1500px) translateX(${finalX}px) rotateY(${finalAngle}deg)`;
+  paper.style.filter = 'brightness(.90)';
+  if (previewPage) {
+    previewPage.style.transition = `transform ${PAGE_TURN_MS}ms cubic-bezier(.2,.72,.18,1), filter ${PAGE_TURN_MS}ms ease`;
+    previewPage.style.transform = 'translateX(0) scale(1)';
+    previewPage.style.filter = 'brightness(1)';
+  }
+
+  const [targetStrokes, , saveOk] = await Promise.all([targetPromise, waitMs(PAGE_TURN_MS + 20), savePromise]);
+  if (dirty && !saveOk) {
+    resetTurnStyles();
+    removePreview();
+    pageSwipe = null;
+    pageTurning = false;
+    statusLabel.textContent = 'salvataggio non riuscito';
+    scheduleSave();
+    return;
+  }
+  currentDate = targetDate;
+  strokes = Array.isArray(targetStrokes) ? targetStrokes : [];
+  dirty = false;
+  updateHeader();
+
+  paper.style.visibility = 'hidden';
+  resetTurnStyles();
+  renderAll();
+  paper.style.visibility = 'visible';
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  removePreview();
+  pageSwipe = null;
+  pageTurning = false;
+  session.pageTurns++;
+  statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
+}
+
+function endPageSwipe(ev, cancelled = false) {
+  if (!pageSwipe || ev.pointerId !== pageSwipe.pointerId || pageTurning) return;
+  if (!pageSwipe.locked) {
+    pageSwipe = null;
+    if (dirty) scheduleSave();
+    return;
+  }
+  const dx = pageSwipe.lastX - pageSwipe.startX;
+  const elapsed = Math.max(1, pageSwipe.lastAt - pageSwipe.startedAt);
+  const velocity = Math.abs(dx) / elapsed;
+  const commit = !cancelled && (Math.abs(dx) >= pageSwipe.width * .18 || velocity >= .58);
+  if (commit) commitPageTurn();
+  else cancelPageTurn();
+}
+
 window.addEventListener('pointerdown', handlePointerDown, { passive: false, capture: true });
 window.addEventListener('pointermove', handlePointerMove, { passive: false, capture: true });
 window.addEventListener('pointerup', handlePointerUp, { passive: false, capture: true });
@@ -570,7 +867,9 @@ closeReportButton.addEventListener('click', () => { reportPanel.hidden = true; }
 clearPageButton.addEventListener('click', clearCurrentPage);
 
 window.addEventListener('resize', () => {
-  if (drawing) return;
+  if (drawing || pageTurning) return;
+  removePreview();
+  pageSwipe = null;
   resizeCanvas();
 });
 
@@ -581,13 +880,14 @@ window.addEventListener('blur', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (drawing) finalizeStroke('visibility-hidden');
-    if (ready) persistNow();
+    if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
+    if (ready && dirty) persistNow();
   }
 });
 
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
-  if (ready) persistNow();
+  if (ready && dirty) persistNow();
 });
 
 async function loadToday() {
@@ -597,6 +897,7 @@ async function loadToday() {
     const record = await getRecord(currentDate);
     session.storageReads++;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    dirty = false;
     renderAll();
     statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
   } catch (err) {
@@ -620,4 +921,4 @@ async function boot() {
 }
 
 boot();
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 1 · Coalesced + Retina + storage differito`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 2 · Ink baseline + sfoglio giorni`);

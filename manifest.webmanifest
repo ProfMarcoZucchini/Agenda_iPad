@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.10 - reintegrazione controllata pagina giornaliera e Ink",
+  "description": "Agenda iPad 0.1.11 - reintegrazione controllata Ink e sfoglio giorni",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
