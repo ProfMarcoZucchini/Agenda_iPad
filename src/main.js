@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.11';
+const APP_VERSION = '0.1.12';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -9,6 +9,8 @@ const FOOTER_PX = 46;
 const MIN_DATE = '2026-01-01';
 const MAX_DATE = '2028-12-31';
 const PAGE_TURN_MS = 280;
+const NOTE_TURN_MS = 260;
+const NOTES_META_SUFFIX = '::notes-meta';
 
 const stage = document.querySelector('.stage');
 const paper = document.getElementById('paper');
@@ -23,9 +25,14 @@ const copyReportButton = document.getElementById('copyReportButton');
 const closeReportButton = document.getElementById('closeReportButton');
 const markLagButton = document.getElementById('markLagButton');
 const clearPageButton = document.getElementById('clearPageButton');
+const baselineLabel = document.querySelector('.baseline-label');
 
 let db = null;
 let currentDate = localISODate(new Date());
+let currentPageKind = 'agenda';
+let currentNoteIndex = 0;
+let currentNoteTotal = 0;
+const notesCountCache = new Map();
 let strokes = [];
 let drawing = false;
 let pointerId = null;
@@ -69,7 +76,9 @@ const session = {
   handlerGapsOver34: 0,
   maxHandlerGapMs: 0,
   pageTurns: 0,
-  pageTurnCancels: 0
+  pageTurnCancels: 0,
+  noteTurns: 0,
+  notesCreated: 0
 };
 
 function localISODate(date) {
@@ -81,7 +90,7 @@ function makeId() {
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function setHeaderFor(root, dateString) {
+function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0) {
   const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
   const monthName = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
@@ -89,10 +98,48 @@ function setHeaderFor(root, dateString) {
   root.querySelector('.day-name').textContent = dayName;
   root.querySelector('.month-name').textContent = monthName;
   root.querySelector('.year-label').textContent = String(d.getFullYear());
+  const kindLabel = root.querySelector('.page-kind-label');
+  const noteCounter = root.querySelector('.note-counter');
+  const hours = root.querySelector('.hours');
+  if (kindLabel) kindLabel.textContent = pageKind === 'note' ? 'NOTE DEL GIORNO' : '';
+  if (noteCounter) noteCounter.textContent = pageKind === 'note' ? `${noteIndex}/${Math.max(noteIndex, noteTotal)}` : '';
+  if (hours) hours.hidden = pageKind === 'note';
 }
 
 function updateHeader() {
-  setHeaderFor(document, currentDate);
+  setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
+  if (baselineLabel) {
+    baselineLabel.textContent = currentPageKind === 'note'
+      ? `NOTE DEL GIORNO ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
+      : 'AGENDA · INK + PAGE TURN + NOTE';
+  }
+}
+
+function notesMetaKey(dateString) {
+  return `${dateString}${NOTES_META_SUFFIX}`;
+}
+
+function noteKey(dateString, noteIndex) {
+  return `${dateString}::note::${String(noteIndex).padStart(4, '0')}`;
+}
+
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0) {
+  return pageKind === 'note' ? noteKey(dateString, noteIndex) : dateString;
+}
+
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal) {
+  return {
+    date: dateString,
+    kind: pageKind,
+    noteIndex: pageKind === 'note' ? noteIndex : 0,
+    noteTotal: pageKind === 'note' ? noteTotal : 0,
+    key: pageKey(dateString, pageKind, noteIndex),
+    createNote: false
+  };
+}
+
+function currentPageKey() {
+  return pageKey(currentDate, currentPageKind, currentNoteIndex);
 }
 
 function addDays(dateString, delta) {
@@ -144,6 +191,44 @@ function deleteRecord(date) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+async function ensureNotesCount(dateString) {
+  if (notesCountCache.has(dateString)) return notesCountCache.get(dateString);
+  try {
+    await openDb();
+    const record = await getRecord(notesMetaKey(dateString));
+    session.storageReads++;
+    const count = Math.max(0, Number(record?.count) || 0);
+    notesCountCache.set(dateString, count);
+    return count;
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Conteggio Note del giorno non disponibile', err);
+    notesCountCache.set(dateString, 0);
+    return 0;
+  }
+}
+
+async function persistNotesCount(dateString, count) {
+  try {
+    await openDb();
+    await putRecord({
+      date: notesMetaKey(dateString),
+      kind: 'day-notes-meta',
+      referenceDate: dateString,
+      count,
+      version: APP_VERSION,
+      modifiedAt: new Date().toISOString()
+    });
+    session.storageWrites++;
+    notesCountCache.set(dateString, count);
+    return true;
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Salvataggio conteggio Note del giorno non riuscito', err);
+    return false;
+  }
 }
 
 function setupStrokeStyle(stroke) {
@@ -318,15 +403,17 @@ function cancelPendingSave() {
   idleHandle = 0;
 }
 
-async function persistSnapshot(dateString, pageStrokes, updateStatus = true) {
+async function persistSnapshot(descriptor, pageStrokes, updateStatus = true) {
   try {
     await openDb();
     const txStart = performance.now();
     storageBusy = true;
     const putStart = performance.now();
     const promise = putRecord({
-      date: dateString,
-      kind: 'agenda-day-ink',
+      date: descriptor.key,
+      kind: descriptor.kind === 'note' ? 'day-note-ink' : 'agenda-day-ink',
+      referenceDate: descriptor.date,
+      noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage',
       strokes: pageStrokes,
@@ -351,10 +438,11 @@ async function persistSnapshot(dateString, pageStrokes, updateStatus = true) {
 
 async function persistNow() {
   if (!ready || drawing || pageTurning) return;
-  const saveDate = currentDate;
+  const descriptor = pageDescriptor();
+  const saveKey = descriptor.key;
   const snapshot = strokes;
-  const ok = await persistSnapshot(saveDate, snapshot, true);
-  if (ok && currentDate === saveDate && strokes === snapshot) dirty = false;
+  const ok = await persistSnapshot(descriptor, snapshot, true);
+  if (ok && currentPageKey() === saveKey && strokes === snapshot) dirty = false;
 }
 
 function scheduleSave() {
@@ -512,6 +600,8 @@ function buildReport() {
   return [
     `Agenda iPad REINTEGRATION v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
+    `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : 'Agenda'}`,
+    `Chiave pagina: ${currentPageKey()}`,
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
     `DPR canvas: ${fmt(dpr, 2)}`,
@@ -528,6 +618,8 @@ function buildReport() {
     `Max transazione storage: ${fmt(session.maxStorageTxMs)} ms`,
     `Tratti iniziati mentre storage busy: ${session.strokesStartedWhileStorageBusy}`,
     `Cambi giorno completati/annullati: ${session.pageTurns}/${session.pageTurnCancels}`,
+    `Cambi note completati: ${session.noteTurns}`,
+    `Note create: ${session.notesCreated}`,
     `Lag segnalati: ${lagMarks.length}`,
     '',
     'ULTIMI TRATTI:',
@@ -561,13 +653,14 @@ async function copyReport() {
 
 async function clearCurrentPage() {
   if (drawing || !ready) return;
-  if (!window.confirm('Cancellare soltanto la pagina di test di oggi?')) return;
+  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : 'pagina Agenda';
+  if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
   cancelPendingSave();
   strokes = [];
   renderAll();
   try {
     await openDb();
-    await deleteRecord(currentDate);
+    await deleteRecord(currentPageKey());
     dirty = false;
     statusLabel.textContent = 'pagina vuota';
   } catch (err) {
@@ -640,16 +733,22 @@ function drawPreviewInk(preview, previewStrokes) {
   }
 }
 
-function createPreview(targetDate) {
+function footerTextFor(descriptor) {
+  return descriptor.kind === 'note'
+    ? `NOTE DEL GIORNO ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`
+    : 'AGENDA · ANTEPRIMA';
+}
+
+function createPreview(descriptor) {
   removePreview();
   const clone = paper.cloneNode(true);
   clone.removeAttribute('id');
   clone.classList.add('page-preview');
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
   clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
-  setHeaderFor(clone, targetDate);
+  setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
   const footer = clone.querySelector('.baseline-footer');
-  if (footer) footer.innerHTML = `<span class="baseline-label">AGENDA · ANTEPRIMA</span><span class="status-label">${targetDate}</span>`;
+  if (footer) footer.innerHTML = `<span class="baseline-label">${footerTextFor(descriptor)}</span><span class="status-label">${descriptor.date}</span>`;
   const r = paper.getBoundingClientRect();
   Object.assign(clone.style, {
     position: 'fixed',
@@ -662,10 +761,10 @@ function createPreview(targetDate) {
   return clone;
 }
 
-async function loadPageForPreview(targetDate, preview) {
+async function loadPageForPreview(descriptor, preview) {
   try {
     await openDb();
-    const record = await getRecord(targetDate);
+    const record = await getRecord(descriptor.key);
     session.storageReads++;
     const targetStrokes = Array.isArray(record?.strokes) ? record.strokes : [];
     if (preview?.isConnected) drawPreviewInk(preview, targetStrokes);
@@ -690,21 +789,60 @@ function resetTurnStyles() {
   }
 }
 
-function applySwipeVisual(dx) {
+function horizontalTarget(direction) {
+  const targetDate = addDays(currentDate, direction);
+  if (!dateInRange(targetDate)) return null;
+  return pageDescriptor(targetDate, 'agenda', 0, 0);
+}
+
+function verticalTarget(direction) {
+  const count = notesCountCache.get(currentDate) ?? currentNoteTotal ?? 0;
+  if (direction < 0) {
+    if (currentPageKind === 'agenda') return null;
+    if (currentNoteIndex <= 1) return pageDescriptor(currentDate, 'agenda', 0, 0);
+    return pageDescriptor(currentDate, 'note', currentNoteIndex - 1, Math.max(count, currentNoteTotal));
+  }
+
+  const nextIndex = currentPageKind === 'agenda' ? 1 : currentNoteIndex + 1;
+  const createNote = nextIndex > count;
+  const total = createNote ? nextIndex : Math.max(count, currentNoteTotal);
+  const target = pageDescriptor(currentDate, 'note', nextIndex, total);
+  target.createNote = createNote;
+  return target;
+}
+
+function applySwipeVisual(dx, dy) {
   if (!pageSwipe?.locked || !previewPage) return;
-  const width = pageSwipe.width;
-  const direction = pageSwipe.direction; // +1 = giorno successivo (swipe a sinistra), -1 = precedente
-  const signed = direction === 1 ? Math.min(0, dx) : Math.max(0, dx);
-  const progress = Math.min(1, Math.abs(signed) / width);
-  const angle = (direction === 1 ? -1 : 1) * 13 * progress;
+  if (pageSwipe.axis === 'x') {
+    const width = pageSwipe.width;
+    const direction = pageSwipe.direction;
+    const signed = direction === 1 ? Math.min(0, dx) : Math.max(0, dx);
+    const progress = Math.min(1, Math.abs(signed) / width);
+    const angle = (direction === 1 ? -1 : 1) * 13 * progress;
+    paper.style.transition = 'none';
+    paper.style.transformOrigin = direction === 1 ? '0% 50%' : '100% 50%';
+    paper.style.transform = `perspective(1500px) translateX(${signed * 0.94}px) rotateY(${angle}deg)`;
+    paper.style.filter = `brightness(${1 - progress * 0.055})`;
+    paper.style.boxShadow = `${direction === 1 ? 18 : -18}px 10px ${28 + progress * 18}px rgba(42,34,24,${0.16 + progress * .18})`;
+    previewPage.style.transition = 'none';
+    previewPage.style.transform = `translateX(${direction * 18 * (1 - progress)}px) scale(${0.992 + progress * .008})`;
+    previewPage.style.filter = `brightness(${0.96 + progress * .04})`;
+    return;
+  }
+
+  const height = pageSwipe.height;
+  const direction = pageSwipe.direction; // +1 = nota successiva (swipe su), -1 = pagina precedente (swipe giù)
+  const signed = direction === 1 ? Math.min(0, dy) : Math.max(0, dy);
+  const progress = Math.min(1, Math.abs(signed) / height);
+  const angle = (direction === 1 ? 1 : -1) * 7 * progress;
   paper.style.transition = 'none';
-  paper.style.transformOrigin = direction === 1 ? '0% 50%' : '100% 50%';
-  paper.style.transform = `perspective(1500px) translateX(${signed * 0.94}px) rotateY(${angle}deg)`;
-  paper.style.filter = `brightness(${1 - progress * 0.055})`;
-  paper.style.boxShadow = `${direction === 1 ? 18 : -18}px 10px ${28 + progress * 18}px rgba(42,34,24,${0.16 + progress * .18})`;
+  paper.style.transformOrigin = direction === 1 ? '50% 0%' : '50% 100%';
+  paper.style.transform = `perspective(1600px) translateY(${signed * 0.96}px) rotateX(${angle}deg)`;
+  paper.style.filter = `brightness(${1 - progress * 0.045})`;
+  paper.style.boxShadow = `0 ${direction === 1 ? 18 : -18}px ${28 + progress * 16}px rgba(42,34,24,${0.14 + progress * .16})`;
   previewPage.style.transition = 'none';
-  previewPage.style.transform = `translateX(${direction * 18 * (1 - progress)}px) scale(${0.992 + progress * .008})`;
-  previewPage.style.filter = `brightness(${0.96 + progress * .04})`;
+  previewPage.style.transform = `translateY(${direction * 16 * (1 - progress)}px) scale(${0.993 + progress * .007})`;
+  previewPage.style.filter = `brightness(${0.965 + progress * .035})`;
 }
 
 function startPageSwipe(ev) {
@@ -716,8 +854,8 @@ function startPageSwipe(ev) {
   pageSwipe = {
     pointerId: ev.pointerId,
     startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY,
-    startedAt: performance.now(), lastAt: performance.now(), width: r.width,
-    locked: false, direction: 0, targetDate: '', targetStrokes: null, previewPromise: null
+    startedAt: performance.now(), lastAt: performance.now(), width: r.width, height: r.height,
+    locked: false, axis: '', direction: 0, target: null, targetStrokes: null, previewPromise: null
   };
 }
 
@@ -731,32 +869,51 @@ function movePageSwipe(ev) {
 
   if (!pageSwipe.locked) {
     if (Math.hypot(dx, dy) < 10) return;
-    if (Math.abs(dx) <= Math.abs(dy) * 1.12) {
+    const ax = Math.abs(dx);
+    const ay = Math.abs(dy);
+    if (ax < ay * .9 && ay < ax * 1.12) return;
+
+    let axis = '';
+    let direction = 0;
+    let target = null;
+    if (ax > ay * 1.12) {
+      axis = 'x';
+      direction = dx < 0 ? 1 : -1;
+      target = horizontalTarget(direction);
+    } else if (ay > ax * 1.12) {
+      axis = 'y';
+      direction = dy < 0 ? 1 : -1;
+      target = verticalTarget(direction);
+    } else {
+      return;
+    }
+
+    if (!target) {
       pageSwipe = null;
       if (dirty) scheduleSave();
       return;
     }
-    const direction = dx < 0 ? 1 : -1;
-    const targetDate = addDays(currentDate, direction);
-    if (!dateInRange(targetDate)) {
-      pageSwipe = null;
-      if (dirty) scheduleSave();
-      return;
-    }
+
     pageSwipe.locked = true;
+    pageSwipe.axis = axis;
     pageSwipe.direction = direction;
-    pageSwipe.targetDate = targetDate;
-    const preview = createPreview(targetDate);
-    preview.style.transform = `translateX(${direction * 18}px) scale(.992)`;
+    pageSwipe.target = target;
+    const preview = createPreview(target);
+    if (axis === 'x') {
+      preview.style.transform = `translateX(${direction * 18}px) scale(.992)`;
+    } else {
+      preview.style.transform = `translateY(${direction * 16}px) scale(.993)`;
+    }
     preview.style.filter = 'brightness(.96)';
-    pageSwipe.previewPromise = loadPageForPreview(targetDate, preview).then((targetStrokes) => {
-      if (pageSwipe?.targetDate === targetDate) pageSwipe.targetStrokes = targetStrokes;
+    pageSwipe.previewPromise = loadPageForPreview(target, preview).then((targetStrokes) => {
+      if (pageSwipe?.target?.key === target.key) pageSwipe.targetStrokes = targetStrokes;
       return targetStrokes;
     });
-    statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
+    if (axis === 'x') statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
+    else statusLabel.textContent = target.kind === 'agenda' ? 'torna ad Agenda' : `Nota ${target.noteIndex}/${target.noteTotal}`;
   }
 
-  applySwipeVisual(dx);
+  applySwipeVisual(dx, dy);
   ev.preventDefault();
 }
 
@@ -768,16 +925,18 @@ async function cancelPageTurn() {
   if (!pageSwipe) return;
   session.pageTurnCancels++;
   pageTurning = true;
-  paper.style.transition = `transform 220ms cubic-bezier(.22,.7,.22,1), filter 220ms ease, box-shadow 220ms ease`;
-  paper.style.transform = 'perspective(1500px) translateX(0) rotateY(0deg)';
+  const duration = pageSwipe.axis === 'y' ? 200 : 220;
+  paper.style.transition = `transform ${duration}ms cubic-bezier(.22,.7,.22,1), filter ${duration}ms ease, box-shadow ${duration}ms ease`;
+  paper.style.transform = 'perspective(1500px) translate3d(0,0,0) rotateX(0deg) rotateY(0deg)';
   paper.style.filter = 'brightness(1)';
   paper.style.boxShadow = '';
   if (previewPage) {
-    previewPage.style.transition = 'transform 220ms cubic-bezier(.22,.7,.22,1), filter 220ms ease';
-    previewPage.style.transform = `translateX(${pageSwipe.direction * 18}px) scale(.992)`;
+    previewPage.style.transition = `transform ${duration}ms cubic-bezier(.22,.7,.22,1), filter ${duration}ms ease`;
+    if (pageSwipe.axis === 'x') previewPage.style.transform = `translateX(${pageSwipe.direction * 18}px) scale(.992)`;
+    else previewPage.style.transform = `translateY(${pageSwipe.direction * 16}px) scale(.993)`;
     previewPage.style.filter = 'brightness(.96)';
   }
-  await waitMs(230);
+  await waitMs(duration + 10);
   resetTurnStyles();
   removePreview();
   pageSwipe = null;
@@ -791,36 +950,52 @@ async function commitPageTurn() {
   const swipe = pageSwipe;
   pageTurning = true;
   cancelPendingSave();
-  const oldDate = currentDate;
+  const oldDescriptor = pageDescriptor();
   const oldStrokes = strokes;
-  const targetDate = swipe.targetDate;
+  const target = swipe.target;
   const targetPromise = swipe.previewPromise ?? Promise.resolve([]);
-  const savePromise = dirty ? persistSnapshot(oldDate, oldStrokes, false) : Promise.resolve(true);
+  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false) : Promise.resolve(true);
+  const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
+  const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
 
-  const finalX = swipe.direction === 1 ? -swipe.width * 1.02 : swipe.width * 1.02;
-  const finalAngle = swipe.direction === 1 ? -18 : 18;
-  paper.style.transition = `transform ${PAGE_TURN_MS}ms cubic-bezier(.2,.72,.18,1), filter ${PAGE_TURN_MS}ms ease, box-shadow ${PAGE_TURN_MS}ms ease`;
-  paper.style.transform = `perspective(1500px) translateX(${finalX}px) rotateY(${finalAngle}deg)`;
-  paper.style.filter = 'brightness(.90)';
+  if (swipe.axis === 'x') {
+    const finalX = swipe.direction === 1 ? -swipe.width * 1.02 : swipe.width * 1.02;
+    const finalAngle = swipe.direction === 1 ? -18 : 18;
+    paper.style.transition = `transform ${duration}ms cubic-bezier(.2,.72,.18,1), filter ${duration}ms ease, box-shadow ${duration}ms ease`;
+    paper.style.transform = `perspective(1500px) translateX(${finalX}px) rotateY(${finalAngle}deg)`;
+  } else {
+    const finalY = swipe.direction === 1 ? -swipe.height * 1.02 : swipe.height * 1.02;
+    const finalAngle = swipe.direction === 1 ? 9 : -9;
+    paper.style.transition = `transform ${duration}ms cubic-bezier(.2,.72,.18,1), filter ${duration}ms ease, box-shadow ${duration}ms ease`;
+    paper.style.transform = `perspective(1600px) translateY(${finalY}px) rotateX(${finalAngle}deg)`;
+  }
+  paper.style.filter = 'brightness(.91)';
   if (previewPage) {
-    previewPage.style.transition = `transform ${PAGE_TURN_MS}ms cubic-bezier(.2,.72,.18,1), filter ${PAGE_TURN_MS}ms ease`;
-    previewPage.style.transform = 'translateX(0) scale(1)';
+    previewPage.style.transition = `transform ${duration}ms cubic-bezier(.2,.72,.18,1), filter ${duration}ms ease`;
+    previewPage.style.transform = swipe.axis === 'x' ? 'translateX(0) scale(1)' : 'translateY(0) scale(1)';
     previewPage.style.filter = 'brightness(1)';
   }
 
-  const [targetStrokes, , saveOk] = await Promise.all([targetPromise, waitMs(PAGE_TURN_MS + 20), savePromise]);
-  if (dirty && !saveOk) {
+  const [targetStrokes, , saveOk, metaOk] = await Promise.all([
+    targetPromise, waitMs(duration + 20), savePromise, metaPromise
+  ]);
+  if ((dirty && !saveOk) || !metaOk) {
     resetTurnStyles();
     removePreview();
     pageSwipe = null;
     pageTurning = false;
-    statusLabel.textContent = 'salvataggio non riuscito';
-    scheduleSave();
+    statusLabel.textContent = !metaOk ? 'creazione nota non riuscita' : 'salvataggio non riuscito';
+    if (dirty) scheduleSave();
     return;
   }
-  currentDate = targetDate;
+
+  currentDate = target.date;
+  currentPageKind = target.kind;
+  currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
+  currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetStrokes) ? targetStrokes : [];
   dirty = false;
+  if (target.createNote) session.notesCreated++;
   updateHeader();
 
   paper.style.visibility = 'hidden';
@@ -830,9 +1005,14 @@ async function commitPageTurn() {
   await new Promise((resolve) => requestAnimationFrame(resolve));
   removePreview();
   pageSwipe = null;
+  if (swipe.axis === 'x') {
+    session.pageTurns++;
+    await ensureNotesCount(currentDate);
+  } else {
+    session.noteTurns++;
+  }
   pageTurning = false;
-  session.pageTurns++;
-  statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
+  statusLabel.textContent = strokes.length ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : 'pagina nuova');
 }
 
 function endPageSwipe(ev, cancelled = false) {
@@ -842,10 +1022,15 @@ function endPageSwipe(ev, cancelled = false) {
     if (dirty) scheduleSave();
     return;
   }
-  const dx = pageSwipe.lastX - pageSwipe.startX;
+  const delta = pageSwipe.axis === 'x'
+    ? pageSwipe.lastX - pageSwipe.startX
+    : pageSwipe.lastY - pageSwipe.startY;
+  const span = pageSwipe.axis === 'x' ? pageSwipe.width : pageSwipe.height;
   const elapsed = Math.max(1, pageSwipe.lastAt - pageSwipe.startedAt);
-  const velocity = Math.abs(dx) / elapsed;
-  const commit = !cancelled && (Math.abs(dx) >= pageSwipe.width * .18 || velocity >= .58);
+  const velocity = Math.abs(delta) / elapsed;
+  const threshold = pageSwipe.axis === 'x' ? .18 : .14;
+  const velocityThreshold = pageSwipe.axis === 'x' ? .58 : .52;
+  const commit = !cancelled && (Math.abs(delta) >= span * threshold || velocity >= velocityThreshold);
   if (commit) commitPageTurn();
   else cancelPageTurn();
 }
@@ -890,11 +1075,14 @@ window.addEventListener('pagehide', () => {
   if (ready && dirty) persistNow();
 });
 
-async function loadToday() {
+async function loadInitialPage() {
   statusLabel.textContent = 'caricamento';
   try {
     await openDb();
-    const record = await getRecord(currentDate);
+    const [record] = await Promise.all([
+      getRecord(currentPageKey()),
+      ensureNotesCount(currentDate)
+    ]);
     session.storageReads++;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
     dirty = false;
@@ -913,7 +1101,7 @@ async function boot() {
   updateHeader();
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
-  await loadToday();
+  await loadInitialPage();
   ready = true;
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -921,4 +1109,4 @@ async function boot() {
 }
 
 boot();
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 2 · Ink baseline + sfoglio giorni`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 3 · Ink baseline + sfoglio giorni + Note del giorno`);

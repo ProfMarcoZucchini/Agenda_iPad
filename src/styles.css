@@ -58,3 +58,16 @@ button { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .paper, .page-preview { transition-duration: 120ms !important; }
 }
+
+
+/* 0.1.12 — Note del giorno: sequenza verticale Agenda → Note */
+.page-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; min-width: 118px; }
+.page-kind-label { min-height: 15px; margin-top: 2px; color: rgba(95,71,48,.78); font-size: clamp(10px,1.35vw,14px); font-weight: 800; letter-spacing: .13em; }
+.note-counter { min-height: 23px; color: #6f5d49; font-family: Georgia, "Times New Roman", serif; font-size: clamp(18px,2.2vw,27px); font-weight: 700; letter-spacing: .03em; }
+.hours[hidden] { display: none !important; }
+.page-preview { will-change: transform, filter; }
+@media (max-width: 760px) {
+  .page-meta { min-width: 86px; gap: 4px; }
+  .page-kind-label { font-size: 9px; letter-spacing: .095em; }
+  .note-counter { font-size: 18px; }
+}

@@ -9,10 +9,10 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.11</title>
+  <title>Agenda iPad · 0.1.12</title>
 </head>
 <body>
-  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · sfoglio giorni">
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Note del giorno">
     <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
@@ -20,9 +20,13 @@
           <div class="day-text">
             <div id="dayName" class="day-name">MERCOLEDÌ</div>
             <div id="monthName" class="month-name">agosto</div>
+            <div class="page-kind-label"></div>
           </div>
         </div>
-        <div id="yearLabel" class="year-label">2026</div>
+        <div class="page-meta">
+          <div id="yearLabel" class="year-label">2026</div>
+          <div class="note-counter"></div>
+        </div>
       </header>
 
       <div class="hours" aria-hidden="true">
@@ -34,17 +38,17 @@
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
       <footer class="baseline-footer">
-        <span class="baseline-label">AGENDA · INK + PAGE TURN</span>
+        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.11</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.12</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.11</h2>
+      <h2>Diagnostica Pencil 0.1.12</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
