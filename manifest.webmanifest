@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.28 - Planner e Agenda con Ink stabile, backup portabile e calendario navigabile",
+  "description": "Agenda iPad 0.1.29 - Planner e Agenda con Ink stabile, backup portabile e calendario navigabile",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

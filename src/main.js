@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.28';
+const APP_VERSION = '0.1.29';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -74,6 +74,13 @@ const imageLayer = document.getElementById('imageLayer');
 const imageFileInput = document.getElementById('imageFileInput');
 const imageInspector = document.getElementById('imageInspector');
 const importImageButton = document.getElementById('importImageButton');
+const cropImageButton = document.getElementById('cropImageButton');
+const imageCropOverlay = document.getElementById('imageCropOverlay');
+const imageCropStage = document.getElementById('imageCropStage');
+const imageCropPreview = document.getElementById('imageCropPreview');
+const imageCropSelection = document.getElementById('imageCropSelection');
+const cancelImageCropButton = document.getElementById('cancelImageCropButton');
+const applyImageCropButton = document.getElementById('applyImageCropButton');
 const rotateImageLeftButton = document.getElementById('rotateImageLeftButton');
 const rotateImageRightButton = document.getElementById('rotateImageRightButton');
 const deleteImageButton = document.getElementById('deleteImageButton');
@@ -94,6 +101,8 @@ let images = [];
 let selectedImageId = null;
 let imageGesture = null;
 let imageBusy = false;
+let imageCropEditor = null;
+let imageCropGesture = null;
 let drawing = false;
 let pointerId = null;
 // 0.1.17 — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
@@ -164,6 +173,7 @@ const session = {
   notesCreated: 0,
   imagesImported: 0,
   imageTransforms: 0,
+  imageCrops: 0,
   imagesDeleted: 0
 };
 
@@ -963,7 +973,7 @@ function updateImageInspector() {
   const imageMode = activeTool === 'image';
   imageInspector.hidden = !imageMode;
   const hasSelection = Boolean(selectedImage());
-  for (const button of [rotateImageLeftButton, rotateImageRightButton, deleteImageButton]) {
+  for (const button of [cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton]) {
     if (!button) continue;
     button.disabled = !hasSelection;
     button.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
@@ -1221,6 +1231,219 @@ function deleteSelectedImage() {
   scheduleSave();
 }
 
+
+function cropRectIsFull(rect) {
+  return rect && rect.x <= .0005 && rect.y <= .0005 && rect.w >= .999 && rect.h >= .999;
+}
+
+function renderImageCropSelection() {
+  if (!imageCropSelection || !imageCropEditor) return;
+  const r = imageCropEditor.rect;
+  imageCropSelection.style.left = `${r.x * 100}%`;
+  imageCropSelection.style.top = `${r.y * 100}%`;
+  imageCropSelection.style.width = `${r.w * 100}%`;
+  imageCropSelection.style.height = `${r.h * 100}%`;
+}
+
+function sizeImageCropStage() {
+  if (!imageCropStage || !imageCropPreview || !imageCropEditor) return false;
+  const nw = imageCropPreview.naturalWidth;
+  const nh = imageCropPreview.naturalHeight;
+  if (!nw || !nh) return false;
+  const maxW = Math.max(240, Math.min(980, window.innerWidth * .82));
+  const maxH = Math.max(180, Math.min(680, window.innerHeight * .62));
+  const scale = Math.min(maxW / nw, maxH / nh);
+  imageCropStage.style.width = `${Math.max(1, Math.round(nw * scale))}px`;
+  imageCropStage.style.height = `${Math.max(1, Math.round(nh * scale))}px`;
+  return true;
+}
+
+function closeImageCropEditor(status = '') {
+  imageCropGesture = null;
+  imageCropEditor = null;
+  if (imageCropOverlay) imageCropOverlay.hidden = true;
+  if (imageCropPreview) imageCropPreview.removeAttribute('src');
+  if (status) statusLabel.textContent = status;
+}
+
+async function openImageCropEditor() {
+  if (activeTool !== 'image' || drawing || pageTurning || imageBusy) return;
+  const image = selectedImage();
+  if (!image || !imageCropOverlay || !imageCropPreview || !imageCropStage || !imageCropSelection) return;
+  imageCropEditor = { imageId: image.id, rect: { x: 0, y: 0, w: 1, h: 1 } };
+  imageCropOverlay.hidden = false;
+  imageCropPreview.src = image.src;
+  renderImageCropSelection();
+  try {
+    if (!imageCropPreview.complete || !imageCropPreview.naturalWidth) await imageCropPreview.decode();
+    if (!imageCropEditor || imageCropEditor.imageId !== image.id) return;
+    if (!sizeImageCropStage()) throw new Error('Anteprima immagine non disponibile');
+    renderImageCropSelection();
+    statusLabel.textContent = 'ritaglio immagine';
+  } catch (err) {
+    console.warn('Apertura ritaglio non riuscita', err);
+    closeImageCropEditor('errore ritaglio');
+  }
+}
+
+function cropMinimumFractions(image) {
+  return {
+    w: Math.min(1, Math.max(.055, .055 / Math.max(.055, Number(image?.w) || .055))),
+    h: Math.min(1, Math.max(.055, .055 / Math.max(.055, Number(image?.h) || .055)))
+  };
+}
+
+function beginImageCropGesture(ev) {
+  if (!imageCropEditor || imageBusy || !imageCropSelection || !imageCropStage) return;
+  if (!(ev.target instanceof Element) || !imageCropSelection.contains(ev.target)) return;
+  const image = images.find((candidate) => candidate.id === imageCropEditor.imageId);
+  if (!image) return;
+  const stageRect = imageCropStage.getBoundingClientRect();
+  if (!(stageRect.width > 0 && stageRect.height > 0)) return;
+  const handle = ev.target.closest('[data-crop-handle]')?.dataset.cropHandle || 'move';
+  imageCropGesture = {
+    pointerId: ev.pointerId,
+    action: handle,
+    startX: ev.clientX,
+    startY: ev.clientY,
+    before: { ...imageCropEditor.rect },
+    stageRect,
+    minimum: cropMinimumFractions(image)
+  };
+  try { imageCropSelection.setPointerCapture?.(ev.pointerId); } catch {}
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function moveImageCropGesture(ev) {
+  if (!imageCropGesture || !imageCropEditor || ev.pointerId !== imageCropGesture.pointerId) return;
+  const g = imageCropGesture;
+  const before = g.before;
+  const dx = (ev.clientX - g.startX) / g.stageRect.width;
+  const dy = (ev.clientY - g.startY) / g.stageRect.height;
+  let { x, y, w, h } = before;
+  if (g.action === 'move') {
+    x = Math.min(1 - w, Math.max(0, before.x + dx));
+    y = Math.min(1 - h, Math.max(0, before.y + dy));
+  } else {
+    const right = before.x + before.w;
+    const bottom = before.y + before.h;
+    if (g.action.includes('w')) {
+      const left = Math.min(right - g.minimum.w, Math.max(0, before.x + dx));
+      x = left; w = right - left;
+    }
+    if (g.action.includes('e')) {
+      const newRight = Math.max(before.x + g.minimum.w, Math.min(1, right + dx));
+      x = before.x; w = newRight - before.x;
+    }
+    if (g.action.includes('n')) {
+      const top = Math.min(bottom - g.minimum.h, Math.max(0, before.y + dy));
+      y = top; h = bottom - top;
+    }
+    if (g.action.includes('s')) {
+      const newBottom = Math.max(before.y + g.minimum.h, Math.min(1, bottom + dy));
+      y = before.y; h = newBottom - before.y;
+    }
+  }
+  imageCropEditor.rect = { x, y, w, h };
+  renderImageCropSelection();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function endImageCropGesture(ev) {
+  if (!imageCropGesture || (ev.pointerId != null && ev.pointerId !== imageCropGesture.pointerId)) return;
+  try { imageCropSelection?.releasePointerCapture?.(imageCropGesture.pointerId); } catch {}
+  imageCropGesture = null;
+  ev?.preventDefault?.();
+  ev?.stopPropagation?.();
+}
+
+async function cropPreviewToData(rect, preferredMimeType) {
+  if (!imageCropPreview?.naturalWidth || !imageCropPreview?.naturalHeight) throw new Error('Anteprima non decodificata');
+  const sw = imageCropPreview.naturalWidth;
+  const sh = imageCropPreview.naturalHeight;
+  const sx = Math.max(0, Math.min(sw - 1, Math.round(rect.x * sw)));
+  const sy = Math.max(0, Math.min(sh - 1, Math.round(rect.y * sh)));
+  const cw = Math.max(1, Math.min(sw - sx, Math.round(rect.w * sw)));
+  const ch = Math.max(1, Math.min(sh - sy, Math.round(rect.h * sh)));
+  const work = document.createElement('canvas');
+  work.width = cw;
+  work.height = ch;
+  const wctx = work.getContext('2d', { alpha: true });
+  if (!wctx) throw new Error('Canvas ritaglio non disponibile');
+  wctx.drawImage(imageCropPreview, sx, sy, cw, ch, 0, 0, cw, ch);
+  const toBlob = (type, quality) => new Promise((resolve) => work.toBlob(resolve, type, quality));
+  let blob = await toBlob('image/webp', .86);
+  let mimeType = blob?.type || 'image/webp';
+  if (!blob || !blob.size) {
+    const fallbackType = preferredMimeType === 'image/png' ? 'image/png' : 'image/jpeg';
+    blob = await toBlob(fallbackType, fallbackType === 'image/jpeg' ? .90 : undefined);
+    mimeType = blob?.type || fallbackType;
+  }
+  if (!blob) throw new Error('Esportazione ritaglio non riuscita');
+  return { src: await dataUrlFromBlob(blob), mimeType, width: cw, height: ch };
+}
+
+function applyCropGeometry(image, rect, layerRect) {
+  const old = { x: image.x, y: image.y, w: image.w, h: image.h, rotation: image.rotation || 0 };
+  const newW = old.w * rect.w;
+  const newH = old.h * rect.h;
+  let centerX = old.x + old.w / 2;
+  let centerY = old.y + old.h / 2;
+  if (layerRect?.width > 0 && layerRect?.height > 0) {
+    const localX = (rect.x + rect.w / 2 - .5) * old.w * layerRect.width;
+    const localY = (rect.y + rect.h / 2 - .5) * old.h * layerRect.height;
+    const a = old.rotation * Math.PI / 180;
+    const rotatedX = Math.cos(a) * localX - Math.sin(a) * localY;
+    const rotatedY = Math.sin(a) * localX + Math.cos(a) * localY;
+    centerX += rotatedX / layerRect.width;
+    centerY += rotatedY / layerRect.height;
+  } else {
+    centerX = old.x + (rect.x + rect.w / 2) * old.w;
+    centerY = old.y + (rect.y + rect.h / 2) * old.h;
+  }
+  image.w = newW;
+  image.h = newH;
+  image.x = centerX - newW / 2;
+  image.y = centerY - newH / 2;
+}
+
+async function applyImageCrop() {
+  if (!imageCropEditor || imageBusy || drawing || pageTurning) return;
+  const image = images.find((candidate) => candidate.id === imageCropEditor.imageId);
+  if (!image) { closeImageCropEditor('immagine non disponibile'); return; }
+  const rect = { ...imageCropEditor.rect };
+  if (cropRectIsFull(rect)) { closeImageCropEditor('ritaglio annullato'); return; }
+  imageBusy = true;
+  if (applyImageCropButton) applyImageCropButton.disabled = true;
+  if (cancelImageCropButton) cancelImageCropButton.disabled = true;
+  statusLabel.textContent = 'applico ritaglio';
+  try {
+    const before = cloneImageObject(image);
+    const packed = await cropPreviewToData(rect, image.mimeType);
+    applyCropGeometry(image, rect, imageLayerBounds());
+    image.src = packed.src;
+    image.mimeType = packed.mimeType;
+    constrainImage(image);
+    rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
+    session.imageTransforms++;
+    session.imageCrops++;
+    dirty = true;
+    closeImageCropEditor();
+    renderImages();
+    scheduleSave();
+    statusLabel.textContent = 'immagine ritagliata';
+  } catch (err) {
+    console.warn('Ritaglio immagine non riuscito', err);
+    statusLabel.textContent = 'errore ritaglio';
+  } finally {
+    imageBusy = false;
+    if (applyImageCropButton) applyImageCropButton.disabled = false;
+    if (cancelImageCropButton) cancelImageCropButton.disabled = false;
+  }
+}
+
 function renderPreviewImages(preview, sourceImages) {
   const layer = preview?.querySelector('.image-layer');
   if (!layer) return;
@@ -1251,6 +1474,7 @@ function updateToolUi() {
 
 function selectTool(tool) {
   if (!['pen', 'highlighter', 'eraser', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
   activeTool = tool;
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
@@ -1261,7 +1485,7 @@ function selectTool(tool) {
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : tool === 'image' ? 'modalità immagini' : 'penna';
 }
 
-// 0.1.28 — richiesta import separata dal motore Ink.
+// 0.1.29 — import e ritaglio restano separati dal motore Ink.
 // Viene invocata esclusivamente da un gesto utente sui comandi IMG/Importa.
 function requestImageImport() {
   if (!imageFileInput || imageBusy || drawing || pageTurning || activeTool !== 'image') return;
@@ -1723,6 +1947,9 @@ function activateUiButton(button) {
     return;
   }
   if (button === importImageButton) { requestImageImport(); return; }
+  if (button === cropImageButton) { void openImageCropEditor(); return; }
+  if (button === cancelImageCropButton) { closeImageCropEditor('ritaglio annullato'); return; }
+  if (button === applyImageCropButton) { void applyImageCrop(); return; }
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
@@ -1851,7 +2078,7 @@ function buildReport() {
     `DPR canvas: ${fmt(dpr, 2)}`,
     `Tratti pagina: ${strokes.length}`,
     `Immagini pagina: ${images.length}`,
-    `Immagini importate/trasformate/eliminate: ${session.imagesImported}/${session.imageTransforms}/${session.imagesDeleted}`, 
+    `Immagini importate/trasformate/ritagliate/eliminate: ${session.imagesImported}/${session.imageTransforms}/${session.imageCrops}/${session.imagesDeleted}`, 
     `Tratti completati sessione: ${session.strokesCompleted}`,
     `pointerdown/up/cancel: ${session.totalPointerDown}/${session.totalPointerUp}/${session.totalPointerCancel}`,
     `Recovery stale-down: ${session.recoveredStaleDown}`,
@@ -2511,7 +2738,8 @@ const directUiButtons = [...new Set([
   redoButton,
   styleButton,
   ...plannerModeButtons,
-  importImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton
+  importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
+  cancelImageCropButton, applyImageCropButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -2642,6 +2870,9 @@ for (const button of plannerModeButtons) {
   });
 }
 importImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(importImageButton)) requestImageImport(); });
+cropImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cropImageButton)) void openImageCropEditor(); });
+cancelImageCropButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cancelImageCropButton)) closeImageCropEditor('ritaglio annullato'); });
+applyImageCropButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(applyImageCropButton)) void applyImageCrop(); });
 rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageLeftButton)) rotateSelectedImage(-15); });
 rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
 deleteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(deleteImageButton)) deleteSelectedImage(); });
@@ -2655,6 +2886,11 @@ imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false 
 imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
 imageLayer?.addEventListener('pointerup', (ev) => endImageGesture(ev, false), { passive: false });
 imageLayer?.addEventListener('pointercancel', (ev) => endImageGesture(ev, true), { passive: false });
+
+imageCropSelection?.addEventListener('pointerdown', beginImageCropGesture, { passive: false });
+imageCropSelection?.addEventListener('pointermove', moveImageCropGesture, { passive: false });
+imageCropSelection?.addEventListener('pointerup', endImageCropGesture, { passive: false });
+imageCropSelection?.addEventListener('pointercancel', endImageCropGesture, { passive: false });
 
 for (const swatch of colorSwatches) {
   swatch.addEventListener('click', () => {
@@ -2843,4 +3079,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · oggetti immagine + Ink stabile + backup portabile`);
+console.info(`Agenda iPad ${APP_VERSION} · crop immagini isolato + Ink stabile + backup portabile`);
