@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.27';
+const APP_VERSION = '0.1.28';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -1261,6 +1261,26 @@ function selectTool(tool) {
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : tool === 'image' ? 'modalità immagini' : 'penna';
 }
 
+// 0.1.28 — richiesta import separata dal motore Ink.
+// Viene invocata esclusivamente da un gesto utente sui comandi IMG/Importa.
+function requestImageImport() {
+  if (!imageFileInput || imageBusy || drawing || pageTurning || activeTool !== 'image') return;
+  try {
+    if (typeof imageFileInput.showPicker === 'function') {
+      imageFileInput.showPicker();
+      return;
+    }
+  } catch {}
+  try { imageFileInput.click(); } catch {}
+}
+
+function activateImageTool() {
+  selectTool('image');
+  // Prima immagine: il comando IMG produce subito un effetto esplicito e apre
+  // il selettore. Per immagini successive resta disponibile il pulsante Importa.
+  if (activeTool === 'image' && images.length === 0) requestImageImport();
+}
+
 function resetUndoHistory() {
   undoHistory = [];
   redoHistory = [];
@@ -1654,6 +1674,10 @@ function activateUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
   if (button === undoButton && !undoHistory.length) return;
   if (button === redoButton && !redoHistory.length) return;
+  if (button === imageToolButton) {
+    activateImageTool();
+    return;
+  }
   if (button.matches('.tool-button[data-tool]')) {
     selectTool(button.dataset.tool);
     return;
@@ -1698,7 +1722,7 @@ function activateUiButton(button) {
     setPageTemplate(button.dataset.pageTemplate);
     return;
   }
-  if (button === importImageButton) { imageFileInput?.click(); return; }
+  if (button === importImageButton) { requestImageImport(); return; }
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
@@ -2591,7 +2615,8 @@ clearPageButton.addEventListener('click', clearCurrentPage);
 for (const button of toolButtons) {
   button.addEventListener('click', () => {
     if (wasJustActivatedByPencil(button)) return;
-    selectTool(button.dataset.tool);
+    if (button === imageToolButton) activateImageTool();
+    else selectTool(button.dataset.tool);
   });
 }
 undoButton?.addEventListener('click', () => {
@@ -2616,7 +2641,7 @@ for (const button of plannerModeButtons) {
     switchPlannerMode(button.dataset.plannerMode);
   });
 }
-importImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(importImageButton)) imageFileInput?.click(); });
+importImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(importImageButton)) requestImageImport(); });
 rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageLeftButton)) rotateSelectedImage(-15); });
 rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
 deleteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(deleteImageButton)) deleteSelectedImage(); });
