@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.16';
+const APP_VERSION = '0.1.16b';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -60,6 +60,13 @@ const notesCountCache = new Map();
 let strokes = [];
 let drawing = false;
 let pointerId = null;
+// 0.1.16b — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
+// Non ci affidiamo alla sintesi di `click` di Safari/iPadOS.
+const pencilUiPointers = new Map();
+const recentPencilUiActivation = new WeakMap();
+const PENCIL_UI_TAP_MAX_DISTANCE = 28;
+const PENCIL_UI_TAP_MAX_DURATION_MS = 1400;
+
 let rect = null;
 let protectedTop = 0;
 let lastPoint = null;
@@ -699,10 +706,43 @@ function isUiControlTarget(target) {
   return target instanceof Element && Boolean(target.closest('button, .style-panel, .report-panel'));
 }
 
+function getUiButtonTarget(target) {
+  return target instanceof Element ? target.closest('button') : null;
+}
+
+function activateUiButton(button) {
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+  if (button.matches('.tool-button[data-tool]')) {
+    selectTool(button.dataset.tool);
+    return;
+  }
+  if (button === undoButton) {
+    undoLastModification();
+    return;
+  }
+  if (button === styleButton) {
+    toggleStylePanel();
+    return;
+  }
+  if (button.matches('.color-swatch')) {
+    setStyleColor(button.dataset.styleTool, button.dataset.styleColor?.toLowerCase());
+    return;
+  }
+  if (button.matches('.width-choice')) {
+    setStyleWidth(button.dataset.styleTool, button.dataset.styleWidth);
+    return;
+  }
+  // Gli altri pulsanti mantengono il comportamento nativo esistente.
+}
+
+function wasJustActivatedByPencil(button) {
+  const at = recentPencilUiActivation.get(button);
+  return Number.isFinite(at) && performance.now() - at < 650;
+}
+
 function handlePointerDown(ev) {
-  // UI controls must remain native pointer targets for finger, mouse AND Apple Pencil.
-  // In particular, never let the global high-priority Ink pipeline call
-  // preventDefault() for a Pencil tap that started on the toolbar/style panel.
+  // I controlli UI vengono gestiti da listener DIRETTI sui pulsanti.
+  // Il motore Ink non deve mai interpretare un contatto nato sulla toolbar/pannelli.
   if (isUiControlTarget(ev.target)) return;
   if (ev.pointerType === 'touch') {
     startPageSwipe(ev);
@@ -714,6 +754,10 @@ function handlePointerDown(ev) {
 }
 
 function handlePointerMove(ev) {
+  if (pencilUiPointers.has(ev.pointerId)) {
+    ev.preventDefault();
+    return;
+  }
   if (isUiControlTarget(ev.target) && !drawing) return;
   if (ev.pointerType === 'touch') { movePageSwipe(ev); return; }
   noteHandlerArrival();
@@ -750,6 +794,14 @@ function handlePointerMove(ev) {
 }
 
 function handlePointerUp(ev) {
+  const uiTap = pencilUiPointers.get(ev.pointerId);
+  if (uiTap) {
+    pencilUiPointers.delete(ev.pointerId);
+    // Il comando è già stato applicato al pointerdown. Il pointerup serve solo
+    // a chiudere la sequenza UI e non deve eseguire una seconda attivazione.
+    ev.preventDefault();
+    return;
+  }
   if (ev.pointerType === 'touch') { endPageSwipe(ev, false); return; }
   session.totalPointerUp++;
   noteHandlerArrival();
@@ -759,6 +811,11 @@ function handlePointerUp(ev) {
 }
 
 function handlePointerCancel(ev) {
+  if (pencilUiPointers.has(ev.pointerId)) {
+    pencilUiPointers.delete(ev.pointerId);
+    ev.preventDefault();
+    return;
+  }
   if (ev.pointerType === 'touch') { endPageSwipe(ev, true); return; }
   session.totalPointerCancel++;
   noteHandlerArrival();
@@ -1216,6 +1273,69 @@ function endPageSwipe(ev, cancelled = false) {
   else cancelPageTurn();
 }
 
+
+// 0.1.16b — attivazione UI indipendente dalla pipeline Ink.
+// Apple Pencil su iPadOS può essere esposta come `pen` oppure, in alcuni percorsi
+// di compatibilità, arrivare come touch. Per questo tutti i pointer NON-mouse sui
+// pulsanti vengono attivati direttamente al pointerdown. `touchstart` resta come
+// fallback estremo nel caso in cui Safari non produca Pointer Events completi.
+function activateUiFromDirectContact(button, ev, source = 'pointerdown') {
+  if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+  const now = performance.now();
+  const previous = recentPencilUiActivation.get(button);
+  if (Number.isFinite(previous) && now - previous < 120) {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    return;
+  }
+
+  // Se Safari ha perso il pointerup dell'ultimo tratto, non lasciamo che lo stato
+  // `drawing=true` renda inerti tutti i pulsanti della toolbar.
+  if (drawing) finalizeStroke(`ui-${source}-recovery`);
+
+  recentPencilUiActivation.set(button, now);
+  activateUiButton(button);
+  ev?.preventDefault?.();
+  ev?.stopPropagation?.();
+}
+
+function bindDirectUiButton(button) {
+  if (!(button instanceof HTMLButtonElement)) return;
+
+  button.addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType === 'mouse') return;
+    pencilUiPointers.set(ev.pointerId, { button, startedAt: performance.now() });
+    activateUiFromDirectContact(button, ev, `pointerdown-${ev.pointerType || 'unknown'}`);
+  }, { passive: false });
+
+  button.addEventListener('pointerup', (ev) => {
+    if (!pencilUiPointers.has(ev.pointerId)) return;
+    pencilUiPointers.delete(ev.pointerId);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { passive: false });
+
+  button.addEventListener('pointercancel', (ev) => {
+    if (!pencilUiPointers.has(ev.pointerId)) return;
+    pencilUiPointers.delete(ev.pointerId);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { passive: false });
+
+  button.addEventListener('touchstart', (ev) => {
+    activateUiFromDirectContact(button, ev, 'touchstart-fallback');
+  }, { passive: false });
+}
+
+const directUiButtons = [...new Set([
+  ...toolButtons,
+  undoButton,
+  styleButton,
+  ...colorSwatches,
+  ...widthChoices
+].filter(Boolean))];
+for (const button of directUiButtons) bindDirectUiButton(button);
+
 window.addEventListener('pointerdown', handlePointerDown, { passive: false, capture: true });
 window.addEventListener('pointermove', handlePointerMove, { passive: false, capture: true });
 window.addEventListener('pointerup', handlePointerUp, { passive: false, capture: true });
@@ -1234,15 +1354,30 @@ clearPageButton.addEventListener('click', clearCurrentPage);
 
 
 for (const button of toolButtons) {
-  button.addEventListener('click', () => selectTool(button.dataset.tool));
+  button.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(button)) return;
+    selectTool(button.dataset.tool);
+  });
 }
-undoButton?.addEventListener('click', undoLastModification);
-styleButton?.addEventListener('click', toggleStylePanel);
+undoButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(undoButton)) return;
+  undoLastModification();
+});
+styleButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(styleButton)) return;
+  toggleStylePanel();
+});
 for (const swatch of colorSwatches) {
-  swatch.addEventListener('click', () => setStyleColor(swatch.dataset.styleTool, swatch.dataset.styleColor?.toLowerCase()));
+  swatch.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(swatch)) return;
+    setStyleColor(swatch.dataset.styleTool, swatch.dataset.styleColor?.toLowerCase());
+  });
 }
 for (const choice of widthChoices) {
-  choice.addEventListener('click', () => setStyleWidth(choice.dataset.styleTool, choice.dataset.styleWidth));
+  choice.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(choice)) return;
+    setStyleWidth(choice.dataset.styleTool, choice.dataset.styleWidth);
+  });
 }
 
 window.addEventListener('resize', () => {
