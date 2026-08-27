@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.26';
+const APP_VERSION = '0.1.27';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -69,6 +69,14 @@ const pageStyleGroup = document.getElementById('pageStyleGroup');
 const plannerModeBar = document.getElementById('plannerModeBar');
 const plannerLayer = document.getElementById('plannerLayer');
 const plannerModeButtons = [...document.querySelectorAll('[data-planner-mode]')];
+const imageToolButton = document.getElementById('imageToolButton');
+const imageLayer = document.getElementById('imageLayer');
+const imageFileInput = document.getElementById('imageFileInput');
+const imageInspector = document.getElementById('imageInspector');
+const importImageButton = document.getElementById('importImageButton');
+const rotateImageLeftButton = document.getElementById('rotateImageLeftButton');
+const rotateImageRightButton = document.getElementById('rotateImageRightButton');
+const deleteImageButton = document.getElementById('deleteImageButton');
 const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
@@ -82,6 +90,10 @@ let currentNoteIndex = 0;
 let currentNoteTotal = 0;
 const notesCountCache = new Map();
 let strokes = [];
+let images = [];
+let selectedImageId = null;
+let imageGesture = null;
+let imageBusy = false;
 let drawing = false;
 let pointerId = null;
 // 0.1.17 — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
@@ -149,7 +161,10 @@ const session = {
   pageTurns: 0,
   pageTurnCancels: 0,
   noteTurns: 0,
-  notesCreated: 0
+  notesCreated: 0,
+  imagesImported: 0,
+  imageTransforms: 0,
+  imagesDeleted: 0
 };
 
 function localISODate(date) {
@@ -159,6 +174,38 @@ function localISODate(date) {
 function makeId() {
   if (globalThis.crypto?.randomUUID) return `stroke-${crypto.randomUUID()}`;
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function makeImageId() {
+  if (globalThis.crypto?.randomUUID) return `image-${crypto.randomUUID()}`;
+  return `image-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function cloneImageObject(image) {
+  return image ? { ...image } : null;
+}
+
+function normalizeImageObject(value) {
+  if (!value || typeof value !== 'object' || typeof value.src !== 'string') return null;
+  const n = (x, fallback) => Number.isFinite(Number(x)) ? Number(x) : fallback;
+  const w = Math.min(.92, Math.max(.06, n(value.w, .42)));
+  const h = Math.min(.92, Math.max(.06, n(value.h, .32)));
+  const x = Math.min(1 - w, Math.max(0, n(value.x, .12)));
+  const y = Math.min(1 - h, Math.max(0, n(value.y, .12)));
+  return {
+    id: String(value.id || makeImageId()),
+    name: String(value.name || 'Immagine'),
+    mimeType: String(value.mimeType || 'image/webp'),
+    src: value.src,
+    x, y, w, h,
+    rotation: n(value.rotation, 0),
+    createdAt: value.createdAt || new Date().toISOString(),
+    modifiedAt: value.modifiedAt || new Date().toISOString()
+  };
+}
+
+function imagesFromRecord(record) {
+  return Array.isArray(record?.images) ? record.images.map(normalizeImageObject).filter(Boolean) : [];
 }
 
 
@@ -398,10 +445,10 @@ async function setPageTemplate(template) {
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma' };
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== activeTool;
-  for (const swatch of colorSwatches) {
+for (const swatch of colorSwatches) {
     const matches = swatch.dataset.styleTool === activeTool && swatch.dataset.styleColor?.toLowerCase() === toolStyles[activeTool]?.color?.toLowerCase();
     swatch.classList.toggle('selected', matches);
     swatch.setAttribute('aria-pressed', matches ? 'true' : 'false');
@@ -667,7 +714,7 @@ async function navigateToAgendaDate(targetDate) {
   closeStylePanel();
   cancelPendingSave();
   const oldDescriptor = pageDescriptor();
-  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle) : true;
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle, images) : true;
   if (!saveOk) {
     pageTurning = false;
     statusLabel.textContent = 'salvataggio non riuscito';
@@ -683,6 +730,8 @@ async function navigateToAgendaDate(targetDate) {
     currentNoteIndex = 0;
     currentNoteTotal = noteTotal ?? 0;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    images = imagesFromRecord(record);
+    selectedImageId = null;
     const previousPaperColor = pageStyle.color;
     pageStyle = pageStyleFromRecord(record);
     applyPageStyle();
@@ -694,6 +743,7 @@ async function navigateToAgendaDate(targetDate) {
     updateHeader();
     resizeCanvas();
     renderAll();
+    renderImages();
     statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
   } catch (err) {
     session.storageErrors++;
@@ -897,6 +947,286 @@ function toolStrokeStyle(tool = activeTool) {
   return { tool: tool === 'eraser' ? 'eraser' : tool === 'highlighter' ? 'highlighter' : 'pen', ...style };
 }
 
+
+function imageLayerBounds(layer = imageLayer) {
+  if (!layer) return null;
+  const r = layer.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 ? r : null;
+}
+
+function selectedImage() {
+  return images.find((image) => image.id === selectedImageId) ?? null;
+}
+
+function updateImageInspector() {
+  if (!imageInspector) return;
+  const imageMode = activeTool === 'image';
+  imageInspector.hidden = !imageMode;
+  const hasSelection = Boolean(selectedImage());
+  for (const button of [rotateImageLeftButton, rotateImageRightButton, deleteImageButton]) {
+    if (!button) continue;
+    button.disabled = !hasSelection;
+    button.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
+  }
+}
+
+function renderImages(targetLayer = imageLayer, sourceImages = images, interactive = targetLayer === imageLayer && activeTool === 'image') {
+  if (!targetLayer) return;
+  targetLayer.replaceChildren();
+  targetLayer.classList.toggle('interactive', interactive);
+  for (const image of sourceImages) {
+    const item = document.createElement('div');
+    item.className = 'image-object';
+    item.dataset.imageId = image.id;
+    if (interactive && image.id === selectedImageId) item.classList.add('selected');
+    item.style.left = `${image.x * 100}%`;
+    item.style.top = `${image.y * 100}%`;
+    item.style.width = `${image.w * 100}%`;
+    item.style.height = `${image.h * 100}%`;
+    item.style.transform = `rotate(${image.rotation || 0}deg)`;
+    item.style.transformOrigin = '50% 50%';
+    const img = document.createElement('img');
+    img.src = image.src;
+    img.alt = image.name || 'Immagine inserita';
+    img.draggable = false;
+    item.appendChild(img);
+    if (interactive && image.id === selectedImageId) {
+      const resize = document.createElement('span');
+      resize.className = 'image-handle image-resize-handle';
+      resize.dataset.imageAction = 'resize';
+      resize.setAttribute('aria-hidden', 'true');
+      item.appendChild(resize);
+      const rotate = document.createElement('span');
+      rotate.className = 'image-handle image-rotate-handle';
+      rotate.dataset.imageAction = 'rotate';
+      rotate.setAttribute('aria-hidden', 'true');
+      item.appendChild(rotate);
+    }
+    targetLayer.appendChild(item);
+  }
+  if (targetLayer === imageLayer) updateImageInspector();
+}
+
+function updateImageElement(image) {
+  if (!imageLayer || !image) return;
+  const item = [...imageLayer.querySelectorAll('.image-object')].find((el) => el.dataset.imageId === image.id);
+  if (!item) return;
+  item.style.left = `${image.x * 100}%`;
+  item.style.top = `${image.y * 100}%`;
+  item.style.width = `${image.w * 100}%`;
+  item.style.height = `${image.h * 100}%`;
+  item.style.transform = `rotate(${image.rotation || 0}deg)`;
+}
+
+function setSelectedImage(id) {
+  selectedImageId = images.some((image) => image.id === id) ? id : null;
+  renderImages();
+}
+
+function dataUrlFromBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Lettura immagine non riuscita'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function loadBitmapForImage(file) {
+  if (typeof createImageBitmap === 'function') {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {}
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    // revoke is delayed by a microtask so Image.decode has fully consumed it on Safari.
+    queueMicrotask(() => URL.revokeObjectURL(url));
+  }
+}
+
+async function compressImageFile(file) {
+  const source = await loadBitmapForImage(file);
+  const sw = source.width || source.naturalWidth;
+  const sh = source.height || source.naturalHeight;
+  if (!sw || !sh) throw new Error('Dimensioni immagine non disponibili');
+  const maxSide = 2200;
+  const scale = Math.min(1, maxSide / Math.max(sw, sh));
+  const width = Math.max(1, Math.round(sw * scale));
+  const height = Math.max(1, Math.round(sh * scale));
+  const work = document.createElement('canvas');
+  work.width = width; work.height = height;
+  const wctx = work.getContext('2d', { alpha: true });
+  wctx.drawImage(source, 0, 0, width, height);
+  if (typeof source.close === 'function') source.close();
+  const toBlob = (type, quality) => new Promise((resolve) => work.toBlob(resolve, type, quality));
+  let blob = await toBlob('image/webp', .86);
+  let mimeType = blob?.type || 'image/webp';
+  if (!blob || !blob.size) {
+    blob = await toBlob(file.type === 'image/png' ? 'image/png' : 'image/jpeg', .90);
+    mimeType = blob?.type || file.type || 'image/jpeg';
+  }
+  if (!blob) throw new Error('Compressione immagine non riuscita');
+  return { src: await dataUrlFromBlob(blob), mimeType, width, height };
+}
+
+function initialImageGeometry(pixelWidth, pixelHeight) {
+  const r = imageLayerBounds();
+  if (!r) return { x: .18, y: .16, w: .48, h: .36 };
+  const aspect = Math.max(.05, pixelWidth / Math.max(1, pixelHeight));
+  let w = Math.min(.58, Math.max(.24, 520 / r.width));
+  let h = w * r.width / (aspect * r.height);
+  if (h > .58) { h = .58; w = h * aspect * r.height / r.width; }
+  w = Math.min(.82, Math.max(.12, w));
+  h = Math.min(.82, Math.max(.10, h));
+  return { x: (1 - w) / 2, y: Math.max(.04, (1 - h) / 2), w, h };
+}
+
+async function importImageFile(file) {
+  if (!file || !file.type?.startsWith('image/') || drawing || pageTurning || imageBusy) return;
+  imageBusy = true;
+  statusLabel.textContent = 'preparo immagine';
+  try {
+    const packed = await compressImageFile(file);
+    const geom = initialImageGeometry(packed.width, packed.height);
+    const image = normalizeImageObject({
+      id: makeImageId(), name: file.name || 'Immagine', mimeType: packed.mimeType, src: packed.src,
+      ...geom, rotation: 0, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString()
+    });
+    images.push(image);
+    selectedImageId = image.id;
+    rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: images.length - 1 });
+    session.imagesImported++;
+    dirty = true;
+    renderImages();
+    statusLabel.textContent = 'immagine inserita';
+    scheduleSave();
+  } catch (err) {
+    console.warn('Importazione immagine non riuscita', err);
+    statusLabel.textContent = 'errore immagine';
+  } finally {
+    imageBusy = false;
+  }
+}
+
+function constrainImage(image) {
+  image.w = Math.min(.96, Math.max(.055, image.w));
+  image.h = Math.min(.96, Math.max(.055, image.h));
+  image.x = Math.min(1 - image.w, Math.max(0, image.x));
+  image.y = Math.min(1 - image.h, Math.max(0, image.y));
+  image.rotation = ((Number(image.rotation) || 0) % 360 + 360) % 360;
+  image.modifiedAt = new Date().toISOString();
+}
+
+function beginImageGesture(ev) {
+  if (activeTool !== 'image' || drawing || pageTurning || !imageLayer) return;
+  const item = ev.target instanceof Element ? ev.target.closest('.image-object') : null;
+  if (!item || !imageLayer.contains(item)) {
+    setSelectedImage(null);
+    return;
+  }
+  const id = item.dataset.imageId;
+  const image = images.find((candidate) => candidate.id === id);
+  if (!image) return;
+  selectedImageId = id;
+  renderImages();
+  const layerRect = imageLayerBounds();
+  if (!layerRect) return;
+  const action = ev.target instanceof Element && ev.target.closest('[data-image-action]')?.dataset.imageAction || 'move';
+  const centerX = layerRect.left + (image.x + image.w / 2) * layerRect.width;
+  const centerY = layerRect.top + (image.y + image.h / 2) * layerRect.height;
+  imageGesture = {
+    pointerId: ev.pointerId, action, startX: ev.clientX, startY: ev.clientY,
+    before: cloneImageObject(image), layerRect,
+    centerX, centerY,
+    startAngle: Math.atan2(ev.clientY - centerY, ev.clientX - centerX),
+    baseRotation: image.rotation || 0
+  };
+  try { imageLayer.setPointerCapture?.(ev.pointerId); } catch {}
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function moveImageGesture(ev) {
+  if (!imageGesture || ev.pointerId !== imageGesture.pointerId) return;
+  const image = selectedImage();
+  if (!image) return;
+  const g = imageGesture;
+  if (g.action === 'move') {
+    image.x = g.before.x + (ev.clientX - g.startX) / g.layerRect.width;
+    image.y = g.before.y + (ev.clientY - g.startY) / g.layerRect.height;
+  } else if (g.action === 'resize') {
+    const dx = (ev.clientX - g.startX) / g.layerRect.width;
+    const desiredW = Math.max(.055, g.before.w + dx);
+    const aspectCss = (g.before.w * g.layerRect.width) / Math.max(1, g.before.h * g.layerRect.height);
+    image.w = desiredW;
+    image.h = Math.max(.055, desiredW * g.layerRect.width / Math.max(.05, aspectCss * g.layerRect.height));
+  } else if (g.action === 'rotate') {
+    const angle = Math.atan2(ev.clientY - g.centerY, ev.clientX - g.centerX);
+    image.rotation = g.baseRotation + (angle - g.startAngle) * 180 / Math.PI;
+  }
+  constrainImage(image);
+  updateImageElement(image);
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function endImageGesture(ev, cancelled = false) {
+  if (!imageGesture || (ev.pointerId != null && ev.pointerId !== imageGesture.pointerId)) return;
+  const g = imageGesture;
+  imageGesture = null;
+  const image = selectedImage();
+  if (!image) return;
+  if (cancelled) Object.assign(image, g.before);
+  const changed = ['x','y','w','h','rotation'].some((key) => Math.abs(Number(image[key]) - Number(g.before[key])) > .00001);
+  if (!cancelled && changed) {
+    rememberUndo({ type: 'update-image', id: image.id, before: g.before, after: cloneImageObject(image) });
+    session.imageTransforms++;
+    dirty = true;
+    scheduleSave();
+  }
+  renderImages();
+  ev?.preventDefault?.();
+  ev?.stopPropagation?.();
+}
+
+function rotateSelectedImage(delta) {
+  if (drawing || pageTurning) return;
+  const image = selectedImage();
+  if (!image) return;
+  const before = cloneImageObject(image);
+  image.rotation = (image.rotation || 0) + delta;
+  constrainImage(image);
+  rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
+  session.imageTransforms++;
+  dirty = true;
+  renderImages();
+  scheduleSave();
+}
+
+function deleteSelectedImage() {
+  if (drawing || pageTurning) return;
+  const index = images.findIndex((image) => image.id === selectedImageId);
+  if (index < 0) return;
+  const [image] = images.splice(index, 1);
+  rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
+  selectedImageId = null;
+  session.imagesDeleted++;
+  dirty = true;
+  renderImages();
+  scheduleSave();
+}
+
+function renderPreviewImages(preview, sourceImages) {
+  const layer = preview?.querySelector('.image-layer');
+  if (!layer) return;
+  renderImages(layer, sourceImages || [], false);
+}
+
 function updateToolUi() {
   for (const button of toolButtons) {
     const selected = button.dataset.tool === activeTool;
@@ -920,11 +1250,15 @@ function updateToolUi() {
 }
 
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'image'].includes(tool) || drawing || pageTurning) return;
   activeTool = tool;
+  if (tool !== 'image') selectedImageId = null;
+  closeStylePanel();
+  paper?.classList.toggle('image-edit-mode', tool === 'image');
+  renderImages();
   updateToolUi();
   updateStyleUi();
-  statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : 'penna';
+  statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : tool === 'image' ? 'modalità immagini' : 'penna';
 }
 
 function resetUndoHistory() {
@@ -954,8 +1288,26 @@ function undoLastModification() {
       const [removed] = strokes.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
     }
+  } else if (action?.type === 'add-image' && action.image?.id) {
+    const index = images.findIndex((image) => image.id === action.image.id);
+    if (index >= 0) {
+      const [removed] = images.splice(index, 1);
+      pushBounded(redoHistory, { type: 'add-image', image: cloneImageObject(removed), index }, REDO_LIMIT);
+      if (selectedImageId === removed.id) selectedImageId = null;
+    }
+  } else if (action?.type === 'remove-image' && action.image?.id) {
+    const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
+    images.splice(index, 0, cloneImageObject(action.image));
+    selectedImageId = action.image.id;
+    pushBounded(redoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index }, REDO_LIMIT);
+  } else if (action?.type === 'update-image' && action.before?.id) {
+    const index = images.findIndex((image) => image.id === action.before.id);
+    if (index >= 0) images[index] = cloneImageObject(action.before);
+    selectedImageId = action.before.id;
+    pushBounded(redoHistory, { type: 'update-image', id: action.before.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, REDO_LIMIT);
   }
   renderAll();
+  renderImages();
   dirty = true;
   statusLabel.textContent = 'annullato';
   updateToolUi();
@@ -971,8 +1323,26 @@ function redoLastModification() {
       strokes.splice(index, 0, action.stroke);
       pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
     }
+  } else if (action?.type === 'add-image' && action.image?.id) {
+    if (!images.some((image) => image.id === action.image.id)) {
+      const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
+      images.splice(index, 0, cloneImageObject(action.image));
+      selectedImageId = action.image.id;
+      pushBounded(undoHistory, { type: 'add-image', image: cloneImageObject(action.image), index }, UNDO_LIMIT);
+    }
+  } else if (action?.type === 'remove-image' && action.image?.id) {
+    const index = images.findIndex((image) => image.id === action.image.id);
+    if (index >= 0) images.splice(index, 1);
+    if (selectedImageId === action.image.id) selectedImageId = null;
+    pushBounded(undoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index: action.index }, UNDO_LIMIT);
+  } else if (action?.type === 'update-image' && action.after?.id) {
+    const index = images.findIndex((image) => image.id === action.after.id);
+    if (index >= 0) images[index] = cloneImageObject(action.after);
+    selectedImageId = action.after.id;
+    pushBounded(undoHistory, { type: 'update-image', id: action.after.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, UNDO_LIMIT);
   }
   renderAll();
+  renderImages();
   dirty = true;
   statusLabel.textContent = 'ripristinato';
   updateToolUi();
@@ -1137,7 +1507,7 @@ function cancelPendingSave() {
   idleHandle = 0;
 }
 
-async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle) {
+async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
   try {
     await openDb();
     const txStart = performance.now();
@@ -1156,6 +1526,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage',
       strokes: pageStrokes,
+      images: (pageImages || []).map(cloneImageObject),
       pageStyle: normalizePageStyle(pageStyleSnapshot),
       modifiedAt: new Date().toISOString()
     });
@@ -1181,7 +1552,8 @@ async function persistNow() {
   const descriptor = pageDescriptor();
   const saveKey = descriptor.key;
   const snapshot = strokes;
-  const ok = await persistSnapshot(descriptor, snapshot, true);
+  const imageSnapshot = images;
+  const ok = await persistSnapshot(descriptor, snapshot, true, pageStyle, imageSnapshot);
   if (ok && currentPageKey() === saveKey && strokes === snapshot) dirty = false;
 }
 
@@ -1211,7 +1583,7 @@ function newStrokeDiag(ev, reason) {
 }
 
 function startStroke(ev, reason = 'pointerdown') {
-  if (!ready || pageTurning) return false;
+  if (!ready || pageTurning || activeTool === 'image') return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -1271,7 +1643,7 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -1326,6 +1698,10 @@ function activateUiButton(button) {
     setPageTemplate(button.dataset.pageTemplate);
     return;
   }
+  if (button === importImageButton) { imageFileInput?.click(); return; }
+  if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
+  if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
+  if (button === deleteImageButton) { deleteSelectedImage(); return; }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
 }
 
@@ -1450,6 +1826,8 @@ function buildReport() {
     `Redo disponibili: ${redoHistory.length}/${REDO_LIMIT}`,
     `DPR canvas: ${fmt(dpr, 2)}`,
     `Tratti pagina: ${strokes.length}`,
+    `Immagini pagina: ${images.length}`,
+    `Immagini importate/trasformate/eliminate: ${session.imagesImported}/${session.imageTransforms}/${session.imagesDeleted}`, 
     `Tratti completati sessione: ${session.strokesCompleted}`,
     `pointerdown/up/cancel: ${session.totalPointerDown}/${session.totalPointerUp}/${session.totalPointerCancel}`,
     `Recovery stale-down: ${session.recoveredStaleDown}`,
@@ -1501,8 +1879,11 @@ async function clearCurrentPage() {
   if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
   cancelPendingSave();
   strokes = [];
+  images = [];
+  selectedImageId = null;
   resetUndoHistory();
   renderAll();
+  renderImages();
   try {
     await openDb();
     await deleteRecord(currentPageKey());
@@ -1584,6 +1965,11 @@ function createPreview(descriptor) {
   const clone = paper.cloneNode(true);
   clone.removeAttribute('id');
   clone.classList.add('page-preview');
+  clone.classList.remove('image-edit-mode');
+  const previewInspector = clone.querySelector('.image-inspector');
+  if (previewInspector) previewInspector.hidden = true;
+  const previewImageLayer = clone.querySelector('.image-layer');
+  if (previewImageLayer) previewImageLayer.replaceChildren();
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
   clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
   setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
@@ -1614,9 +2000,10 @@ function sharesCurrentDailyInk(descriptor) {
 
 async function loadPageForPreview(descriptor, preview) {
   if (sharesCurrentDailyInk(descriptor)) {
-    const targetPage = { strokes, pageStyle: { ...pageStyle } };
+    const targetPage = { strokes, images, pageStyle: { ...pageStyle } };
     if (preview?.isConnected) {
       applyPageStyle(preview, targetPage.pageStyle);
+      renderPreviewImages(preview, targetPage.images);
       drawPreviewInk(preview, targetPage.strokes);
     }
     return targetPage;
@@ -1627,17 +2014,19 @@ async function loadPageForPreview(descriptor, preview) {
     session.storageReads++;
     const targetPage = {
       strokes: Array.isArray(record?.strokes) ? record.strokes : [],
+      images: imagesFromRecord(record),
       pageStyle: pageStyleFromRecord(record)
     };
     if (preview?.isConnected) {
       applyPageStyle(preview, targetPage.pageStyle);
+      renderPreviewImages(preview, targetPage.images);
       drawPreviewInk(preview, targetPage.strokes);
     }
     return targetPage;
   } catch (err) {
     session.storageErrors++;
     console.warn('Anteprima pagina non disponibile', err);
-    return { strokes: [], pageStyle: { ...globalPageStyle } };
+    return { strokes: [], images: [], pageStyle: { ...globalPageStyle } };
   }
 }
 
@@ -1803,7 +2192,7 @@ async function switchPlannerMode(mode) {
   closeStylePanel();
   cancelPendingSave();
   const oldDescriptor = pageDescriptor();
-  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle) : true;
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle, images) : true;
   if (!saveOk) {
     pageTurning = false;
     statusLabel.textContent = 'salvataggio non riuscito';
@@ -1821,6 +2210,8 @@ async function switchPlannerMode(mode) {
     currentNoteIndex = 0;
     currentNoteTotal = 0;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    images = imagesFromRecord(record);
+    selectedImageId = null;
     const previousPaperColor = pageStyle.color;
     pageStyle = pageStyleFromRecord(record);
     applyPageStyle();
@@ -1831,7 +2222,8 @@ async function switchPlannerMode(mode) {
     updateHeader();
     resizeCanvas();
     renderAll();
-    statusLabel.textContent = strokes.length ? `Planner ${mode} caricato` : `Planner ${mode}`;
+    renderImages();
+    statusLabel.textContent = (strokes.length || images.length) ? `Planner ${mode} caricato` : `Planner ${mode}`;
   } catch (err) {
     session.storageErrors++;
     console.warn('Cambio modello Planner non riuscito', err);
@@ -1876,10 +2268,11 @@ async function commitPageTurn() {
   cancelPendingSave();
   const oldDescriptor = pageDescriptor();
   const oldStrokes = strokes;
+  const oldImages = images;
   const oldPageStyle = { ...pageStyle };
   const target = swipe.target;
-  const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], pageStyle: { ...globalPageStyle } });
-  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle) : Promise.resolve(true);
+  const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
+  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages) : Promise.resolve(true);
   const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
   const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
 
@@ -1921,6 +2314,8 @@ async function commitPageTurn() {
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
+  images = Array.isArray(targetPage?.images) ? targetPage.images.map(normalizeImageObject).filter(Boolean) : [];
+  selectedImageId = null;
   const previousPaperColor = pageStyle.color;
   pageStyle = normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
   applyPageStyle();
@@ -1934,6 +2329,7 @@ async function commitPageTurn() {
   paper.style.visibility = 'hidden';
   resetTurnStyles();
   renderAll();
+  renderImages();
   paper.style.visibility = 'visible';
   await new Promise((resolve) => requestAnimationFrame(resolve));
   removePreview();
@@ -1945,7 +2341,7 @@ async function commitPageTurn() {
     session.noteTurns++;
   }
   pageTurning = false;
-  statusLabel.textContent = strokes.length ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
+  statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
 }
 
 function endPageSwipe(ev, cancelled = false) {
@@ -2090,7 +2486,8 @@ const directUiButtons = [...new Set([
   undoButton,
   redoButton,
   styleButton,
-  ...plannerModeButtons
+  ...plannerModeButtons,
+  importImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -2219,6 +2616,21 @@ for (const button of plannerModeButtons) {
     switchPlannerMode(button.dataset.plannerMode);
   });
 }
+importImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(importImageButton)) imageFileInput?.click(); });
+rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageLeftButton)) rotateSelectedImage(-15); });
+rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
+deleteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(deleteImageButton)) deleteSelectedImage(); });
+imageFileInput?.addEventListener('change', () => {
+  const file = imageFileInput.files?.[0];
+  imageFileInput.value = '';
+  if (file) void importImageFile(file);
+});
+
+imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
+imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
+imageLayer?.addEventListener('pointerup', (ev) => endImageGesture(ev, false), { passive: false });
+imageLayer?.addEventListener('pointercancel', (ev) => endImageGesture(ev, true), { passive: false });
+
 for (const swatch of colorSwatches) {
   swatch.addEventListener('click', () => {
     if (wasJustActivatedByPencil(swatch)) return;
@@ -2255,6 +2667,7 @@ window.addEventListener('resize', () => {
   removePreview();
   pageSwipe = null;
   resizeCanvas();
+  renderImages();
 });
 
 window.addEventListener('blur', () => {
@@ -2286,6 +2699,8 @@ async function loadInitialPage() {
     session.storageReads += 2;
     globalPageStyle = globalRecord?.pageStyle ? normalizePageStyle(globalRecord.pageStyle) : { ...DEFAULT_PAGE_STYLE };
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    images = imagesFromRecord(record);
+    selectedImageId = null;
     pageStyle = pageStyleFromRecord(record);
     applyPageStyle();
     applyToolDefaultsForPaper(pageStyle.color);
@@ -2293,14 +2708,18 @@ async function loadInitialPage() {
     resetUndoHistory();
     dirty = false;
     renderAll();
-    statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
+    renderImages();
+    statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : 'pagina nuova';
   } catch (err) {
     session.storageErrors++;
     strokes = [];
+    images = [];
+    selectedImageId = null;
     pageStyle = { ...DEFAULT_PAGE_STYLE };
     applyPageStyle();
     updatePageStyleUi();
     renderAll();
+    renderImages();
     statusLabel.textContent = 'storage non disponibile';
     console.warn('Caricamento pagina non riuscito', err);
   }
@@ -2309,6 +2728,8 @@ async function loadInitialPage() {
 async function bootAgenda() {
   updateHeader();
   updateToolUi();
+  paper?.classList.toggle('image-edit-mode', activeTool === 'image');
+  renderImages();
   updateStyleUi();
   applyPageStyle();
   resizeCanvas();
@@ -2322,7 +2743,7 @@ async function bootAgenda() {
       mainStore: STORE,
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy
+      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture)
     });
   }
   if ('serviceWorker' in navigator) {
@@ -2397,4 +2818,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · footer riorganizzato + calendario navigabile + backup + Planner + Ink stabile`);
+console.info(`Agenda iPad ${APP_VERSION} · oggetti immagine + Ink stabile + backup portabile`);

@@ -255,6 +255,101 @@ function parseJsonBytes(bytes, name) {
   return JSON.parse(decoder.decode(bytes));
 }
 
+
+function clonePortableRecords(records) {
+  try { return structuredClone(records); } catch { return JSON.parse(JSON.stringify(records)); }
+}
+
+function dataUrlToMedia(src) {
+  if (typeof src !== 'string' || !src.startsWith('data:')) return null;
+  const comma = src.indexOf(',');
+  if (comma < 0) return null;
+  const header = src.slice(5, comma);
+  const payload = src.slice(comma + 1);
+  const parts = header.split(';');
+  const mimeType = parts[0] || 'application/octet-stream';
+  const isBase64 = parts.includes('base64');
+  try {
+    if (isBase64) {
+      const raw = atob(payload);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      return { mimeType, bytes };
+    }
+    return { mimeType, bytes: encoder.encode(decodeURIComponent(payload)) };
+  } catch { return null; }
+}
+
+function mediaToDataUrl(bytes, mimeType) {
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunk)));
+  }
+  return `data:${mimeType || 'application/octet-stream'};base64,${btoa(binary)}`;
+}
+
+function extensionForMime(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('heic')) return 'heic';
+  return 'bin';
+}
+
+function safeFileToken(value) {
+  return String(value || 'item').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 100);
+}
+
+function extractMediaFromRecords(records) {
+  const portableRecords = clonePortableRecords(records || []);
+  const mediaEntries = [];
+  const mediaItems = [];
+  for (const record of portableRecords) {
+    if (!Array.isArray(record?.images)) continue;
+    for (const image of record.images) {
+      const media = dataUrlToMedia(image?.src);
+      if (!media) continue;
+      const ext = extensionForMime(image.mimeType || media.mimeType);
+      const recordToken = safeFileToken(record.date || record.referenceDate || 'page');
+      const imageToken = safeFileToken(image.id || `image-${mediaItems.length + 1}`);
+      const path = `media/images/${recordToken}--${imageToken}.${ext}`;
+      mediaEntries.push({ name: path, bytes: media.bytes });
+      mediaItems.push({
+        id: image.id || imageToken,
+        type: 'image',
+        path,
+        mimeType: image.mimeType || media.mimeType,
+        pageKey: record.date || null,
+        referenceDate: record.referenceDate || null,
+        name: image.name || null,
+        size: media.bytes.length
+      });
+      image.mediaPath = path;
+      image.mimeType = image.mimeType || media.mimeType;
+      delete image.src;
+    }
+  }
+  return { portableRecords, mediaEntries, mediaItems };
+}
+
+function hydrateMediaIntoRecords(records, files) {
+  const hydrated = clonePortableRecords(records || []);
+  for (const record of hydrated) {
+    if (!Array.isArray(record?.images)) continue;
+    for (const image of record.images) {
+      if (typeof image.src === 'string' && image.src.startsWith('data:')) continue; // backup precedente/compatibile
+      if (!image.mediaPath) continue;
+      const bytes = files.get(image.mediaPath);
+      if (!bytes) throw new Error(`Media immagine mancante: ${image.mediaPath}`);
+      image.src = mediaToDataUrl(bytes, image.mimeType || 'application/octet-stream');
+    }
+  }
+  return hydrated;
+}
+
 function backupFileName(appVersion, createdAt) {
   const stamp = createdAt.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   return `Agenda_iPad_FULL_${stamp}_app-${appVersion}_fmt-${BACKUP_FORMAT_VERSION}.zip`;
@@ -262,9 +357,10 @@ function backupFileName(appVersion, createdAt) {
 
 async function makeBackupPackage({ appVersion, records, preferences, config }) {
   const createdAt = new Date().toISOString();
-  const pagesBytes = jsonBytes({ schemaVersion: 1, count: records.length, records });
+  const media = extractMediaFromRecords(records);
+  const pagesBytes = jsonBytes({ schemaVersion: 2, count: media.portableRecords.length, records: media.portableRecords });
   const prefBytes = jsonBytes({ schemaVersion: 1, values: preferences });
-  const mediaBytes = jsonBytes({ schemaVersion: 1, items: [], note: 'Media store reserved for images/audio/video in future versions.' });
+  const mediaBytes = jsonBytes({ schemaVersion: 1, items: media.mediaItems, layoutVersion: 1 });
   const safeConfig = {
     frequency: config.frequency, customDays: config.customDays, retention: config.retention,
     destinations: config.destinations,
@@ -279,7 +375,7 @@ async function makeBackupPackage({ appVersion, records, preferences, config }) {
     reader: { minFormatVersion: 1 },
     backup: { type: 'full', immutable: true, recordCount: records.length },
     collections: [
-      { id: 'pages', path: 'data/pages.json', encoding: 'json', schemaVersion: 1 },
+      { id: 'pages', path: 'data/pages.json', encoding: 'json', schemaVersion: 2 },
       { id: 'preferences', path: 'data/preferences.json', encoding: 'json', schemaVersion: 1 },
       { id: 'media', path: 'media/index.json', encoding: 'json-index', schemaVersion: 1, extensible: true }
     ],
@@ -288,22 +384,22 @@ async function makeBackupPackage({ appVersion, records, preferences, config }) {
     checksumAlgorithm: 'SHA-256'
   };
   const manifestBytes = jsonBytes(manifest);
-  const checksums = {
-    algorithm: 'SHA-256',
-    files: {
-      'manifest.json': await sha256Hex(manifestBytes),
-      'data/pages.json': await sha256Hex(pagesBytes),
-      'data/preferences.json': await sha256Hex(prefBytes),
-      'media/index.json': await sha256Hex(mediaBytes)
-    }
+  const checksumFiles = {
+    'manifest.json': await sha256Hex(manifestBytes),
+    'data/pages.json': await sha256Hex(pagesBytes),
+    'data/preferences.json': await sha256Hex(prefBytes),
+    'media/index.json': await sha256Hex(mediaBytes)
   };
+  for (const entry of media.mediaEntries) checksumFiles[entry.name] = await sha256Hex(entry.bytes);
+  const checksums = { algorithm: 'SHA-256', files: checksumFiles };
   const checksumBytes = jsonBytes(checksums);
   const blob = storedZip([
     { name: 'manifest.json', bytes: manifestBytes },
     { name: 'checksums.json', bytes: checksumBytes },
     { name: 'data/pages.json', bytes: pagesBytes },
     { name: 'data/preferences.json', bytes: prefBytes },
-    { name: 'media/index.json', bytes: mediaBytes }
+    { name: 'media/index.json', bytes: mediaBytes },
+    ...media.mediaEntries
   ]);
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums };
 }
@@ -323,6 +419,7 @@ async function verifyBackupBlob(blob) {
   }
   const pages = parseJsonBytes(files.get('data/pages.json'), 'data/pages.json');
   const preferences = parseJsonBytes(files.get('data/preferences.json'), 'data/preferences.json');
+  if (Array.isArray(pages.records)) pages.records = hydrateMediaIntoRecords(pages.records, files);
   return { manifest, pages, preferences, files };
 }
 

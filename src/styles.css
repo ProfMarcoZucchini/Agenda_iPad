@@ -867,3 +867,133 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .page-header { padding-right:230px; }
   .page-meta { margin-right:207px; }
 }
+
+/* 0.1.27 — oggetti immagine sotto l'Ink, manipolabili solo in modalità Immagine. */
+.image-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--header-h);
+  bottom: var(--footer-h);
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  touch-action: none;
+}
+.paper.image-edit-mode .image-layer { pointer-events: none; }
+.paper.image-edit-mode #inkCanvas { cursor: default; }
+.image-object {
+  position: absolute;
+  border-radius: 4px;
+  transform-origin: 50% 50%;
+  pointer-events: none;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.image-layer.interactive .image-object { pointer-events: auto; cursor: move; }
+.image-object > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 3px;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+.image-object.selected::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1.5px solid rgba(55, 103, 169, .92);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.75);
+  pointer-events: none;
+}
+.image-handle {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: #3767a9;
+  box-shadow: 0 1px 5px rgba(0,0,0,.28);
+  pointer-events: auto;
+  touch-action: none;
+}
+.image-resize-handle { right: -10px; bottom: -10px; cursor: nwse-resize; }
+.image-rotate-handle { left: 50%; top: -31px; transform: translateX(-50%); cursor: grab; }
+.image-rotate-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%; top: 16px;
+  width: 1px; height: 14px;
+  background: rgba(55,103,169,.85);
+}
+.image-inspector {
+  position: absolute;
+  top: 58px;
+  right: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid rgba(86,72,53,.20);
+  border-radius: 11px;
+  background: rgba(249,242,225,.975);
+  box-shadow: 0 6px 18px rgba(55,43,29,.16);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+.image-inspector[hidden] { display: none !important; }
+.image-inspector button {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid rgba(86,72,53,.22);
+  border-radius: 8px;
+  background: rgba(255,255,255,.56);
+  color: #514536;
+  font-size: 9px;
+  font-weight: 750;
+  touch-action: manipulation;
+}
+.image-inspector button:disabled { opacity: .32; }
+.image-inspector button:not(:disabled):active { transform: translateY(1px); }
+.image-tool-button.active { background: rgba(112,151,200,.20); border-color: rgba(55,103,169,.42); }
+.visually-hidden-file {
+  position: fixed !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  left: -9999px !important;
+}
+.paper[data-paper-color="black"] .image-inspector {
+  background: rgba(42,45,47,.96);
+  border-color: rgba(255,255,255,.18);
+}
+.paper[data-paper-color="black"] .image-inspector button {
+  color: #f1eadf;
+  background: rgba(255,255,255,.07);
+  border-color: rgba(255,255,255,.20);
+}
+.page-preview .image-layer,
+.page-preview .image-object { pointer-events: none !important; }
+.page-preview .image-inspector { display: none !important; }
+
+/* Settimo comando nella toolbar: Immagine. */
+.page-header { padding-right: 414px; }
+.page-meta { margin-right: 364px; }
+@media (max-width:760px) {
+  .page-header { padding-right: 270px; }
+  .page-meta { margin-right: 246px; }
+  .image-inspector { top: 47px; right: 7px; gap: 3px; padding: 4px; }
+  .image-inspector button { min-height: 28px; padding: 4px 6px; font-size: 8px; }
+  .image-handle { width: 20px; height: 20px; }
+}
