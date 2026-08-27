@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.16b</title>
+  <title>Agenda iPad · 0.1.18</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.16b</div>
+        <div class="cover-version">v0.1.18</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -49,40 +49,64 @@
         <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore">▰<span>Evid.</span></button>
         <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><span class="eraser-symbol" aria-hidden="true">▱</span><span>Gomma</span></button>
         <button id="undoButton" class="tool-button undo-button" type="button" title="Annulla ultima modifica">↶<span>Undo</span></button>
-        <button id="styleButton" class="tool-button style-button" type="button" aria-expanded="false" title="Colore e spessore">●<span>Stile</span></button>
+        <button id="redoButton" class="tool-button redo-button" type="button" title="Ripristina ultima modifica annullata">↷<span>Redo</span></button>
+        <button id="styleButton" class="tool-button style-button" type="button" aria-expanded="false" title="Stile strumento e pagina">●<span>Stile</span></button>
       </nav>
 
-      <section id="stylePanel" class="style-panel" hidden aria-label="Colore e spessore dello strumento">
+      <section id="stylePanel" class="style-panel" hidden aria-label="Stile strumento e pagina">
         <div class="style-panel-title"><strong id="stylePanelTitle">Stile Penna</strong><span>impostazioni applicate ai nuovi tratti</span></div>
         <div id="penStyleGroup" class="style-group" data-style-for="pen">
           <div class="style-row"><span>Colore</span><div class="style-options">
-            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#111111" aria-label="Nero" style="--swatch:#111111"></button>
-            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#174f9b" aria-label="Blu" style="--swatch:#174f9b"></button>
-            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#a52b2b" aria-label="Rosso" style="--swatch:#a52b2b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#111111" aria-label="Nero" title="Nero" style="--swatch:#111111"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#174f9b" aria-label="Blu" title="Blu" style="--swatch:#174f9b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#a52b2b" aria-label="Rosso" title="Rosso" style="--swatch:#a52b2b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#23724b" aria-label="Verde" title="Verde" style="--swatch:#23724b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f5f3eb" aria-label="Bianco" title="Bianco" style="--swatch:#f5f3eb"></button>
           </div></div>
-          <div class="style-row"><span>Spessore</span><div class="style-options">
-            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="1.8">Fine</button>
-            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="2.5">Medio</button>
-            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="3.6">Largo</button>
+          <div class="style-row"><span>Spessore</span><div class="style-options width-options">
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="1.4" aria-label="Molto fine">XS</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="1.8" aria-label="Fine">S</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="2.5" aria-label="Medio">M</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="3.6" aria-label="Spesso">L</button>
+            <button class="width-choice" type="button" data-style-tool="pen" data-style-width="5" aria-label="Molto spesso">XL</button>
           </div></div>
         </div>
         <div id="highlighterStyleGroup" class="style-group" data-style-for="highlighter" hidden>
           <div class="style-row"><span>Colore</span><div class="style-options">
-            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f0d84f" aria-label="Giallo" style="--swatch:#f0d84f"></button>
-            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fd38b" aria-label="Verde" style="--swatch:#7fd38b"></button>
-            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ef91b2" aria-label="Rosa" style="--swatch:#ef91b2"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f0d84f" aria-label="Giallo" title="Giallo" style="--swatch:#f0d84f"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fd38b" aria-label="Verde" title="Verde" style="--swatch:#7fd38b"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ef91b2" aria-label="Rosa" title="Rosa" style="--swatch:#ef91b2"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fc8e8" aria-label="Azzurro" title="Azzurro" style="--swatch:#7fc8e8"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f3a65a" aria-label="Arancio" title="Arancio" style="--swatch:#f3a65a"></button>
           </div></div>
-          <div class="style-row"><span>Spessore</span><div class="style-options">
-            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="12">Fine</button>
-            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="15">Medio</button>
-            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="20">Largo</button>
+          <div class="style-row"><span>Spessore</span><div class="style-options width-options">
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="8" aria-label="Molto fine">XS</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="12" aria-label="Fine">S</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="15" aria-label="Medio">M</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="20" aria-label="Spesso">L</button>
+            <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="26" aria-label="Molto spesso">XL</button>
           </div></div>
         </div>
         <div id="eraserStyleGroup" class="style-group" data-style-for="eraser" hidden>
-          <div class="style-row"><span>Dimensione</span><div class="style-options">
-            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="16">Fine</button>
-            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="22">Media</button>
-            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="30">Larga</button>
+          <div class="style-row"><span>Dimensione</span><div class="style-options width-options">
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="12" aria-label="Molto piccola">XS</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="16" aria-label="Piccola">S</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="22" aria-label="Media">M</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="30" aria-label="Grande">L</button>
+            <button class="width-choice" type="button" data-style-tool="eraser" data-style-width="40" aria-label="Molto grande">XL</button>
+          </div></div>
+        </div>
+        <div id="pageStyleGroup" class="page-style-group" aria-label="Stile pagina">
+          <div class="page-style-heading">Pagina</div>
+          <div class="style-row"><span>Colore carta</span><div class="style-options page-options">
+            <button class="page-color-choice" type="button" data-page-color="yellow" aria-label="Carta gialla"><i class="paper-chip paper-yellow" aria-hidden="true"></i><span>Giallo</span></button>
+            <button class="page-color-choice" type="button" data-page-color="white" aria-label="Carta bianca"><i class="paper-chip paper-white" aria-hidden="true"></i><span>Bianco</span></button>
+            <button class="page-color-choice" type="button" data-page-color="black" aria-label="Carta lavagna"><i class="paper-chip paper-black" aria-hidden="true"></i><span>Lavagna</span></button>
+          </div></div>
+          <div class="style-row"><span>Modello</span><div class="style-options page-options">
+            <button class="page-template-choice" type="button" data-page-template="ruled">Righe</button>
+            <button class="page-template-choice" type="button" data-page-template="grid">Griglia</button>
+            <button class="page-template-choice" type="button" data-page-template="blank">Vuoto</button>
           </div></div>
         </div>
       </section>
@@ -96,17 +120,17 @@
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
       <footer class="baseline-footer">
-        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE + STARTUP</span>
+        <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.16b</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.18</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.16b</h2>
+      <h2>Diagnostica Pencil 0.1.18</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

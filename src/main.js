@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.16b';
+const APP_VERSION = '0.1.18';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -10,11 +10,16 @@ const HIGHLIGHTER_OPACITY = 0.30;
 const ERASER_WIDTH = 22;
 const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
-  pen: { colors: ['#111111', '#174f9b', '#a52b2b'], widths: [1.8, 2.5, 3.6] },
-  highlighter: { colors: ['#f0d84f', '#7fd38b', '#ef91b2'], widths: [12, 15, 20] },
-  eraser: { widths: [16, 22, 30] }
+  pen: { colors: ['#111111', '#174f9b', '#a52b2b', '#23724b', '#f5f3eb'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
+  highlighter: { colors: ['#f0d84f', '#7fd38b', '#ef91b2', '#7fc8e8', '#f3a65a'], widths: [8, 12, 15, 20, 26] },
+  eraser: { widths: [12, 16, 22, 30, 40] }
 });
-const UNDO_LIMIT = 5;
+const UNDO_LIMIT = 10;
+const REDO_LIMIT = 10;
+
+const DEFAULT_PAGE_STYLE = Object.freeze({ color: 'yellow', template: 'ruled' });
+const ALLOWED_PAGE_COLORS = Object.freeze(['yellow', 'white', 'black']);
+const ALLOWED_PAGE_TEMPLATES = Object.freeze(['ruled', 'grid', 'blank']);
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
 const MIN_DATE = '2026-01-01';
@@ -39,12 +44,15 @@ const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const undoButton = document.getElementById('undoButton');
+const redoButton = document.getElementById('redoButton');
 const styleButton = document.getElementById('styleButton');
 const stylePanel = document.getElementById('stylePanel');
 const stylePanelTitle = document.getElementById('stylePanelTitle');
 const styleGroups = [...document.querySelectorAll('[data-style-for]')];
 const colorSwatches = [...document.querySelectorAll('[data-style-color]')];
 const widthChoices = [...document.querySelectorAll('[data-style-width]')];
+const pageColorChoices = [...document.querySelectorAll('[data-page-color]')];
+const pageTemplateChoices = [...document.querySelectorAll('[data-page-template]')];
 const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
@@ -60,7 +68,7 @@ const notesCountCache = new Map();
 let strokes = [];
 let drawing = false;
 let pointerId = null;
-// 0.1.16b — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
+// 0.1.17 — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
 // Non ci affidiamo alla sintesi di `click` di Safari/iPadOS.
 const pencilUiPointers = new Map();
 const recentPencilUiActivation = new WeakMap();
@@ -87,7 +95,9 @@ let pageTurning = false;
 let previewPage = null;
 let activeTool = 'pen';
 let undoHistory = [];
+let redoHistory = [];
 let toolStyles = loadToolStyles();
+let pageStyle = { ...DEFAULT_PAGE_STYLE };
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -172,6 +182,53 @@ function saveToolStyles() {
   } catch {}
 }
 
+
+function normalizePageStyle(value) {
+  const color = ALLOWED_PAGE_COLORS.includes(value?.color) ? value.color : DEFAULT_PAGE_STYLE.color;
+  const template = ALLOWED_PAGE_TEMPLATES.includes(value?.template) ? value.template : DEFAULT_PAGE_STYLE.template;
+  return { color, template };
+}
+
+function applyPageStyle(target = paper, value = pageStyle) {
+  if (!target) return;
+  const normalized = normalizePageStyle(value);
+  target.dataset.paperColor = normalized.color;
+  target.dataset.pageTemplate = normalized.template;
+}
+
+function updatePageStyleUi() {
+  for (const button of pageColorChoices) {
+    const selected = button.dataset.pageColor === pageStyle.color;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+  for (const button of pageTemplateChoices) {
+    const selected = button.dataset.pageTemplate === pageStyle.template;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+}
+
+function setPageColor(color) {
+  if (drawing || pageTurning || !ALLOWED_PAGE_COLORS.includes(color)) return;
+  pageStyle = { ...pageStyle, color };
+  applyPageStyle();
+  updatePageStyleUi();
+  dirty = true;
+  scheduleSave();
+  statusLabel.textContent = 'colore carta impostato';
+}
+
+function setPageTemplate(template) {
+  if (drawing || pageTurning || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
+  pageStyle = { ...pageStyle, template };
+  applyPageStyle();
+  updatePageStyleUi();
+  dirty = true;
+  scheduleSave();
+  statusLabel.textContent = 'modello pagina impostato';
+}
+
 function updateStyleUi() {
   if (!stylePanel) return;
   const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma' };
@@ -191,6 +248,7 @@ function updateStyleUi() {
     const color = activeTool === 'eraser' ? '#e7dfd1' : toolStyles[activeTool]?.color ?? PEN_COLOR;
     styleButton.style.setProperty('--active-style-color', color);
   }
+  updatePageStyleUi();
 }
 
 function setStyleColor(tool, color) {
@@ -208,6 +266,12 @@ function setStyleWidth(tool, width) {
   saveToolStyles();
   updateStyleUi();
   statusLabel.textContent = 'spessore impostato';
+}
+
+function closeStylePanel() {
+  if (!stylePanel || stylePanel.hidden) return;
+  stylePanel.hidden = true;
+  styleButton?.setAttribute('aria-expanded', 'false');
 }
 
 function toggleStylePanel() {
@@ -239,7 +303,7 @@ function updateHeader() {
   if (baselineLabel) {
     baselineLabel.textContent = currentPageKind === 'note'
       ? `NOTE DEL GIORNO ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
-      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS + STYLE';
+      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE';
   }
 }
 
@@ -382,6 +446,7 @@ function updateToolUi() {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
   if (undoButton) undoButton.disabled = undoHistory.length === 0;
+  if (redoButton) redoButton.disabled = redoHistory.length === 0;
 }
 
 function selectTool(tool) {
@@ -394,25 +459,52 @@ function selectTool(tool) {
 
 function resetUndoHistory() {
   undoHistory = [];
+  redoHistory = [];
   updateToolUi();
 }
 
+function pushBounded(history, action, limit) {
+  history.push(action);
+  if (history.length > limit) history.shift();
+}
+
 function rememberUndo(action) {
-  undoHistory.push(action);
-  if (undoHistory.length > UNDO_LIMIT) undoHistory.shift();
+  pushBounded(undoHistory, action, UNDO_LIMIT);
+  // Come nei normali editor: una nuova modifica invalida la catena Redo.
+  redoHistory = [];
   updateToolUi();
 }
 
 function undoLastModification() {
   if (drawing || pageTurning || !ready || !undoHistory.length) return;
   const action = undoHistory.pop();
-  if (action?.type === 'add-stroke') {
-    const index = strokes.findIndex((stroke) => stroke.id === action.strokeId);
-    if (index >= 0) strokes.splice(index, 1);
+  if (action?.type === 'add-stroke' && action.stroke?.id) {
+    const index = strokes.findIndex((stroke) => stroke.id === action.stroke.id);
+    if (index >= 0) {
+      const [removed] = strokes.splice(index, 1);
+      pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
+    }
   }
   renderAll();
   dirty = true;
   statusLabel.textContent = 'annullato';
+  updateToolUi();
+  scheduleSave();
+}
+
+function redoLastModification() {
+  if (drawing || pageTurning || !ready || !redoHistory.length) return;
+  const action = redoHistory.pop();
+  if (action?.type === 'add-stroke' && action.stroke?.id) {
+    if (!strokes.some((stroke) => stroke.id === action.stroke.id)) {
+      const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : strokes.length, strokes.length));
+      strokes.splice(index, 0, action.stroke);
+      pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
+    }
+  }
+  renderAll();
+  dirty = true;
+  statusLabel.textContent = 'ripristinato';
   updateToolUi();
   scheduleSave();
 }
@@ -575,7 +667,7 @@ function cancelPendingSave() {
   idleHandle = 0;
 }
 
-async function persistSnapshot(descriptor, pageStrokes, updateStatus = true) {
+async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle) {
   try {
     await openDb();
     const txStart = performance.now();
@@ -589,6 +681,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true) {
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage',
       strokes: pageStrokes,
+      pageStyle: normalizePageStyle(pageStyleSnapshot),
       modifiedAt: new Date().toISOString()
     });
     const putCallMs = performance.now() - putStart;
@@ -682,7 +775,7 @@ function finalizeStroke(reason = 'pointerup') {
   const completedStroke = activeStroke?.points?.length ? activeStroke : null;
   if (completedStroke) {
     strokes.push(completedStroke);
-    rememberUndo({ type: 'add-stroke', strokeId: completedStroke.id });
+    rememberUndo({ type: 'add-stroke', stroke: completedStroke, index: strokes.length - 1 });
   }
   if (currentStrokeDiag) {
     currentStrokeDiag.endedBy = reason;
@@ -720,6 +813,10 @@ function activateUiButton(button) {
     undoLastModification();
     return;
   }
+  if (button === redoButton) {
+    redoLastModification();
+    return;
+  }
   if (button === styleButton) {
     toggleStylePanel();
     return;
@@ -730,6 +827,14 @@ function activateUiButton(button) {
   }
   if (button.matches('.width-choice')) {
     setStyleWidth(button.dataset.styleTool, button.dataset.styleWidth);
+    return;
+  }
+  if (button.matches('.page-color-choice')) {
+    setPageColor(button.dataset.pageColor);
+    return;
+  }
+  if (button.matches('.page-template-choice')) {
+    setPageTemplate(button.dataset.pageTemplate);
     return;
   }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
@@ -744,6 +849,9 @@ function handlePointerDown(ev) {
   // I controlli UI vengono gestiti da listener DIRETTI sui pulsanti.
   // Il motore Ink non deve mai interpretare un contatto nato sulla toolbar/pannelli.
   if (isUiControlTarget(ev.target)) return;
+  // 0.1.17: appena Apple Pencil torna sul foglio, il pannello Stile si richiude.
+  // L'operazione avviene una sola volta al pointerdown e non entra nel loop di rendering Ink.
+  if (ev.pointerType === 'pen' && paper?.contains(ev.target)) closeStylePanel();
   if (ev.pointerType === 'touch') {
     startPageSwipe(ev);
     return;
@@ -844,7 +952,9 @@ function buildReport() {
     `Pipeline: Coalesced + Retina + Storage differito`,
     `Strumento attivo: ${activeTool}`,
     `Stile attivo: ${toolStyles[activeTool]?.color ?? 'n/a'} · ${toolStyles[activeTool]?.width ?? 'n/a'} px`,
+    `Pagina: ${pageStyle.color} · ${pageStyle.template}`, 
     `Undo disponibili: ${undoHistory.length}/${UNDO_LIMIT}`,
+    `Redo disponibili: ${redoHistory.length}/${REDO_LIMIT}`,
     `DPR canvas: ${fmt(dpr, 2)}`,
     `Tratti pagina: ${strokes.length}`,
     `Tratti completati sessione: ${session.strokesCompleted}`,
@@ -1003,13 +1113,19 @@ async function loadPageForPreview(descriptor, preview) {
     await openDb();
     const record = await getRecord(descriptor.key);
     session.storageReads++;
-    const targetStrokes = Array.isArray(record?.strokes) ? record.strokes : [];
-    if (preview?.isConnected) drawPreviewInk(preview, targetStrokes);
-    return targetStrokes;
+    const targetPage = {
+      strokes: Array.isArray(record?.strokes) ? record.strokes : [],
+      pageStyle: normalizePageStyle(record?.pageStyle)
+    };
+    if (preview?.isConnected) {
+      applyPageStyle(preview, targetPage.pageStyle);
+      drawPreviewInk(preview, targetPage.strokes);
+    }
+    return targetPage;
   } catch (err) {
     session.storageErrors++;
     console.warn('Anteprima pagina non disponibile', err);
-    return [];
+    return { strokes: [], pageStyle: { ...DEFAULT_PAGE_STYLE } };
   }
 }
 
@@ -1142,9 +1258,9 @@ function movePageSwipe(ev) {
       preview.style.transform = `translateY(${direction * 16}px) scale(.993)`;
     }
     preview.style.filter = 'brightness(.96)';
-    pageSwipe.previewPromise = loadPageForPreview(target, preview).then((targetStrokes) => {
-      if (pageSwipe?.target?.key === target.key) pageSwipe.targetStrokes = targetStrokes;
-      return targetStrokes;
+    pageSwipe.previewPromise = loadPageForPreview(target, preview).then((targetPage) => {
+      if (pageSwipe?.target?.key === target.key) pageSwipe.targetPage = targetPage;
+      return targetPage;
     });
     if (axis === 'x') statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
     else statusLabel.textContent = target.kind === 'agenda' ? 'torna ad Agenda' : `Nota ${target.noteIndex}/${target.noteTotal}`;
@@ -1189,9 +1305,10 @@ async function commitPageTurn() {
   cancelPendingSave();
   const oldDescriptor = pageDescriptor();
   const oldStrokes = strokes;
+  const oldPageStyle = { ...pageStyle };
   const target = swipe.target;
-  const targetPromise = swipe.previewPromise ?? Promise.resolve([]);
-  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false) : Promise.resolve(true);
+  const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], pageStyle: { ...DEFAULT_PAGE_STYLE } });
+  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle) : Promise.resolve(true);
   const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
   const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
 
@@ -1213,7 +1330,7 @@ async function commitPageTurn() {
     previewPage.style.filter = 'brightness(1)';
   }
 
-  const [targetStrokes, , saveOk, metaOk] = await Promise.all([
+  const [targetPage, , saveOk, metaOk] = await Promise.all([
     targetPromise, waitMs(duration + 20), savePromise, metaPromise
   ]);
   if ((dirty && !saveOk) || !metaOk) {
@@ -1230,7 +1347,10 @@ async function commitPageTurn() {
   currentPageKind = target.kind;
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
-  strokes = Array.isArray(targetStrokes) ? targetStrokes : [];
+  strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
+  pageStyle = normalizePageStyle(targetPage?.pageStyle);
+  applyPageStyle();
+  updatePageStyleUi();
   resetUndoHistory();
   dirty = false;
   if (target.createNote) session.notesCreated++;
@@ -1274,7 +1394,7 @@ function endPageSwipe(ev, cancelled = false) {
 }
 
 
-// 0.1.16b — attivazione UI indipendente dalla pipeline Ink.
+// 0.1.17 — attivazione UI indipendente dalla pipeline Ink.
 // Apple Pencil su iPadOS può essere esposta come `pen` oppure, in alcuni percorsi
 // di compatibilità, arrivare come touch. Per questo tutti i pointer NON-mouse sui
 // pulsanti vengono attivati direttamente al pointerdown. `touchstart` resta come
@@ -1330,9 +1450,12 @@ function bindDirectUiButton(button) {
 const directUiButtons = [...new Set([
   ...toolButtons,
   undoButton,
+  redoButton,
   styleButton,
   ...colorSwatches,
-  ...widthChoices
+  ...widthChoices,
+  ...pageColorChoices,
+  ...pageTemplateChoices
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -1363,6 +1486,10 @@ undoButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(undoButton)) return;
   undoLastModification();
 });
+redoButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(redoButton)) return;
+  redoLastModification();
+});
 styleButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(styleButton)) return;
   toggleStylePanel();
@@ -1377,6 +1504,18 @@ for (const choice of widthChoices) {
   choice.addEventListener('click', () => {
     if (wasJustActivatedByPencil(choice)) return;
     setStyleWidth(choice.dataset.styleTool, choice.dataset.styleWidth);
+  });
+}
+for (const choice of pageColorChoices) {
+  choice.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(choice)) return;
+    setPageColor(choice.dataset.pageColor);
+  });
+}
+for (const choice of pageTemplateChoices) {
+  choice.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(choice)) return;
+    setPageTemplate(choice.dataset.pageTemplate);
   });
 }
 
@@ -1414,6 +1553,9 @@ async function loadInitialPage() {
     ]);
     session.storageReads++;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    pageStyle = normalizePageStyle(record?.pageStyle);
+    applyPageStyle();
+    updatePageStyleUi();
     resetUndoHistory();
     dirty = false;
     renderAll();
@@ -1421,6 +1563,9 @@ async function loadInitialPage() {
   } catch (err) {
     session.storageErrors++;
     strokes = [];
+    pageStyle = { ...DEFAULT_PAGE_STYLE };
+    applyPageStyle();
+    updatePageStyleUi();
     renderAll();
     statusLabel.textContent = 'storage non disponibile';
     console.warn('Caricamento pagina non riuscito', err);
@@ -1431,6 +1576,7 @@ async function bootAgenda() {
   updateHeader();
   updateToolUi();
   updateStyleUi();
+  applyPageStyle();
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
