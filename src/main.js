@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.21a';
+const APP_VERSION = '0.1.22';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -9,6 +9,7 @@ const HIGHLIGHTER_WIDTH = 15;
 const HIGHLIGHTER_OPACITY = 0.30;
 const ERASER_WIDTH = 22;
 const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
+const CALENDAR_VISIBILITY_STORAGE_KEY = 'agenda-ipad-calendar-visible-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
   pen: { colors: ['#111111', '#174f9b', '#a52b2b', '#23724b', '#f5f3eb'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
   highlighter: { colors: ['#f0d84f', '#7fd38b', '#ef91b2', '#7fc8e8', '#f3a65a'], widths: [8, 12, 15, 20, 26] },
@@ -52,6 +53,8 @@ const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
+const calendarButton = document.getElementById('calendarButton');
+const miniCalendar = document.getElementById('miniCalendar');
 const styleButton = document.getElementById('styleButton');
 const stylePanel = document.getElementById('stylePanel');
 const stylePanelTitle = document.getElementById('stylePanelTitle');
@@ -117,6 +120,8 @@ let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
+let calendarVisiblePreference = false;
+try { calendarVisiblePreference = localStorage.getItem(CALENDAR_VISIBILITY_STORAGE_KEY) === '1'; } catch {}
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -570,6 +575,57 @@ function plannerHtml(mode, dateString) {
   return buildDailyPlannerHtml(dateString);
 }
 
+function buildMiniCalendarHtml(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const selectedDay = d.getDate();
+  const first = new Date(year, month, 1, 12);
+  const offset = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0, 12).getDate();
+  const monthTitle = new Intl.DateTimeFormat('it-IT', { month: 'long', year: 'numeric' }).format(first);
+  const weekdayLabels = ['L','M','M','G','V','S','D'].map((label) => `<span class="mini-calendar-weekday">${label}</span>`).join('');
+  const cells = [];
+  for (let i = 0; i < offset; i++) cells.push('<i class="mini-calendar-empty" aria-hidden="true"></i>');
+  for (let day = 1; day <= daysInMonth; day++) {
+    const selected = day === selectedDay ? ' selected' : '';
+    cells.push(`<span class="mini-calendar-day${selected}">${day}</span>`);
+  }
+  while (cells.length % 7) cells.push('<i class="mini-calendar-empty" aria-hidden="true"></i>');
+  return `<div class="mini-calendar-title">${monthTitle}</div><div class="mini-calendar-grid">${weekdayLabels}${cells.join('')}</div>`;
+}
+
+function syncCalendarForRoot(root, descriptor) {
+  const panel = root.querySelector('.mini-calendar');
+  const button = root.querySelector('#calendarButton, .calendar-button');
+  const isAgenda = descriptor.kind === 'agenda';
+  const shown = isAgenda && calendarVisiblePreference;
+  if (button) {
+    button.hidden = !isAgenda;
+    button.classList.toggle('active', shown);
+    button.setAttribute('aria-pressed', shown ? 'true' : 'false');
+    button.title = shown ? 'Nascondi calendario' : 'Mostra calendario';
+  }
+  if (panel) {
+    panel.hidden = !shown;
+    panel.setAttribute('aria-hidden', shown ? 'false' : 'true');
+    panel.innerHTML = shown ? buildMiniCalendarHtml(descriptor.date) : '';
+  }
+}
+
+function syncCalendarUi() {
+  syncCalendarForRoot(paper, pageDescriptor());
+}
+
+function toggleCalendar() {
+  if (drawing || pageTurning || currentPageKind !== 'agenda') return;
+  closeStylePanel();
+  calendarVisiblePreference = !calendarVisiblePreference;
+  try { localStorage.setItem(CALENDAR_VISIBILITY_STORAGE_KEY, calendarVisiblePreference ? '1' : '0'); } catch {}
+  syncCalendarUi();
+  statusLabel.textContent = calendarVisiblePreference ? 'calendario visibile' : 'calendario nascosto';
+}
+
 function configurePageRoot(root, descriptor) {
   const planner = isPlannerKind(descriptor.kind);
   const mode = planner ? plannerModeFromKind(descriptor.kind) : null;
@@ -583,6 +639,7 @@ function configurePageRoot(root, descriptor) {
   }
   const modeBar = root.querySelector('.planner-mode-bar');
   if (modeBar) modeBar.hidden = !planner;
+  syncCalendarForRoot(root, descriptor);
   root.querySelectorAll('.planner-mode-button').forEach((button) => {
     const selected = planner && button.dataset.plannerMode === mode;
     button.classList.toggle('selected', selected);
@@ -1112,7 +1169,7 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, .style-panel, .report-panel'));
+  return target instanceof Element && Boolean(target.closest('button, .style-panel, .report-panel, .mini-calendar'));
 }
 
 function getUiButtonTarget(target) {
@@ -1133,6 +1190,10 @@ function activateUiButton(button) {
   }
   if (button === redoButton) {
     redoLastModification();
+    return;
+  }
+  if (button === calendarButton) {
+    toggleCalendar();
     return;
   }
   if (button === styleButton) {
@@ -1807,7 +1868,7 @@ function endPageSwipe(ev, cancelled = false) {
 }
 
 
-// 0.1.21aa — gesture pagina affidate ai Touch Events nativi per il dito.
+// 0.1.21a — gesture pagina affidate ai Touch Events nativi per il dito.
 // La Pencil continua a usare esclusivamente Pointer Events. Questo evita che Safari/iPadOS
 // perda o interrompa una sequenza verticale prima che il Planner venga agganciato.
 function findNativeTouch(list, identifier) {
@@ -1917,6 +1978,7 @@ function bindDirectUiButton(button) {
 }
 
 const directUiButtons = [...new Set([
+  calendarButton,
   ...toolButtons,
   undoButton,
   redoButton,
@@ -1992,6 +2054,10 @@ undoButton?.addEventListener('click', () => {
 redoButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(redoButton)) return;
   redoLastModification();
+});
+calendarButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(calendarButton)) return;
+  toggleCalendar();
 });
 styleButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(styleButton)) return;
@@ -2171,4 +2237,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 7 · Ink stabile + stile pagina con ambito globale + colori automatici`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 8 · calendario Agenda richiamabile + Ink stabile`);

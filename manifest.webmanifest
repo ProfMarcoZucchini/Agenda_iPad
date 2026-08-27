@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.21a - Planner giornaliero/settimanale/mensile/annuale con Ink stabile e sincronizzazione Agenda",
+  "description": "Agenda iPad 0.1.22 - Planner e Agenda con Ink stabile, calendario mensile richiamabile e sincronizzazione giornaliera",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

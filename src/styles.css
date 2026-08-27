@@ -533,3 +533,79 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .planner-mini-month h3 { font-size:5.8px; }
   .planner-mini-days span, .planner-mini-days i { font-size:4.7px; }
 }
+
+
+/* 0.1.22 — Calendario Agenda richiamabile dalla toolbar. */
+.calendar-button { font-size:15px; }
+.mini-calendar {
+  position:absolute;
+  right:18px;
+  bottom:calc(var(--footer-h) + 14px);
+  z-index:5;
+  width:214px;
+  padding:10px 11px 11px;
+  border:1px solid rgba(84,70,52,.23);
+  border-radius:12px;
+  background:rgba(249,242,225,.965);
+  box-shadow:0 8px 22px rgba(55,43,29,.15);
+  color:#514536;
+  pointer-events:auto;
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+  -webkit-backdrop-filter:blur(6px);
+  backdrop-filter:blur(6px);
+}
+.mini-calendar[hidden] { display:none !important; }
+.mini-calendar-title {
+  margin-bottom:7px;
+  text-align:center;
+  font-family:Georgia,"Times New Roman",serif;
+  font-size:13px;
+  font-weight:700;
+  text-transform:capitalize;
+  letter-spacing:.02em;
+}
+.mini-calendar-grid {
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+  gap:2px;
+  align-items:center;
+  justify-items:center;
+}
+.mini-calendar-weekday {
+  width:23px; height:19px; display:grid; place-items:center;
+  font-size:8px; font-weight:850; opacity:.68;
+}
+.mini-calendar-day,
+.mini-calendar-empty {
+  width:23px; height:23px; display:grid; place-items:center;
+  border-radius:50%; font-size:9px; font-weight:650;
+  font-style:normal;
+}
+.mini-calendar-day.selected {
+  background:#514536;
+  color:#fffaf0;
+  box-shadow:0 0 0 2px rgba(81,69,54,.12);
+}
+.paper[data-paper-color="black"] .mini-calendar {
+  border-color:rgba(255,255,255,.17);
+  background:rgba(40,43,45,.96);
+  color:#eee6d7;
+  box-shadow:0 8px 22px rgba(0,0,0,.25);
+}
+.paper[data-paper-color="black"] .mini-calendar-day.selected {
+  background:#f5f3eb;
+  color:#25282a;
+  box-shadow:0 0 0 2px rgba(245,243,235,.12);
+}
+/* Sette comandi nella toolbar Agenda; il Calendario è nascosto su Note/Planner. */
+.page-header { padding-right:410px; }
+.page-meta { margin-right:360px; }
+@media (max-width:760px) {
+  .page-header { padding-right:270px; }
+  .page-meta { margin-right:246px; }
+  .mini-calendar { right:10px; width:196px; padding:8px 9px 9px; }
+  .mini-calendar-weekday, .mini-calendar-day, .mini-calendar-empty { width:21px; }
+  .mini-calendar-day, .mini-calendar-empty { height:21px; }
+}

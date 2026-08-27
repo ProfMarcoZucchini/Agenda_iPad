@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.21a</title>
+  <title>Agenda iPad · 0.1.22</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.21a</div>
+        <div class="cover-version">v0.1.22</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -52,6 +52,7 @@
       </nav>
 
       <nav class="quick-toolbar" aria-label="Strumenti rapidi di scrittura">
+        <button id="calendarButton" class="tool-button calendar-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario">📅<span>Cal.</span></button>
         <button id="penToolButton" class="tool-button active" type="button" data-tool="pen" aria-pressed="true" title="Penna">✎<span>Penna</span></button>
         <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore">▰<span>Evid.</span></button>
         <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><span class="eraser-symbol" aria-hidden="true">▱</span><span>Gomma</span></button>
@@ -124,6 +125,8 @@
 
       <section id="plannerLayer" class="planner-layer" hidden aria-hidden="true"></section>
 
+      <aside id="miniCalendar" class="mini-calendar" hidden aria-hidden="true" aria-label="Calendario del mese"></aside>
+
       <div class="hours" aria-hidden="true">
         <span>07:00</span><span>08:00</span><span>09:00</span><span>10:00</span><span>11:00</span>
         <span>12:00</span><span>13:00</span><span>14:00</span><span>15:00</span><span>16:00</span>
@@ -136,14 +139,14 @@
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.21a</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.22</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.21a</h2>
+      <h2>Diagnostica Pencil 0.1.22</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
