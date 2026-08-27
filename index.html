@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.22</title>
+  <title>Agenda iPad · 0.1.23</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.22</div>
+        <div class="cover-version">v0.1.23</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -138,15 +138,80 @@
       <footer class="baseline-footer">
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
+        <button id="settingsButton" class="settings-button" type="button" aria-expanded="false" title="Impostazioni e backup">⚙</button>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.22</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.23</button>
       </footer>
     </section>
   </main>
 
+  <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
+    <div class="settings-card">
+      <header class="settings-header">
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.23</p></div>
+        <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
+      </header>
+      <div class="settings-scroll">
+        <section class="settings-section">
+          <h3>Backup automatico</h3>
+          <div class="settings-grid">
+            <label class="setting-field"><span>Frequenza</span><select id="backupFrequency">
+              <option value="off">Disattivato</option><option value="daily">Giornaliero</option><option value="weekly">Settimanale</option><option value="monthly">Mensile</option><option value="custom">Personalizzato</option>
+            </select></label>
+            <label class="setting-field" id="customDaysField"><span>Ogni N giorni</span><input id="backupCustomDays" type="number" min="1" max="365" value="3"></label>
+            <label class="setting-field"><span>Backup da conservare</span><input id="backupRetention" type="number" min="3" max="120" value="30"></label>
+            <label class="setting-check"><input id="backupOnStartup" type="checkbox" checked><span>Controlla scadenza all’avvio / ritorno in primo piano</span></label>
+          </div>
+          <p class="settings-note">Su iPadOS una PWA non può garantire esecuzione quando è completamente chiusa: il backup scaduto viene eseguito appena Agenda iPad viene aperta o torna in primo piano.</p>
+        </section>
+
+        <section class="settings-section">
+          <h3>Destinazioni</h3>
+          <label class="destination-row"><input id="destInternal" type="checkbox" checked disabled><span><strong>Archivio locale dell’app</strong><small>Sempre attivo · copia automatica separata dal database Agenda</small></span></label>
+          <label class="destination-row"><input id="destLocalFolder" type="checkbox"><span><strong>Cartella locale</strong><small id="localFolderStatus">Disponibile solo se il browser consente la scelta persistente di una cartella</small></span></label>
+          <div class="destination-actions"><button id="chooseLocalFolderButton" type="button">Scegli cartella</button><button id="exportLatestButton" type="button">Esporta ultimo backup</button></div>
+
+          <label class="destination-row"><input id="destGoogleDrive" type="checkbox"><span><strong>Google Drive</strong><small>Upload API Drive · token OAuth mantenuto solo per la sessione</small></span></label>
+          <div class="cloud-grid" id="googleDriveSettings">
+            <label><span>Client ID</span><input id="googleClientId" type="text" autocomplete="off" placeholder="…apps.googleusercontent.com"></label>
+            <label><span>ID cartella Drive</span><input id="googleFolderId" type="text" autocomplete="off" placeholder="vuoto = Il mio Drive"></label>
+            <label class="token-field"><span>Access token OAuth (sessione)</span><input id="googleAccessToken" type="password" autocomplete="off" placeholder="non viene salvato"></label>
+          </div>
+
+          <label class="destination-row"><input id="destOneDrive" type="checkbox"><span><strong>Microsoft OneDrive</strong><small>Microsoft Graph · token OAuth mantenuto solo per la sessione</small></span></label>
+          <div class="cloud-grid" id="oneDriveSettings">
+            <label><span>Client ID</span><input id="oneDriveClientId" type="text" autocomplete="off"></label>
+            <label><span>Tenant</span><input id="oneDriveTenant" type="text" autocomplete="off" value="common"></label>
+            <label><span>Cartella</span><input id="oneDriveFolder" type="text" autocomplete="off" value="Agenda iPad Backups"></label>
+            <label class="token-field"><span>Access token OAuth (sessione)</span><input id="oneDriveAccessToken" type="password" autocomplete="off" placeholder="non viene salvato"></label>
+          </div>
+          <p class="settings-note">Client ID e cartelle vengono salvati localmente; i token OAuth non vengono mai inclusi nei backup e restano soltanto in memoria per la sessione corrente.</p>
+        </section>
+
+        <section class="settings-section">
+          <h3>Formato e sicurezza</h3>
+          <div class="format-summary"><code>.zip</code><span>Manifest JSON · dati JSON · SHA‑256 · cartella media estendibile</span></div>
+          <label class="setting-check"><input id="verifyAfterBackup" type="checkbox" checked><span>Verifica checksum dopo la creazione</span></label>
+          <div class="backup-actions">
+            <button id="backupNowButton" class="primary" type="button">Backup adesso</button>
+            <button id="verifyBackupButton" type="button">Verifica ultimo</button>
+            <button id="restoreBackupButton" type="button">Ripristina da file…</button>
+            <input id="restoreBackupInput" type="file" accept=".zip,.agendaipadbackup,application/zip" hidden>
+          </div>
+          <div id="backupStatus" class="backup-status">Nessun backup eseguito in questa sessione.</div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Archivio backup</h3>
+          <div id="backupHistory" class="backup-history"><div class="backup-empty">Caricamento…</div></div>
+        </section>
+      </div>
+    </div>
+  </section>
+
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.22</h2>
+      <h2>Diagnostica Pencil 0.1.23</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

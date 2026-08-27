@@ -1,4 +1,5 @@
-const APP_VERSION = '0.1.22';
+import { initBackupFoundation } from './backup.js';
+const APP_VERSION = '0.1.23';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -118,6 +119,7 @@ let toolStyles = loadToolStyles();
 let pageStyle = { ...DEFAULT_PAGE_STYLE };
 let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
+let backupFoundation = null;
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
@@ -1169,7 +1171,7 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, .style-panel, .report-panel, .mini-calendar'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel'));
 }
 
 function getUiButtonTarget(target) {
@@ -2029,7 +2031,10 @@ window.addEventListener('pointermove', handlePointerMove, { passive: false, capt
 window.addEventListener('pointerup', handlePointerUp, { passive: false, capture: true });
 window.addEventListener('pointercancel', handlePointerCancel, { passive: false, capture: true });
 
-document.addEventListener('touchmove', (ev) => ev.preventDefault(), { passive: false });
+document.addEventListener('touchmove', (ev) => {
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll')) return;
+  ev.preventDefault();
+}, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gesturechange', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gestureend', (ev) => ev.preventDefault(), { passive: false });
@@ -2165,6 +2170,16 @@ async function bootAgenda() {
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
   ready = true;
+  if (!backupFoundation) {
+    backupFoundation = initBackupFoundation({
+      appVersion: APP_VERSION,
+      mainDbName: DB_NAME,
+      mainStore: STORE,
+      flushCurrent: async () => { if (dirty) await persistNow(); },
+      setAppStatus: (message) => { statusLabel.textContent = message; },
+      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy
+    });
+  }
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
@@ -2237,4 +2252,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 8 · calendario Agenda richiamabile + Ink stabile`);
+console.info(`Agenda iPad ${APP_VERSION} · backup foundation + calendario + Planner + Ink stabile`);
