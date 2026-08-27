@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.25</title>
+  <title>Agenda iPad · 0.1.26</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.25</div>
+        <div class="cover-version">v0.1.26</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -52,7 +52,6 @@
       </nav>
 
       <nav class="quick-toolbar" aria-label="Strumenti rapidi di scrittura">
-        <button id="calendarButton" class="tool-button calendar-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario">📅<span>Cal.</span></button>
         <button id="penToolButton" class="tool-button active" type="button" data-tool="pen" aria-pressed="true" title="Penna">✎<span>Penna</span></button>
         <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore">▰<span>Evid.</span></button>
         <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><span class="eraser-symbol" aria-hidden="true">▱</span><span>Gomma</span></button>
@@ -139,16 +138,25 @@
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Versione e diagnostica">v0.1.25</button>
-        <button id="settingsButton" class="settings-button backup-button" type="button" aria-expanded="false" title="Backup e impostazioni" aria-label="Backup e impostazioni">
-          <svg class="backup-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-            <ellipse cx="13" cy="7" rx="7.2" ry="3.1"></ellipse>
-            <path d="M5.8 7v6.4c0 1.7 3.2 3.1 7.2 3.1 1.6 0 3-.2 4.2-.6"></path>
-            <path d="M5.8 13.2v6.2c0 1.7 3.2 3.1 7.2 3.1 1 0 2-.1 2.9-.3"></path>
-            <path class="backup-arrow" d="M19.1 12.5a7.3 7.3 0 1 1-1.5 11.1"></path>
-            <path class="backup-arrow-head" d="M18.8 8.9v5.2h5.2"></path>
-          </svg>
-        </button>
+        <button id="versionButton" class="version-button copyright-version" type="button" title="Versione e diagnostica">© Marco Zucchini · v0.1.26</button>
+        <div class="footer-actions" aria-label="Comandi rapidi">
+          <button id="calendarButton" class="footer-icon-button calendar-footer-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario" aria-label="Calendario">
+            <svg class="calendar-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+              <rect x="5.5" y="7.5" width="21" height="19" rx="3"></rect>
+              <path d="M10 4.8v5.1M22 4.8v5.1M5.5 12.2h21"></path>
+              <path d="M10.2 16h2.4M15 16h2.4M19.8 16h2.4M10.2 20.2h2.4M15 20.2h2.4M19.8 20.2h2.4"></path>
+            </svg>
+          </button>
+          <button id="settingsButton" class="settings-button backup-button footer-icon-button" type="button" aria-expanded="false" title="Backup e impostazioni" aria-label="Backup e impostazioni">
+            <svg class="backup-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+              <ellipse cx="13" cy="7" rx="7.2" ry="3.1"></ellipse>
+              <path d="M5.8 7v6.4c0 1.7 3.2 3.1 7.2 3.1 1.6 0 3-.2 4.2-.6"></path>
+              <path d="M5.8 13.2v6.2c0 1.7 3.2 3.1 7.2 3.1 1 0 2-.1 2.9-.3"></path>
+              <path class="backup-arrow" d="M19.1 12.5a7.3 7.3 0 1 1-1.5 11.1"></path>
+              <path class="backup-arrow-head" d="M18.8 8.9v5.2h5.2"></path>
+            </svg>
+          </button>
+        </div>
       </footer>
     </section>
   </main>
@@ -156,7 +164,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.25</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.26</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -226,7 +234,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.25</h2>
+      <h2>Diagnostica Pencil 0.1.26</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

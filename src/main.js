@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.25';
+const APP_VERSION = '0.1.26';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -1589,7 +1589,11 @@ function createPreview(descriptor) {
   setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
   configurePageRoot(clone, descriptor);
   const footer = clone.querySelector('.baseline-footer');
-  if (footer) footer.innerHTML = `<span class="baseline-label">${footerTextFor(descriptor)}</span><span class="status-label">${descriptor.date}</span>`;
+  if (footer) {
+    const copyright = footer.querySelector('.copyright-version, .version-button');
+    if (copyright) copyright.textContent = `© Marco Zucchini · v${APP_VERSION}`;
+    footer.querySelectorAll('button').forEach((button) => { button.disabled = true; button.setAttribute('aria-disabled', 'true'); });
+  }
   const r = paper.getBoundingClientRect();
   Object.assign(clone.style, {
     position: 'fixed',
@@ -2393,4 +2397,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · backup + calendario navigabile + Planner + Ink stabile`);
+console.info(`Agenda iPad ${APP_VERSION} · footer riorganizzato + calendario navigabile + backup + Planner + Ink stabile`);

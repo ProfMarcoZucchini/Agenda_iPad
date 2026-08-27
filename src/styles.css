@@ -767,3 +767,103 @@ button.mini-calendar-day {
 button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scale(.92); }
 .paper[data-paper-color="black"] .mini-calendar-nav:active:not(:disabled),
 .paper[data-paper-color="black"] button.mini-calendar-day:active { background:rgba(255,255,255,.13); }
+
+
+/* 0.1.26 — copyright/versione a sinistra; Calendario + Backup a destra. */
+.baseline-footer {
+  padding: 0 9px 0 12px;
+  justify-content: space-between;
+}
+.copyright-version {
+  position:absolute;
+  left:12px;
+  right:auto;
+  top:50%;
+  transform:translateY(-50%);
+  padding:5px 0;
+  max-width:52%;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  font-size:9.5px;
+  letter-spacing:.015em;
+  opacity:.82;
+  text-align:left;
+}
+.copyright-version:active { transform:translateY(calc(-50% + 1px)); }
+.footer-actions {
+  position:absolute;
+  right:8px;
+  top:50%;
+  transform:translateY(-50%);
+  display:flex;
+  align-items:center;
+  gap:7px;
+  z-index:2;
+}
+.footer-icon-button {
+  appearance:none;
+  -webkit-appearance:none;
+  position:relative;
+  inset:auto;
+  transform:none;
+  width:34px;
+  height:34px;
+  display:grid;
+  place-items:center;
+  padding:5px;
+  border:1px solid rgba(92,77,54,.24);
+  border-radius:50%;
+  background:rgba(255,255,255,.28);
+  color:rgba(50,42,33,.84);
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+}
+.footer-icon-button:active { transform:translateY(1px); }
+.settings-button.backup-button.footer-icon-button {
+  position:relative;
+  left:auto;
+  right:auto;
+  top:auto;
+  transform:none;
+  width:34px;
+  height:34px;
+  padding:5px;
+}
+.settings-button.backup-button.footer-icon-button:active { transform:translateY(1px); }
+.calendar-footer-button[aria-pressed="true"] {
+  background:rgba(92,77,54,.15);
+  box-shadow:inset 0 0 0 1px rgba(92,77,54,.15);
+}
+.calendar-icon {
+  width:22px;
+  height:22px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.paper[data-paper-color="black"] .footer-icon-button {
+  border-color:rgba(255,255,255,.20);
+  background:rgba(255,255,255,.06);
+  color:rgba(255,255,255,.84);
+}
+.paper[data-paper-color="black"] .calendar-footer-button[aria-pressed="true"] {
+  background:rgba(255,255,255,.13);
+  box-shadow:inset 0 0 0 1px rgba(255,255,255,.12);
+}
+@media (max-width: 760px) {
+  .copyright-version { left:9px; max-width:48%; font-size:8.5px; }
+  .footer-actions { right:6px; gap:5px; }
+  .footer-icon-button,
+  .settings-button.backup-button.footer-icon-button { width:32px; height:32px; }
+}
+
+/* 0.1.26 — toolbar superiore tornata a sei comandi dopo lo spostamento Calendario nel footer. */
+.page-header { padding-right:356px; }
+.page-meta { margin-right:306px; }
+@media (max-width:760px) {
+  .page-header { padding-right:230px; }
+  .page-meta { margin-right:207px; }
+}
