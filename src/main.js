@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.21';
+const APP_VERSION = '0.1.21a';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -105,6 +105,9 @@ let dirty = false;
 let pageSwipe = null;
 let pageTurning = false;
 let previewPage = null;
+let nativeTouchGestureId = null;
+let lastPenPointerDownAt = -Infinity;
+const NATIVE_TOUCH_POINTER_ID = -2147483000;
 let activeTool = 'pen';
 let undoHistory = [];
 let redoHistory = [];
@@ -1178,10 +1181,11 @@ function handlePointerDown(ev) {
   // 0.1.17: appena Apple Pencil torna sul foglio, il pannello Stile si richiude.
   // L'operazione avviene una sola volta al pointerdown e non entra nel loop di rendering Ink.
   if (ev.pointerType === 'pen' && paper?.contains(ev.target)) closeStylePanel();
-  if (ev.pointerType === 'touch') {
-    startPageSwipe(ev);
-    return;
-  }
+  // La navigazione a dito usa i Touch Events nativi del foglio.
+  // Su iPadOS questo percorso è più affidabile dei Pointer Events per gesture lunghe
+  // e resta completamente separato dalla pipeline Apple Pencil.
+  if (ev.pointerType === 'touch') return;
+  if (ev.pointerType === 'pen') lastPenPointerDownAt = performance.now();
   session.totalPointerDown++;
   noteHandlerArrival();
   if (startStroke(ev, 'pointerdown')) ev.preventDefault();
@@ -1193,7 +1197,7 @@ function handlePointerMove(ev) {
     return;
   }
   if (isUiControlTarget(ev.target) && !drawing) return;
-  if (ev.pointerType === 'touch') { movePageSwipe(ev); return; }
+  if (ev.pointerType === 'touch') return;
   noteHandlerArrival();
 
   const penIsDown = ev.pointerType === 'pen' && (ev.pressure > 0 || (ev.buttons & 1) === 1);
@@ -1236,7 +1240,7 @@ function handlePointerUp(ev) {
     ev.preventDefault();
     return;
   }
-  if (ev.pointerType === 'touch') { endPageSwipe(ev, false); return; }
+  if (ev.pointerType === 'touch') return;
   session.totalPointerUp++;
   noteHandlerArrival();
   if (!drawing || ev.pointerId !== pointerId) return;
@@ -1250,7 +1254,7 @@ function handlePointerCancel(ev) {
     ev.preventDefault();
     return;
   }
-  if (ev.pointerType === 'touch') { endPageSwipe(ev, true); return; }
+  if (ev.pointerType === 'touch') return;
   session.totalPointerCancel++;
   noteHandlerArrival();
   if (!drawing || ev.pointerId !== pointerId) return;
@@ -1789,13 +1793,75 @@ function endPageSwipe(ev, cancelled = false) {
   const span = pageSwipe.axis === 'x' ? pageSwipe.width : pageSwipe.height;
   const elapsed = Math.max(1, pageSwipe.lastAt - pageSwipe.startedAt);
   const velocity = Math.abs(delta) / elapsed;
-  const threshold = pageSwipe.axis === 'x' ? .18 : .14;
-  const velocityThreshold = pageSwipe.axis === 'x' ? .58 : .52;
+  const openingPlanner = pageSwipe.axis === 'y'
+    && currentPageKind === 'agenda'
+    && pageSwipe.target?.kind === 'planner-daily'
+    && pageSwipe.direction < 0;
+  // Agenda → Planner deve reagire a un trascinamento naturale verso il basso:
+  // soglia più bassa del normale cambio pagina, senza modificare gli altri gesture.
+  const threshold = pageSwipe.axis === 'x' ? .18 : (openingPlanner ? .075 : .14);
+  const velocityThreshold = pageSwipe.axis === 'x' ? .58 : (openingPlanner ? .34 : .52);
   const commit = !cancelled && (Math.abs(delta) >= span * threshold || velocity >= velocityThreshold);
   if (commit) commitPageTurn();
   else cancelPageTurn();
 }
 
+
+// 0.1.21aa — gesture pagina affidate ai Touch Events nativi per il dito.
+// La Pencil continua a usare esclusivamente Pointer Events. Questo evita che Safari/iPadOS
+// perda o interrompa una sequenza verticale prima che il Planner venga agganciato.
+function findNativeTouch(list, identifier) {
+  if (!list) return null;
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].identifier === identifier) return list[i];
+  }
+  return null;
+}
+
+function nativeTouchProxy(touch, originalEvent) {
+  return {
+    pointerId: NATIVE_TOUCH_POINTER_ID,
+    pointerType: 'touch',
+    clientX: touch.clientX,
+    clientY: touch.clientY,
+    target: originalEvent.target,
+    preventDefault: () => originalEvent.preventDefault()
+  };
+}
+
+function handlePaperTouchStart(ev) {
+  if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
+  if (ev.touches.length !== 1) return;
+  if (isUiControlTarget(ev.target)) return;
+  if (!paper.contains(ev.target)) return;
+
+  // Protezione: se iPadOS producesse anche un touch compatibility-event subito dopo
+  // Apple Pencil, non deve mai essere interpretato come gesto di navigazione.
+  if (performance.now() - lastPenPointerDownAt < 120) return;
+
+  const touch = ev.touches[0];
+  nativeTouchGestureId = touch.identifier;
+  startPageSwipe(nativeTouchProxy(touch, ev));
+  if (pageSwipe) pageSwipe.nativeTouch = true;
+}
+
+function handlePaperTouchMove(ev) {
+  if (nativeTouchGestureId == null || !pageSwipe || !pageSwipe.nativeTouch || pageTurning) return;
+  const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
+  if (!touch) return;
+  movePageSwipe(nativeTouchProxy(touch, ev));
+  if (pageSwipe?.locked) ev.preventDefault();
+}
+
+function handlePaperTouchEnd(ev, cancelled = false) {
+  if (nativeTouchGestureId == null) return;
+  const ended = findNativeTouch(ev.changedTouches, nativeTouchGestureId);
+  if (!ended && !cancelled) return;
+  nativeTouchGestureId = null;
+  if (!pageSwipe?.nativeTouch) return;
+  endPageSwipe({ pointerId: NATIVE_TOUCH_POINTER_ID }, cancelled);
+  ev.preventDefault();
+}
 
 // 0.1.17 — attivazione UI indipendente dalla pipeline Ink.
 // Apple Pencil su iPadOS può essere esposta come `pen` oppure, in alcuni percorsi
@@ -1890,6 +1956,11 @@ function handleStylePanelTouchFallback(ev) {
 
 stylePanel?.addEventListener('pointerdown', handleStylePanelDirectPointer, { passive: false, capture: true });
 stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { passive: false, capture: true });
+
+paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
+paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });
+paper.addEventListener('touchend', (ev) => handlePaperTouchEnd(ev, false), { passive: false, capture: true });
+paper.addEventListener('touchcancel', (ev) => handlePaperTouchEnd(ev, true), { passive: false, capture: true });
 
 window.addEventListener('pointerdown', handlePointerDown, { passive: false, capture: true });
 window.addEventListener('pointermove', handlePointerMove, { passive: false, capture: true });

@@ -426,7 +426,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .page-scope-choice { padding-inline:6px; font-size:8.5px; }
 }
 
-/* 0.1.21 — Planner: quattro viste, Ink giornaliero condiviso con Agenda. */
+/* 0.1.21a — Planner: quattro viste, Ink giornaliero condiviso con Agenda. */
 .planner-mode-bar {
   position:absolute; top:10px; left:12px; z-index:7;
   display:flex; align-items:center; gap:4px; padding:4px;
