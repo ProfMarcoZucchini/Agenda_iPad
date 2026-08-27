@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.24';
+const APP_VERSION = '0.1.25';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -123,6 +123,7 @@ let backupFoundation = null;
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
+let calendarViewDate = null;
 try { calendarVisiblePreference = localStorage.getItem(CALENDAR_VISIBILITY_STORAGE_KEY) === '1'; } catch {}
 
 const session = {
@@ -577,11 +578,23 @@ function plannerHtml(mode, dateString) {
   return buildDailyPlannerHtml(dateString);
 }
 
-function buildMiniCalendarHtml(dateString) {
+function calendarMonthDate(dateString) {
   const d = new Date(`${dateString}T12:00:00`);
-  const year = d.getFullYear();
-  const month = d.getMonth();
-  const selectedDay = d.getDate();
+  return new Date(d.getFullYear(), d.getMonth(), 1, 12);
+}
+
+function shiftMonthDate(dateString, delta) {
+  const d = calendarMonthDate(dateString);
+  d.setMonth(d.getMonth() + delta);
+  return localISODate(d);
+}
+
+function buildMiniCalendarHtml(selectedDateString, viewDateString = selectedDateString, interactive = false) {
+  const selected = new Date(`${selectedDateString}T12:00:00`);
+  const view = calendarMonthDate(viewDateString);
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const selectedDay = selected.getFullYear() === year && selected.getMonth() === month ? selected.getDate() : -1;
   const first = new Date(year, month, 1, 12);
   const offset = (first.getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0, 12).getDate();
@@ -590,11 +603,23 @@ function buildMiniCalendarHtml(dateString) {
   const cells = [];
   for (let i = 0; i < offset; i++) cells.push('<i class="mini-calendar-empty" aria-hidden="true"></i>');
   for (let day = 1; day <= daysInMonth; day++) {
-    const selected = day === selectedDay ? ' selected' : '';
-    cells.push(`<span class="mini-calendar-day${selected}">${day}</span>`);
+    const dateString = localISODate(new Date(year, month, day, 12));
+    const selectedClass = day === selectedDay ? ' selected' : '';
+    if (interactive) {
+      cells.push(`<button type="button" class="mini-calendar-day${selectedClass}" data-calendar-date="${dateString}" aria-label="Apri ${day} ${monthTitle}">${day}</button>`);
+    } else {
+      cells.push(`<span class="mini-calendar-day${selectedClass}">${day}</span>`);
+    }
   }
   while (cells.length % 7) cells.push('<i class="mini-calendar-empty" aria-hidden="true"></i>');
-  return `<div class="mini-calendar-title">${monthTitle}</div><div class="mini-calendar-grid">${weekdayLabels}${cells.join('')}</div>`;
+  const prevMonth = shiftMonthDate(localISODate(first), -1);
+  const nextMonth = shiftMonthDate(localISODate(first), 1);
+  const prevDisabled = prevMonth < MIN_DATE.slice(0, 7) + '-01';
+  const nextDisabled = nextMonth > MAX_DATE.slice(0, 7) + '-01';
+  const title = interactive
+    ? `<div class="mini-calendar-title"><button type="button" class="mini-calendar-nav" data-calendar-shift="-1" ${prevDisabled ? 'disabled aria-disabled="true"' : ''} aria-label="Mese precedente">‹</button><strong>${monthTitle}</strong><button type="button" class="mini-calendar-nav" data-calendar-shift="1" ${nextDisabled ? 'disabled aria-disabled="true"' : ''} aria-label="Mese successivo">›</button></div>`
+    : `<div class="mini-calendar-title"><strong>${monthTitle}</strong></div>`;
+  return `${title}<div class="mini-calendar-grid">${weekdayLabels}${cells.join('')}</div>`;
 }
 
 function syncCalendarForRoot(root, descriptor) {
@@ -611,7 +636,9 @@ function syncCalendarForRoot(root, descriptor) {
   if (panel) {
     panel.hidden = !shown;
     panel.setAttribute('aria-hidden', shown ? 'false' : 'true');
-    panel.innerHTML = shown ? buildMiniCalendarHtml(descriptor.date) : '';
+    const interactive = root === paper;
+    const viewDate = interactive ? (calendarViewDate ?? descriptor.date) : descriptor.date;
+    panel.innerHTML = shown ? buildMiniCalendarHtml(descriptor.date, viewDate, interactive) : '';
   }
 }
 
@@ -623,9 +650,82 @@ function toggleCalendar() {
   if (drawing || pageTurning || currentPageKind !== 'agenda') return;
   closeStylePanel();
   calendarVisiblePreference = !calendarVisiblePreference;
+  if (calendarVisiblePreference) calendarViewDate = currentDate;
   try { localStorage.setItem(CALENDAR_VISIBILITY_STORAGE_KEY, calendarVisiblePreference ? '1' : '0'); } catch {}
   syncCalendarUi();
   statusLabel.textContent = calendarVisiblePreference ? 'calendario visibile' : 'calendario nascosto';
+}
+
+async function navigateToAgendaDate(targetDate) {
+  if (!dateInRange(targetDate) || drawing || pageTurning || pageStyleBulkBusy) return;
+  if (targetDate === currentDate && currentPageKind === 'agenda') {
+    calendarViewDate = targetDate;
+    syncCalendarUi();
+    return;
+  }
+  pageTurning = true;
+  closeStylePanel();
+  cancelPendingSave();
+  const oldDescriptor = pageDescriptor();
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle) : true;
+  if (!saveOk) {
+    pageTurning = false;
+    statusLabel.textContent = 'salvataggio non riuscito';
+    if (dirty) scheduleSave();
+    return;
+  }
+  try {
+    await openDb();
+    const [record, noteTotal] = await Promise.all([getRecord(targetDate), ensureNotesCount(targetDate)]);
+    session.storageReads++;
+    currentDate = targetDate;
+    currentPageKind = 'agenda';
+    currentNoteIndex = 0;
+    currentNoteTotal = noteTotal ?? 0;
+    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    const previousPaperColor = pageStyle.color;
+    pageStyle = pageStyleFromRecord(record);
+    applyPageStyle();
+    updatePageStyleUi();
+    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
+    resetUndoHistory();
+    dirty = false;
+    calendarViewDate = targetDate;
+    updateHeader();
+    resizeCanvas();
+    renderAll();
+    statusLabel.textContent = strokes.length ? 'pagina caricata' : 'pagina nuova';
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Navigazione calendario non riuscita', err);
+    statusLabel.textContent = 'pagina non disponibile';
+  } finally {
+    pageTurning = false;
+  }
+}
+
+function shiftMiniCalendar(delta) {
+  if (!calendarVisiblePreference || currentPageKind !== 'agenda') return;
+  const base = calendarViewDate ?? currentDate;
+  const next = shiftMonthDate(base, delta);
+  const minMonth = `${MIN_DATE.slice(0, 7)}-01`;
+  const maxMonth = `${MAX_DATE.slice(0, 7)}-01`;
+  if (next < minMonth || next > maxMonth) return;
+  calendarViewDate = next;
+  syncCalendarUi();
+}
+
+function handleCalendarCommand(button) {
+  if (!(button instanceof HTMLButtonElement)) return false;
+  if (button.matches('[data-calendar-date]')) {
+    void navigateToAgendaDate(button.dataset.calendarDate);
+    return true;
+  }
+  if (button.matches('[data-calendar-shift]')) {
+    shiftMiniCalendar(Number(button.dataset.calendarShift) || 0);
+    return true;
+  }
+  return false;
 }
 
 function configurePageRoot(root, descriptor) {
@@ -1811,6 +1911,7 @@ async function commitPageTurn() {
   }
 
   currentDate = target.date;
+  if (target.kind === 'agenda') calendarViewDate = target.date;
   currentPageKind = target.kind;
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
@@ -2017,6 +2118,46 @@ function handleStylePanelTouchFallback(ev) {
   ev.preventDefault();
   ev.stopPropagation();
 }
+
+function handleMiniCalendarDirectPointer(ev) {
+  if (ev.pointerType === 'mouse') return;
+  const button = getUiButtonTarget(ev.target);
+  if (!button || !miniCalendar?.contains(button) || button.disabled) return;
+  if (drawing) finalizeStroke(`calendar-${ev.pointerType || 'pointer'}-recovery`);
+  recentPencilUiActivation.set(button, performance.now());
+  if (handleCalendarCommand(button)) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+}
+
+function handleMiniCalendarTouchFallback(ev) {
+  const button = getUiButtonTarget(ev.target);
+  if (!button || !miniCalendar?.contains(button) || button.disabled) return;
+  const previous = recentPencilUiActivation.get(button);
+  if (Number.isFinite(previous) && performance.now() - previous < 180) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  if (handleCalendarCommand(button)) {
+    recentPencilUiActivation.set(button, performance.now());
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+}
+
+miniCalendar?.addEventListener('pointerdown', handleMiniCalendarDirectPointer, { passive: false, capture: true });
+miniCalendar?.addEventListener('touchstart', handleMiniCalendarTouchFallback, { passive: false, capture: true });
+miniCalendar?.addEventListener('click', (ev) => {
+  const button = getUiButtonTarget(ev.target);
+  if (!button || !miniCalendar.contains(button) || button.disabled) return;
+  if (wasJustActivatedByPencil(button)) return;
+  if (handleCalendarCommand(button)) {
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+});
 
 stylePanel?.addEventListener('pointerdown', handleStylePanelDirectPointer, { passive: false, capture: true });
 stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { passive: false, capture: true });
@@ -2252,4 +2393,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · backup foundation + calendario + Planner + Ink stabile`);
+console.info(`Agenda iPad ${APP_VERSION} · backup + calendario navigabile + Planner + Ink stabile`);

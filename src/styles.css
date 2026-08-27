@@ -708,3 +708,62 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .cloud-connection { align-items:flex-start; flex-direction:column; }
   .cloud-actions { justify-content:flex-start; }
 }
+
+
+/* 0.1.25 — footer essenziale, backup riconoscibile e calendario navigabile. */
+.baseline-footer {
+  padding: 0 10px;
+  justify-content: flex-end;
+}
+.baseline-footer .baseline-label,
+.baseline-footer .status-label,
+.baseline-footer .diagnostic-hidden { display:none !important; }
+.version-button {
+  position:absolute;
+  right:50px;
+  top:50%;
+  transform:translateY(-50%);
+  padding:5px 3px;
+  font-size:10px;
+  letter-spacing:.02em;
+  opacity:.78;
+}
+.version-button:active { transform:translateY(calc(-50% + 1px)); }
+.settings-button.backup-button {
+  left:auto;
+  right:9px;
+  top:50%;
+  transform:translateY(-50%);
+  width:34px;
+  height:34px;
+  border-radius:50%;
+  padding:5px;
+}
+.settings-button.backup-button:active { transform:translateY(calc(-50% + 1px)); }
+.backup-icon { width:23px; height:23px; fill:none; stroke:currentColor; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+.backup-icon ellipse { fill:rgba(255,255,255,.20); }
+.backup-icon .backup-arrow { stroke-width:2; }
+.backup-icon .backup-arrow-head { stroke-width:2; }
+
+.mini-calendar-title {
+  display:grid;
+  grid-template-columns:28px 1fr 28px;
+  align-items:center;
+  gap:3px;
+}
+.mini-calendar-title strong { font:700 11px/1.1 Georgia,"Times New Roman",serif; text-transform:capitalize; text-align:center; }
+.mini-calendar-nav {
+  appearance:none; -webkit-appearance:none; width:26px; height:25px; padding:0;
+  border:0; border-radius:50%; background:transparent; color:inherit;
+  font:700 21px/1 Georgia,"Times New Roman",serif; touch-action:manipulation;
+}
+.mini-calendar-nav:active:not(:disabled) { background:rgba(92,77,54,.11); transform:scale(.94); }
+.mini-calendar-nav:disabled { opacity:.18; }
+button.mini-calendar-day {
+  appearance:none; -webkit-appearance:none; padding:0; margin:0; border:0;
+  background:transparent; color:inherit; font:inherit; touch-action:manipulation;
+  border-radius:50%; cursor:pointer;
+}
+button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scale(.92); }
+.paper[data-paper-color="black"] .mini-calendar-nav:active:not(:disabled),
+.paper[data-paper-color="black"] button.mini-calendar-day:active { background:rgba(255,255,255,.13); }

@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.24</title>
+  <title>Agenda iPad · 0.1.25</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.24</div>
+        <div class="cover-version">v0.1.25</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -138,9 +138,17 @@
       <footer class="baseline-footer">
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
-        <button id="settingsButton" class="settings-button" type="button" aria-expanded="false" title="Impostazioni e backup">⚙</button>
-        <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.24</button>
+        <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
+        <button id="versionButton" class="version-button" type="button" title="Versione e diagnostica">v0.1.25</button>
+        <button id="settingsButton" class="settings-button backup-button" type="button" aria-expanded="false" title="Backup e impostazioni" aria-label="Backup e impostazioni">
+          <svg class="backup-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <ellipse cx="13" cy="7" rx="7.2" ry="3.1"></ellipse>
+            <path d="M5.8 7v6.4c0 1.7 3.2 3.1 7.2 3.1 1.6 0 3-.2 4.2-.6"></path>
+            <path d="M5.8 13.2v6.2c0 1.7 3.2 3.1 7.2 3.1 1 0 2-.1 2.9-.3"></path>
+            <path class="backup-arrow" d="M19.1 12.5a7.3 7.3 0 1 1-1.5 11.1"></path>
+            <path class="backup-arrow-head" d="M18.8 8.9v5.2h5.2"></path>
+          </svg>
+        </button>
       </footer>
     </section>
   </main>
@@ -148,7 +156,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.24</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.25</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -218,7 +226,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.24</h2>
+      <h2>Diagnostica Pencil 0.1.25</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
