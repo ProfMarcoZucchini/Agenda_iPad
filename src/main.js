@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.20';
+const APP_VERSION = '0.1.21';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -28,6 +28,7 @@ const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
 const GLOBAL_PAGE_STYLE_KEY = '::global-page-style';
+const PLANNER_MODES = Object.freeze(['daily', 'weekly', 'monthly', 'yearly']);
 const PAPER_TOOL_DEFAULTS = Object.freeze({
   yellow: { pen: '#111111', highlighter: '#7fc8e8' },
   white: { pen: '#111111', highlighter: '#f0d84f' },
@@ -61,6 +62,9 @@ const pageColorChoices = [...document.querySelectorAll('[data-page-color]')];
 const pageTemplateChoices = [...document.querySelectorAll('[data-page-template]')];
 const pageScopeChoices = [...document.querySelectorAll('[data-page-scope]')];
 const pageStyleGroup = document.getElementById('pageStyleGroup');
+const plannerModeBar = document.getElementById('plannerModeBar');
+const plannerLayer = document.getElementById('plannerLayer');
+const plannerModeButtons = [...document.querySelectorAll('[data-planner-mode]')];
 const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
@@ -109,6 +113,7 @@ let pageStyle = { ...DEFAULT_PAGE_STYLE };
 let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
 let pageStyleBulkBusy = false;
+let currentPlannerMode = 'daily';
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -433,6 +438,33 @@ function toggleStylePanel() {
   if (willOpen) updateStyleUi();
 }
 
+function isPlannerKind(kind = currentPageKind) {
+  return typeof kind === 'string' && kind.startsWith('planner-');
+}
+
+function plannerModeFromKind(kind = currentPageKind) {
+  return isPlannerKind(kind) ? kind.slice('planner-'.length) : null;
+}
+
+function plannerKind(mode = 'daily') {
+  return `planner-${PLANNER_MODES.includes(mode) ? mode : 'daily'}`;
+}
+
+function mondayOf(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  const day = d.getDay();
+  const delta = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + delta);
+  return localISODate(d);
+}
+
+function plannerPeriodKey(dateString, mode) {
+  if (mode === 'daily') return dateString; // stesso Ink della pagina Agenda
+  if (mode === 'weekly') return `planner::week::${mondayOf(dateString)}`;
+  if (mode === 'monthly') return `planner::month::${dateString.slice(0, 7)}`;
+  return `planner::year::${dateString.slice(0, 4)}`;
+}
+
 function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0) {
   const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
@@ -444,17 +476,126 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const kindLabel = root.querySelector('.page-kind-label');
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
-  if (kindLabel) kindLabel.textContent = pageKind === 'note' ? `Note del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}` : '';
+  if (kindLabel) {
+    if (pageKind === 'note') kindLabel.textContent = `Note del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
+    else if (isPlannerKind(pageKind)) kindLabel.textContent = 'Planner';
+    else kindLabel.textContent = '';
+  }
   if (noteCounter) noteCounter.textContent = '';
-  if (hours) hours.hidden = pageKind === 'note';
+  if (hours) hours.hidden = pageKind === 'note' || isPlannerKind(pageKind);
+}
+
+function plannerModeTitle(mode, dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  if (mode === 'daily') return `Planning giornaliero · ${new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long', year:'numeric' }).format(d)}`;
+  if (mode === 'weekly') {
+    const monday = new Date(`${mondayOf(dateString)}T12:00:00`);
+    const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
+    const left = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'short' }).format(monday);
+    const right = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'short', year:'numeric' }).format(sunday);
+    return `Planning settimanale · ${left} – ${right}`;
+  }
+  if (mode === 'monthly') return `Planning mensile · ${new Intl.DateTimeFormat('it-IT', { month:'long', year:'numeric' }).format(d)}`;
+  return `Planning annuale · ${d.getFullYear()}`;
+}
+
+function buildDailyPlannerHtml(dateString) {
+  const hours = Array.from({ length: 13 }, (_, i) => 7 + i)
+    .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`).join('');
+  return `<div class="planner-heading">${plannerModeTitle('daily', dateString)}</div>
+    <div class="planner-daily-grid">
+      <section class="planner-timeline"><h3>Programma</h3>${hours}</section>
+      <aside class="planner-daily-side">
+        <section class="planner-box planner-priority"><h3>Priorità del giorno</h3><div>1.</div><div>2.</div><div>3.</div></section>
+        <section class="planner-box planner-todo"><h3>To-do</h3><div>□</div><div>□</div><div>□</div><div>□</div></section>
+        <section class="planner-box planner-ideas"><h3>Note / Idee</h3></section>
+      </aside>
+    </div><div class="planner-sync-label">↔ Ink sincronizzato con la pagina Agenda del giorno</div>`;
+}
+
+function buildWeeklyPlannerHtml(dateString) {
+  const monday = new Date(`${mondayOf(dateString)}T12:00:00`);
+  const fmt = new Intl.DateTimeFormat('it-IT', { weekday:'short', day:'numeric' });
+  const cols = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday); d.setDate(d.getDate() + i);
+    return `<section class="planner-week-day"><h3>${fmt.format(d).replace('.', '').toUpperCase()}</h3><div class="planner-week-lines"></div></section>`;
+  }).join('');
+  return `<div class="planner-heading">${plannerModeTitle('weekly', dateString)}</div>
+    <div class="planner-week-grid">${cols}</div>
+    <div class="planner-week-bottom"><section class="planner-box"><h3>To-do della settimana</h3></section><section class="planner-box"><h3>Obiettivi / Note</h3></section></div>`;
+}
+
+function buildMonthlyPlannerHtml(dateString) {
+  const [year, month] = dateString.split('-').map(Number);
+  const first = new Date(year, month - 1, 1, 12);
+  const startOffset = (first.getDay() + 6) % 7;
+  const gridStart = new Date(first); gridStart.setDate(1 - startOffset);
+  const labels = ['LUN','MAR','MER','GIO','VEN','SAB','DOM'].map((x)=>`<div class="planner-month-weekday">${x}</div>`).join('');
+  const cells = Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
+    const outside = d.getMonth() !== month - 1 ? ' outside' : '';
+    const today = localISODate(d) === dateString ? ' reference' : '';
+    return `<div class="planner-month-cell${outside}${today}"><span>${d.getDate()}</span></div>`;
+  }).join('');
+  return `<div class="planner-heading">${plannerModeTitle('monthly', dateString)}</div>
+    <div class="planner-month-grid">${labels}${cells}</div>
+    <div class="planner-month-bottom"><section class="planner-box"><h3>Obiettivi del mese</h3></section><section class="planner-box"><h3>Note / Riepilogo</h3></section></div>`;
+}
+
+function miniMonthHtml(year, monthIndex) {
+  const first = new Date(year, monthIndex, 1, 12);
+  const offset = (first.getDay() + 6) % 7;
+  const days = new Date(year, monthIndex + 1, 0, 12).getDate();
+  const monthName = new Intl.DateTimeFormat('it-IT', { month:'long' }).format(first).toUpperCase();
+  const blanks = Array.from({ length: offset }, () => '<i></i>').join('');
+  const nums = Array.from({ length: days }, (_, i) => `<span>${i + 1}</span>`).join('');
+  return `<section class="planner-mini-month"><h3>${monthName}</h3><div class="planner-mini-week">L M M G V S D</div><div class="planner-mini-days">${blanks}${nums}</div></section>`;
+}
+
+function buildYearlyPlannerHtml(dateString) {
+  const year = Number(dateString.slice(0,4));
+  const months = Array.from({ length: 12 }, (_, i) => miniMonthHtml(year, i)).join('');
+  return `<div class="planner-heading">${plannerModeTitle('yearly', dateString)}</div>
+    <div class="planner-year-grid">${months}</div>
+    <div class="planner-year-bottom"><section class="planner-box"><h3>Obiettivi annuali</h3></section><section class="planner-box"><h3>Progetti principali</h3></section><section class="planner-box"><h3>Note strategiche</h3></section></div>`;
+}
+
+function plannerHtml(mode, dateString) {
+  if (mode === 'weekly') return buildWeeklyPlannerHtml(dateString);
+  if (mode === 'monthly') return buildMonthlyPlannerHtml(dateString);
+  if (mode === 'yearly') return buildYearlyPlannerHtml(dateString);
+  return buildDailyPlannerHtml(dateString);
+}
+
+function configurePageRoot(root, descriptor) {
+  const planner = isPlannerKind(descriptor.kind);
+  const mode = planner ? plannerModeFromKind(descriptor.kind) : null;
+  root.classList.toggle('planner-view', planner);
+  for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
+  const layer = root.querySelector('.planner-layer');
+  if (layer) {
+    layer.hidden = !planner;
+    layer.setAttribute('aria-hidden', planner ? 'false' : 'true');
+    layer.innerHTML = planner ? plannerHtml(mode, descriptor.date) : '';
+  }
+  const modeBar = root.querySelector('.planner-mode-bar');
+  if (modeBar) modeBar.hidden = !planner;
+  root.querySelectorAll('.planner-mode-button').forEach((button) => {
+    const selected = planner && button.dataset.plannerMode === mode;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  });
+  const hours = root.querySelector('.hours');
+  if (hours) hours.hidden = descriptor.kind === 'note' || planner;
 }
 
 function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
+  configurePageRoot(paper, pageDescriptor());
   if (baselineLabel) {
-    baselineLabel.textContent = currentPageKind === 'note'
-      ? `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
-      : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE';
+    if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
+    else if (isPlannerKind()) baselineLabel.textContent = `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
+    else baselineLabel.textContent = 'AGENDA · PLANNER · INK STABILE';
   }
 }
 
@@ -467,13 +608,17 @@ function noteKey(dateString, noteIndex) {
 }
 
 function pageKey(dateString, pageKind = 'agenda', noteIndex = 0) {
-  return pageKind === 'note' ? noteKey(dateString, noteIndex) : dateString;
+  if (pageKind === 'note') return noteKey(dateString, noteIndex);
+  if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind));
+  return dateString;
 }
 
 function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal) {
+  const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
   return {
     date: dateString,
     kind: pageKind,
+    plannerMode,
     noteIndex: pageKind === 'note' ? noteIndex : 0,
     noteTotal: pageKind === 'note' ? noteTotal : 0,
     key: pageKey(dateString, pageKind, noteIndex),
@@ -838,8 +983,13 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     const putStart = performance.now();
     const promise = putRecord({
       date: descriptor.key,
-      kind: descriptor.kind === 'note' ? 'day-note-ink' : 'agenda-day-ink',
+      kind: descriptor.kind === 'note' ? 'day-note-ink'
+        : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
+        : descriptor.kind === 'planner-monthly' ? 'planner-month-ink'
+        : descriptor.kind === 'planner-yearly' ? 'planner-year-ink'
+        : 'agenda-day-ink',
       referenceDate: descriptor.date,
+      plannerMode: descriptor.plannerMode ?? null,
       noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage',
@@ -986,6 +1136,10 @@ function activateUiButton(button) {
     toggleStylePanel();
     return;
   }
+  if (button.matches('.planner-mode-button')) {
+    switchPlannerMode(button.dataset.plannerMode);
+    return;
+  }
   if (button.matches('.color-swatch')) {
     setStyleColor(button.dataset.styleTool, button.dataset.styleColor?.toLowerCase());
     return;
@@ -1118,7 +1272,7 @@ function buildReport() {
   return [
     `Agenda iPad REINTEGRATION v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
-    `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : 'Agenda'}`,
+    `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
     `Chiave pagina: ${currentPageKey()}`,
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
@@ -1176,7 +1330,7 @@ async function copyReport() {
 
 async function clearCurrentPage() {
   if (drawing || !ready) return;
-  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : 'pagina Agenda';
+  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (sincronizzato con Agenda)' : ''}` : 'pagina Agenda';
   if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
   cancelPendingSave();
   strokes = [];
@@ -1253,9 +1407,9 @@ function drawPreviewInk(preview, previewStrokes) {
 }
 
 function footerTextFor(descriptor) {
-  return descriptor.kind === 'note'
-    ? `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`
-    : 'AGENDA · ANTEPRIMA';
+  if (descriptor.kind === 'note') return `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`;
+  if (isPlannerKind(descriptor.kind)) return `PLANNER · ${String(descriptor.plannerMode ?? 'daily').toUpperCase()}`;
+  return 'AGENDA · ANTEPRIMA';
 }
 
 function createPreview(descriptor) {
@@ -1266,6 +1420,7 @@ function createPreview(descriptor) {
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
   clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
   setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
+  configurePageRoot(clone, descriptor);
   const footer = clone.querySelector('.baseline-footer');
   if (footer) footer.innerHTML = `<span class="baseline-label">${footerTextFor(descriptor)}</span><span class="status-label">${descriptor.date}</span>`;
   const r = paper.getBoundingClientRect();
@@ -1280,7 +1435,21 @@ function createPreview(descriptor) {
   return clone;
 }
 
+function sharesCurrentDailyInk(descriptor) {
+  if (!descriptor || descriptor.date !== currentDate) return false;
+  return (currentPageKind === 'agenda' && descriptor.kind === 'planner-daily')
+    || (currentPageKind === 'planner-daily' && descriptor.kind === 'agenda');
+}
+
 async function loadPageForPreview(descriptor, preview) {
+  if (sharesCurrentDailyInk(descriptor)) {
+    const targetPage = { strokes, pageStyle: { ...pageStyle } };
+    if (preview?.isConnected) {
+      applyPageStyle(preview, targetPage.pageStyle);
+      drawPreviewInk(preview, targetPage.strokes);
+    }
+    return targetPage;
+  }
   try {
     await openDb();
     const record = await getRecord(descriptor.key);
@@ -1315,6 +1484,7 @@ function resetTurnStyles() {
 }
 
 function horizontalTarget(direction) {
+  if (isPlannerKind()) return null;
   const targetDate = addDays(currentDate, direction);
   if (!dateInRange(targetDate)) return null;
   return pageDescriptor(targetDate, 'agenda', 0, 0);
@@ -1322,12 +1492,25 @@ function horizontalTarget(direction) {
 
 function verticalTarget(direction) {
   const count = notesCountCache.get(currentDate) ?? currentNoteTotal ?? 0;
+
+  // Planner: swipe dal basso verso l'alto (direction +1) torna all'Agenda.
+  if (isPlannerKind()) {
+    return direction > 0 ? pageDescriptor(currentDate, 'agenda', 0, 0) : null;
+  }
+
+  // Agenda: swipe verso il basso apre sempre il Planner Giornaliero.
+  if (currentPageKind === 'agenda' && direction < 0) {
+    return pageDescriptor(currentDate, 'planner-daily', 0, 0);
+  }
+
+  // Note del giorno: swipe verso il basso torna alla nota precedente/Agenda.
   if (direction < 0) {
     if (currentPageKind === 'agenda') return null;
     if (currentNoteIndex <= 1) return pageDescriptor(currentDate, 'agenda', 0, 0);
     return pageDescriptor(currentDate, 'note', currentNoteIndex - 1, Math.max(count, currentNoteTotal));
   }
 
+  // Agenda/Note: swipe verso l'alto apre o avanza nelle Note del giorno.
   const nextIndex = currentPageKind === 'agenda' ? 1 : currentNoteIndex + 1;
   const createNote = nextIndex > count;
   const total = createNote ? nextIndex : Math.max(count, currentNoteTotal);
@@ -1435,11 +1618,56 @@ function movePageSwipe(ev) {
       return targetPage;
     });
     if (axis === 'x') statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
-    else statusLabel.textContent = target.kind === 'agenda' ? 'torna ad Agenda' : `Nota ${target.noteIndex}/${target.noteTotal}`;
+    else statusLabel.textContent = target.kind === 'agenda' ? 'torna ad Agenda' : target.kind === 'planner-daily' ? 'apri Planner giornaliero' : `Nota ${target.noteIndex}/${target.noteTotal}`;
   }
 
   applySwipeVisual(dx, dy);
   ev.preventDefault();
+}
+
+async function switchPlannerMode(mode) {
+  if (!PLANNER_MODES.includes(mode) || !isPlannerKind() || drawing || pageTurning || pageStyleBulkBusy) return;
+  if (mode === currentPlannerMode) return;
+  pageTurning = true;
+  closeStylePanel();
+  cancelPendingSave();
+  const oldDescriptor = pageDescriptor();
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle) : true;
+  if (!saveOk) {
+    pageTurning = false;
+    statusLabel.textContent = 'salvataggio non riuscito';
+    if (dirty) scheduleSave();
+    return;
+  }
+  const target = pageDescriptor(currentDate, plannerKind(mode), 0, 0);
+  statusLabel.textContent = `apro Planner ${mode}`;
+  try {
+    await openDb();
+    const record = await getRecord(target.key);
+    session.storageReads++;
+    currentPageKind = target.kind;
+    currentPlannerMode = mode;
+    currentNoteIndex = 0;
+    currentNoteTotal = 0;
+    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    const previousPaperColor = pageStyle.color;
+    pageStyle = pageStyleFromRecord(record);
+    applyPageStyle();
+    updatePageStyleUi();
+    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
+    resetUndoHistory();
+    dirty = false;
+    updateHeader();
+    resizeCanvas();
+    renderAll();
+    statusLabel.textContent = strokes.length ? `Planner ${mode} caricato` : `Planner ${mode}`;
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Cambio modello Planner non riuscito', err);
+    statusLabel.textContent = 'Planner non disponibile';
+  } finally {
+    pageTurning = false;
+  }
 }
 
 function waitMs(ms) {
@@ -1517,6 +1745,7 @@ async function commitPageTurn() {
 
   currentDate = target.date;
   currentPageKind = target.kind;
+  currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
@@ -1544,7 +1773,7 @@ async function commitPageTurn() {
     session.noteTurns++;
   }
   pageTurning = false;
-  statusLabel.textContent = strokes.length ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : 'pagina nuova');
+  statusLabel.textContent = strokes.length ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
 }
 
 function endPageSwipe(ev, cancelled = false) {
@@ -1625,7 +1854,8 @@ const directUiButtons = [...new Set([
   ...toolButtons,
   undoButton,
   redoButton,
-  styleButton
+  styleButton,
+  ...plannerModeButtons
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -1696,6 +1926,12 @@ styleButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(styleButton)) return;
   toggleStylePanel();
 });
+for (const button of plannerModeButtons) {
+  button.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(button)) return;
+    switchPlannerMode(button.dataset.plannerMode);
+  });
+}
 for (const swatch of colorSwatches) {
   swatch.addEventListener('click', () => {
     if (wasJustActivatedByPencil(swatch)) return;

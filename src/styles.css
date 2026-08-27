@@ -425,3 +425,111 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .scope-options { flex-wrap:nowrap; }
   .page-scope-choice { padding-inline:6px; font-size:8.5px; }
 }
+
+/* 0.1.21 — Planner: quattro viste, Ink giornaliero condiviso con Agenda. */
+.planner-mode-bar {
+  position:absolute; top:10px; left:12px; z-index:7;
+  display:flex; align-items:center; gap:4px; padding:4px;
+  border:1px solid rgba(86,72,53,.18); border-radius:12px;
+  background:rgba(249,242,225,.92); box-shadow:0 2px 9px rgba(55,43,29,.10);
+  -webkit-backdrop-filter:blur(5px); backdrop-filter:blur(5px);
+  pointer-events:auto; touch-action:manipulation;
+}
+.planner-mode-bar[hidden] { display:none !important; }
+.planner-mode-button {
+  appearance:none; -webkit-appearance:none; min-height:34px; padding:3px 9px;
+  border:1px solid transparent; border-radius:8px; background:transparent;
+  color:#514536; font-size:9px; font-weight:780; letter-spacing:.01em;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.planner-mode-button.selected {
+  border-color:rgba(75,61,43,.42); background:rgba(255,255,255,.76);
+  box-shadow:inset 0 -2px 0 rgba(75,61,43,.12);
+}
+.planner-view .date-block { visibility:hidden; }
+.planner-view .page-kind-label {
+  top:63px; font-family:Georgia,"Times New Roman",serif; font-size:clamp(19px,2.5vw,30px);
+  font-weight:650; letter-spacing:.045em; text-transform:uppercase;
+}
+.planner-view::before { background-image:none !important; }
+.planner-layer {
+  position:absolute; left:0; right:0; top:var(--header-h); bottom:var(--footer-h);
+  z-index:1; padding:14px 18px 12px 72px; overflow:hidden; pointer-events:none;
+  color:rgba(55,47,38,.78); --planner-border:rgba(71,61,48,.20); --planner-rule:rgba(71,61,48,.14);
+}
+.planner-layer[hidden] { display:none !important; }
+.planner-heading {
+  height:24px; display:flex; align-items:center; justify-content:center;
+  margin:0 0 8px; font:700 clamp(12px,1.5vw,16px)/1.1 Georgia,"Times New Roman",serif;
+  letter-spacing:.035em; color:rgba(63,52,41,.75);
+}
+.planner-layer h3 { margin:0; font-size:9px; text-transform:uppercase; letter-spacing:.055em; color:rgba(54,46,38,.72); }
+.planner-box { border:1px solid var(--planner-border); border-radius:8px; background:rgba(255,255,255,.12); min-height:0; padding:8px; }
+.planner-box h3 { padding-bottom:6px; border-bottom:1px solid var(--planner-rule); }
+
+/* Giornaliero: timeline 07-19 + priorità/to-do/note. Il canvas sopra è lo stesso dell'Agenda. */
+.planner-daily-grid { height:calc(100% - 48px); display:grid; grid-template-columns:minmax(0,1.8fr) minmax(210px,.78fr); gap:12px; }
+.planner-timeline { border:1px solid var(--planner-border); border-radius:8px; padding:8px 10px; overflow:hidden; }
+.planner-timeline > h3 { height:22px; }
+.planner-time-row { height:calc((100% - 22px) / 13); min-height:18px; display:grid; grid-template-columns:42px 1fr; align-items:start; gap:7px; }
+.planner-time-row span { font-size:8px; opacity:.68; line-height:1.1; }
+.planner-time-row i { display:block; border-top:1px solid var(--planner-rule); height:100%; }
+.planner-daily-side { display:grid; grid-template-rows:.76fr .95fr 1.4fr; gap:9px; min-height:0; }
+.planner-priority div, .planner-todo div { height:24%; border-bottom:1px solid var(--planner-rule); padding-top:5px; font-size:9px; }
+.planner-ideas { background-image:repeating-linear-gradient(to bottom, transparent 0, transparent 29px, var(--planner-rule) 30px, transparent 31px); }
+.planner-sync-label { position:absolute; right:22px; bottom:5px; font-size:8px; font-weight:650; opacity:.54; letter-spacing:.02em; }
+
+/* Settimanale */
+.planner-week-grid { height:calc(70% - 26px); display:grid; grid-template-columns:repeat(7,1fr); border:1px solid var(--planner-border); border-radius:8px; overflow:hidden; }
+.planner-week-day { min-width:0; padding:7px 5px; border-right:1px solid var(--planner-border); }
+.planner-week-day:last-child { border-right:0; }
+.planner-week-day h3 { text-align:center; padding-bottom:6px; border-bottom:1px solid var(--planner-border); }
+.planner-week-lines { height:calc(100% - 20px); background-image:repeating-linear-gradient(to bottom, transparent 0, transparent 31px, var(--planner-rule) 32px, transparent 33px); }
+.planner-week-bottom { height:calc(30% - 12px); margin-top:10px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+/* Mensile */
+.planner-month-grid { height:calc(76% - 26px); display:grid; grid-template-columns:repeat(7,1fr); grid-template-rows:22px repeat(6,1fr); border:1px solid var(--planner-border); border-radius:8px; overflow:hidden; }
+.planner-month-weekday { display:grid; place-items:center; font-size:8px; font-weight:800; border-right:1px solid var(--planner-border); border-bottom:1px solid var(--planner-border); }
+.planner-month-cell { position:relative; border-right:1px solid var(--planner-border); border-bottom:1px solid var(--planner-border); background:rgba(255,255,255,.04); }
+.planner-month-cell span { position:absolute; top:4px; left:5px; font-size:8px; font-weight:700; opacity:.8; }
+.planner-month-cell.outside { opacity:.32; }
+.planner-month-cell.reference { box-shadow:inset 0 0 0 2px rgba(76,98,129,.30); }
+.planner-month-bottom { height:calc(24% - 10px); margin-top:9px; display:grid; grid-template-columns:.8fr 1.2fr; gap:10px; }
+
+/* Annuale */
+.planner-year-grid { height:calc(75% - 26px); display:grid; grid-template-columns:repeat(4,1fr); grid-template-rows:repeat(3,1fr); gap:7px; }
+.planner-mini-month { border:1px solid var(--planner-border); border-radius:7px; padding:5px; overflow:hidden; }
+.planner-mini-month h3 { text-align:center; font-size:7px; padding-bottom:3px; }
+.planner-mini-week { text-align:center; font-size:5px; letter-spacing:.16em; opacity:.55; white-space:pre; }
+.planner-mini-days { display:grid; grid-template-columns:repeat(7,1fr); gap:1px; margin-top:2px; }
+.planner-mini-days span, .planner-mini-days i { min-height:8px; text-align:center; font-size:5.5px; font-style:normal; opacity:.74; }
+.planner-year-bottom { height:calc(25% - 8px); margin-top:8px; display:grid; grid-template-columns:1fr 1fr 1.1fr; gap:8px; }
+
+.paper[data-paper-color="black"] .planner-mode-bar { background:rgba(42,45,47,.94); border-color:rgba(255,255,255,.16); }
+.paper[data-paper-color="black"] .planner-mode-button { color:#eee8dc; }
+.paper[data-paper-color="black"] .planner-mode-button.selected { background:rgba(255,255,255,.10); border-color:rgba(255,255,255,.28); }
+.paper[data-paper-color="black"] .planner-layer {
+  color:rgba(244,239,229,.80); --planner-border:rgba(245,243,235,.19); --planner-rule:rgba(245,243,235,.14);
+}
+.paper[data-paper-color="black"] .planner-heading,
+.paper[data-paper-color="black"] .planner-layer h3 { color:rgba(244,239,229,.78); }
+.paper[data-paper-color="black"].planner-view .page-kind-label { color:#f1e9da; }
+
+@media (max-width:760px) {
+  .planner-mode-bar { top:7px; left:7px; gap:2px; padding:3px; max-width:calc(100% - 238px); overflow:hidden; }
+  .planner-mode-button { min-height:32px; padding:2px 6px; font-size:7.6px; }
+  .planner-view .page-kind-label { top:57px; font-size:16px; }
+  .planner-layer { padding:10px 9px 9px 52px; }
+  .planner-heading { height:20px; margin-bottom:6px; font-size:10px; }
+  .planner-daily-grid { grid-template-columns:minmax(0,1.6fr) minmax(150px,.72fr); gap:7px; height:calc(100% - 40px); }
+  .planner-daily-side { gap:5px; }
+  .planner-box { padding:5px; }
+  .planner-layer h3 { font-size:7px; }
+  .planner-time-row { grid-template-columns:34px 1fr; gap:4px; }
+  .planner-time-row span { font-size:7px; }
+  .planner-week-day { padding:5px 2px; }
+  .planner-week-day h3 { font-size:6.6px; }
+  .planner-mini-month { padding:3px; }
+  .planner-mini-month h3 { font-size:5.8px; }
+  .planner-mini-days span, .planner-mini-days i { font-size:4.7px; }
+}
