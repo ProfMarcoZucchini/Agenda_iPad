@@ -1,8 +1,12 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.29';
+import { initSyncFoundation } from './sync-core.js';
+const APP_VERSION = '0.1.30';
 const DB_NAME = 'AgendaIPadReintegrationDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'pages';
+const SYNC_EVENT_STORE = 'syncEvents';
+const SYNC_META_STORE = 'syncMeta';
+const SYNC_STATE_KEY = 'sync-state-v1';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const HIGHLIGHTER_COLOR = '#f0d84f';
@@ -141,6 +145,8 @@ let pageStyle = { ...DEFAULT_PAGE_STYLE };
 let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
 let backupFoundation = null;
+let syncFoundation = null;
+let syncStats = null;
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
@@ -405,6 +411,7 @@ async function setPageColor(color) {
     return;
   }
 
+  syncFoundation?.recordPageProperty(pageDescriptor(), 'color', color, 'current');
   scheduleSave();
   statusLabel.textContent = 'colore carta impostato sulla pagina';
 }
@@ -449,6 +456,7 @@ async function setPageTemplate(template) {
     return;
   }
 
+  syncFoundation?.recordPageProperty(pageDescriptor(), 'template', template, 'current');
   scheduleSave();
   statusLabel.textContent = 'modello pagina impostato sulla pagina';
 }
@@ -869,6 +877,15 @@ function openDb() {
     req.onupgradeneeded = () => {
       const database = req.result;
       if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE, { keyPath: 'date' });
+      if (!database.objectStoreNames.contains(SYNC_EVENT_STORE)) {
+        const events = database.createObjectStore(SYNC_EVENT_STORE, { keyPath: 'eventId' });
+        events.createIndex('status', 'status', { unique: false });
+        events.createIndex('replicaId', 'replicaId', { unique: false });
+        events.createIndex('replicaSequence', 'replicaSequence', { unique: false });
+        events.createIndex('entityId', 'entityId', { unique: false });
+        events.createIndex('hlcWallMs', 'hlcWallMs', { unique: false });
+      }
+      if (!database.objectStoreNames.contains(SYNC_META_STORE)) database.createObjectStore(SYNC_META_STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => { db = req.result; resolve(db); };
     req.onerror = () => reject(req.error);
@@ -891,6 +908,76 @@ function putRecord(record) {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Transazione IndexedDB annullata'));
+  });
+}
+
+function getSyncMeta(key = SYNC_STATE_KEY) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_META_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_META_STORE).get(key);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function putSyncMeta(row) {
+  if (!row) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_META_STORE, 'readwrite');
+    tx.objectStore(SYNC_META_STORE).put(row);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Persistenza identità Sync annullata'));
+  });
+}
+
+function countPendingSyncEvents() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).index('status').count('pending');
+    req.onsuccess = () => resolve(Number(req.result) || 0);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function resetSyncStores() {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([SYNC_EVENT_STORE, SYNC_META_STORE], 'readwrite');
+    tx.objectStore(SYNC_EVENT_STORE).clear();
+    tx.objectStore(SYNC_META_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Reset Sync dopo restore annullato'));
+  });
+}
+
+function putRecordWithSync(record, syncCommit) {
+  const events = Array.isArray(syncCommit?.events) ? syncCommit.events : [];
+  if (!events.length || !syncCommit?.stateRow) return putRecord(record);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, SYNC_EVENT_STORE, SYNC_META_STORE], 'readwrite');
+    tx.objectStore(STORE).put(record);
+    const syncStore = tx.objectStore(SYNC_EVENT_STORE);
+    for (const event of events) syncStore.put(event);
+    tx.objectStore(SYNC_META_STORE).put(syncCommit.stateRow);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Commit atomico Agenda + Sync annullato'));
+  });
+}
+
+function deleteRecordWithSync(date, syncCommit) {
+  const events = Array.isArray(syncCommit?.events) ? syncCommit.events : [];
+  if (!events.length || !syncCommit?.stateRow) return deleteRecord(date);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE, SYNC_EVENT_STORE, SYNC_META_STORE], 'readwrite');
+    tx.objectStore(STORE).delete(date);
+    const syncStore = tx.objectStore(SYNC_EVENT_STORE);
+    for (const event of events) syncStore.put(event);
+    tx.objectStore(SYNC_META_STORE).put(syncCommit.stateRow);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Cancellazione atomica Agenda + Sync annullata'));
   });
 }
 
@@ -1114,6 +1201,7 @@ async function importImageFile(file) {
     dirty = true;
     renderImages();
     statusLabel.textContent = 'immagine inserita';
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image);
     scheduleSave();
   } catch (err) {
     console.warn('Importazione immagine non riuscita', err);
@@ -1197,6 +1285,7 @@ function endImageGesture(ev, cancelled = false) {
     rememberUndo({ type: 'update-image', id: image.id, before: g.before, after: cloneImageObject(image) });
     session.imageTransforms++;
     dirty = true;
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before: g.before });
     scheduleSave();
   }
   renderImages();
@@ -1215,6 +1304,7 @@ function rotateSelectedImage(delta) {
   session.imageTransforms++;
   dirty = true;
   renderImages();
+  syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before });
   scheduleSave();
 }
 
@@ -1228,6 +1318,7 @@ function deleteSelectedImage() {
   session.imagesDeleted++;
   dirty = true;
   renderImages();
+  syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
   scheduleSave();
 }
 
@@ -1432,6 +1523,7 @@ async function applyImageCrop() {
     dirty = true;
     closeImageCropEditor();
     renderImages();
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, crop: true });
     scheduleSave();
     statusLabel.textContent = 'immagine ritagliata';
   } catch (err) {
@@ -1531,6 +1623,7 @@ function undoLastModification() {
     if (index >= 0) {
       const [removed] = strokes.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
+      syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
     }
   } else if (action?.type === 'add-image' && action.image?.id) {
     const index = images.findIndex((image) => image.id === action.image.id);
@@ -1538,17 +1631,20 @@ function undoLastModification() {
       const [removed] = images.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-image', image: cloneImageObject(removed), index }, REDO_LIMIT);
       if (selectedImageId === removed.id) selectedImageId = null;
+      syncFoundation?.recordImageDeleted(pageDescriptor(), removed.id);
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
     images.splice(index, 0, cloneImageObject(action.image));
     selectedImageId = action.image.id;
     pushBounded(redoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index }, REDO_LIMIT);
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'undo-delete' });
   } else if (action?.type === 'update-image' && action.before?.id) {
     const index = images.findIndex((image) => image.id === action.before.id);
     if (index >= 0) images[index] = cloneImageObject(action.before);
     selectedImageId = action.before.id;
     pushBounded(redoHistory, { type: 'update-image', id: action.before.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, REDO_LIMIT);
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.before, { reason: 'undo-update' });
   }
   renderAll();
   renderImages();
@@ -1566,6 +1662,7 @@ function redoLastModification() {
       const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : strokes.length, strokes.length));
       strokes.splice(index, 0, action.stroke);
       pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
+      syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
     }
   } else if (action?.type === 'add-image' && action.image?.id) {
     if (!images.some((image) => image.id === action.image.id)) {
@@ -1573,17 +1670,20 @@ function redoLastModification() {
       images.splice(index, 0, cloneImageObject(action.image));
       selectedImageId = action.image.id;
       pushBounded(undoHistory, { type: 'add-image', image: cloneImageObject(action.image), index }, UNDO_LIMIT);
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'redo-add' });
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = images.findIndex((image) => image.id === action.image.id);
     if (index >= 0) images.splice(index, 1);
     if (selectedImageId === action.image.id) selectedImageId = null;
     pushBounded(undoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index: action.index }, UNDO_LIMIT);
+    syncFoundation?.recordImageDeleted(pageDescriptor(), action.image.id);
   } else if (action?.type === 'update-image' && action.after?.id) {
     const index = images.findIndex((image) => image.id === action.after.id);
     if (index >= 0) images[index] = cloneImageObject(action.after);
     selectedImageId = action.after.id;
     pushBounded(undoHistory, { type: 'update-image', id: action.after.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, UNDO_LIMIT);
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.after, { reason: 'redo-update' });
   }
   renderAll();
   renderImages();
@@ -1752,12 +1852,14 @@ function cancelPendingSave() {
 }
 
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
+  let syncCommit = null;
   try {
     await openDb();
     const txStart = performance.now();
     storageBusy = true;
+    syncCommit = syncFoundation?.prepareAtomicCommit(descriptor.key) ?? { events: [], eventIds: [], stateRow: null };
     const putStart = performance.now();
-    const promise = putRecord({
+    const promise = putRecordWithSync({
       date: descriptor.key,
       kind: descriptor.kind === 'note' ? 'day-note-ink'
         : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
@@ -1768,21 +1870,24 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
       plannerMode: descriptor.plannerMode ?? null,
       noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
       version: APP_VERSION,
-      pipeline: 'coalesced-retina-storage',
+      pipeline: 'coalesced-retina-storage-sync-v1',
       strokes: pageStrokes,
       images: (pageImages || []).map(cloneImageObject),
       pageStyle: normalizePageStyle(pageStyleSnapshot),
       modifiedAt: new Date().toISOString()
-    });
+    }, syncCommit);
     const putCallMs = performance.now() - putStart;
     session.maxStorageCallMs = Math.max(session.maxStorageCallMs, putCallMs);
     await promise;
-    session.maxStorageTxMs = Math.max(session.maxStorageTxMs, performance.now() - txStart);
+    const txMs = performance.now() - txStart;
+    session.maxStorageTxMs = Math.max(session.maxStorageTxMs, txMs);
+    if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, txMs);
     session.storageWrites++;
     if (updateStatus) statusLabel.textContent = 'salvato';
     return true;
   } catch (err) {
     session.storageErrors++;
+    if (syncCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
     if (updateStatus) statusLabel.textContent = 'errore salvataggio';
     console.warn('Persistenza reintegrazione non riuscita', err);
     return false;
@@ -1883,6 +1988,10 @@ function finalizeStroke(reason = 'pointerup') {
   lastPoint = null;
   lastHandlerArrival = 0;
   dirty = true;
+  // 0.1.30 Sync Core: nessuna logica Sync entra in pointermove.
+  // L'evento viene creato una sola volta a tratto concluso; la scrittura
+  // IndexedDB dell'outbox è ulteriormente differita dal Sync Core quando Ink è idle.
+  if (completedStroke && syncFoundation) syncFoundation.recordStrokeAdded(pageDescriptor(), completedStroke);
   scheduleSave();
 }
 
@@ -2064,7 +2173,7 @@ function fmt(value, digits = 1) {
 function buildReport() {
   const recent = completedDiagnostics.slice(-24);
   return [
-    `Agenda iPad REINTEGRATION v${APP_VERSION}`,
+    `Agenda iPad SYNC CORE v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
     `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
     `Chiave pagina: ${currentPageKey()}`,
@@ -2093,6 +2202,15 @@ function buildReport() {
     `Cambi giorno completati/annullati: ${session.pageTurns}/${session.pageTurnCancels}`,
     `Cambi note completati: ${session.noteTurns}`,
     `Note create: ${session.notesCreated}`,
+    `Sync protocol/schema: ${syncStats?.protocolVersion ?? 'n/a'}/${syncStats?.schemaVersion ?? 'n/a'}`,
+    `Sync replica: ${syncStats?.replicaId ?? 'n/a'}`,
+    `Sync eventi queued/persisted/errori: ${syncStats?.queued ?? 0}/${syncStats?.persisted ?? 0}/${syncStats?.persistErrors ?? 0}`,
+    `Sync outbox memoria/persistita: ${syncStats?.memoryPending ?? 0}/${syncStats?.storedPending ?? 0}`,
+    `Sync commit atomici: ${syncStats?.atomicCommits ?? 0}`,
+    `Sync max queue call: ${fmt(syncStats?.maxQueueCallMs, 3)} ms`,
+    `Sync max commit atomico: ${fmt(syncStats?.maxAtomicCommitMs, 2)} ms`,
+    `Sync chiamate da pointermove: ${syncStats?.pointerMoveSyncCalls ?? 0}`,
+    `Sync ultimo HLC: ${syncStats?.lastEventHlc || 'nessuno'}`,
     `Lag segnalati: ${lagMarks.length}`,
     '',
     'ULTIMI TRATTI:',
@@ -2129,18 +2247,29 @@ async function clearCurrentPage() {
   const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (sincronizzato con Agenda)' : ''}` : 'pagina Agenda';
   if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
   cancelPendingSave();
+  const clearedDescriptor = pageDescriptor();
+  const removedStrokeIds = strokes.map((stroke) => stroke?.id).filter(Boolean);
+  const removedImageIds = images.map((image) => image?.id).filter(Boolean);
   strokes = [];
   images = [];
   selectedImageId = null;
   resetUndoHistory();
   renderAll();
   renderImages();
+  let clearCommit = null;
   try {
     await openDb();
-    await deleteRecord(currentPageKey());
+    syncFoundation?.recordPageCleared(clearedDescriptor, removedStrokeIds, removedImageIds);
+    clearCommit = syncFoundation?.prepareAtomicCommit(clearedDescriptor.key) ?? { events: [], eventIds: [], stateRow: null };
+    const txStart = performance.now();
+    await deleteRecordWithSync(clearedDescriptor.key, clearCommit);
+    const txMs = performance.now() - txStart;
+    if (clearCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(clearCommit.eventIds, txMs);
     dirty = false;
     statusLabel.textContent = 'pagina vuota';
   } catch (err) {
+    if (clearCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
+    dirty = true;
     statusLabel.textContent = 'errore cancellazione';
     console.warn(err);
   }
@@ -2996,6 +3125,25 @@ async function bootAgenda() {
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
+  if (!syncFoundation) {
+    try {
+      const [persistedState, storedPending] = await Promise.all([
+        getSyncMeta(SYNC_STATE_KEY).catch(() => null),
+        countPendingSyncEvents().catch(() => 0)
+      ]);
+      syncFoundation = initSyncFoundation({
+        appVersion: APP_VERSION,
+        persistedState,
+        storedPending,
+        onStats: (stats) => { syncStats = stats; }
+      });
+      syncStats = syncFoundation.getDiagnostics();
+      // Identità replica persistita all'avvio, fuori dalla pipeline realtime Ink.
+      await putSyncMeta(syncFoundation.getStateRow()).catch((err) => console.warn('Identità Sync non persistita', err));
+    } catch (err) {
+      console.warn('Agenda Sync Core non disponibile', err);
+    }
+  }
   ready = true;
   if (!backupFoundation) {
     backupFoundation = initBackupFoundation({
@@ -3004,7 +3152,13 @@ async function bootAgenda() {
       mainStore: STORE,
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture)
+      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      afterRestoreApplied: async () => {
+        // Il backup è uno snapshot, non una sequenza Sync: eliminiamo l'outbox
+        // precedente per evitare che eventi riferiti allo stato pre-restore vengano
+        // trasmessi in futuro. Al reload verrà creata una nuova identità replica.
+        await resetSyncStores();
+      }
     });
   }
   if ('serviceWorker' in navigator) {
@@ -3079,4 +3233,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · crop immagini isolato + Ink stabile + backup portabile`);
+console.info(`Agenda iPad ${APP_VERSION} · Sync Core local-first + Ink 0.1.29 invariato + backup portabile`);

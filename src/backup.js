@@ -544,7 +544,7 @@ async function downloadOrShare(archive) {
 export function initBackupFoundation(options) {
   const {
     appVersion, mainDbName, mainStore, flushCurrent = async () => {}, setAppStatus = () => {},
-    isRealtimeBusy = () => false
+    isRealtimeBusy = () => false, afterRestoreApplied = async () => {}
   } = options;
 
   const settingsButton = document.getElementById('settingsButton');
@@ -843,6 +843,7 @@ export function initBackupFoundation(options) {
       if (!safety) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
       await flushCurrent();
       await replaceMainRecords(mainDbName, mainStore, records);
+      await afterRestoreApplied();
       restorePortablePreferences(parsed.preferences?.values || {});
       setStatus('Ripristino completato. Riavvio Agenda iPad…');
       setTimeout(() => location.reload(), 700);
