@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.15';
+const APP_VERSION = '0.1.16';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -695,9 +695,16 @@ function finalizeStroke(reason = 'pointerup') {
   scheduleSave();
 }
 
+function isUiControlTarget(target) {
+  return target instanceof Element && Boolean(target.closest('button, .style-panel, .report-panel'));
+}
+
 function handlePointerDown(ev) {
+  // UI controls must remain native pointer targets for finger, mouse AND Apple Pencil.
+  // In particular, never let the global high-priority Ink pipeline call
+  // preventDefault() for a Pencil tap that started on the toolbar/style panel.
+  if (isUiControlTarget(ev.target)) return;
   if (ev.pointerType === 'touch') {
-    if (ev.target instanceof Element && ev.target.closest('button, .style-panel, .report-panel')) return;
     startPageSwipe(ev);
     return;
   }
@@ -707,6 +714,7 @@ function handlePointerDown(ev) {
 }
 
 function handlePointerMove(ev) {
+  if (isUiControlTarget(ev.target) && !drawing) return;
   if (ev.pointerType === 'touch') { movePageSwipe(ev); return; }
   noteHandlerArrival();
 

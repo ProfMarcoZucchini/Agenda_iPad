@@ -250,3 +250,12 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .startup-overlay { transition-duration: 120ms; }
   .credits-screen.startup-enter { animation-duration: 120ms; }
 }
+
+/* 0.1.16: toolbar/style controls are explicit native pointer targets, including Apple Pencil. */
+.quick-toolbar button,
+.style-panel button,
+.report-panel button {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
