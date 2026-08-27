@@ -288,9 +288,10 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 }
 .paper[data-page-template="blank"]::before { background-image: none; }
 
-.paper[data-paper-color="white"] { --line: rgba(68, 91, 124, .16); --margin: rgba(164, 78, 70, .18); }
-.paper[data-paper-color="yellow"] { --line: rgba(77, 97, 128, .18); --margin: rgba(154, 84, 70, .18); }
-.paper[data-paper-color="black"] { --line: rgba(221, 232, 236, .14); --margin: rgba(238, 127, 112, .23); }
+/* 0.1.20 — righe/griglia seguono il colore Penna predefinito della carta. */
+.paper[data-paper-color="white"] { --line: rgba(17, 17, 17, .145); --margin: rgba(17, 17, 17, .105); }
+.paper[data-paper-color="yellow"] { --line: rgba(17, 17, 17, .145); --margin: rgba(17, 17, 17, .105); }
+.paper[data-paper-color="black"] { --line: rgba(245, 243, 235, .18); --margin: rgba(245, 243, 235, .12); }
 .paper[data-paper-color="black"] .page-header {
   border-bottom-color: rgba(255,255,255,.13);
   background: linear-gradient(to bottom, rgba(40,43,45,.98), rgba(37,40,42,.95));
@@ -378,14 +379,16 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .page-color-choice { padding-inline: 5px; }
   .page-template-choice { min-width: 56px; }
 }
-\n\n/* 0.1.19 — correzioni UI + intestazione Agenda/Note. */
+
+
+/* 0.1.19 — correzioni UI + intestazione Agenda/Note. */
 .month-year-row { display:flex; align-items:baseline; gap:12px; white-space:nowrap; }
 .year-label { font-size:clamp(18px,2.3vw,28px); color:#514536; font-weight:650; }
 .page-kind-label {
   position:absolute; left:50%; top:61px; transform:translateX(-50%); margin:0;
   min-height:0; white-space:nowrap; text-transform:none; letter-spacing:.01em;
-  font-family:"Snell Roundhand","Apple Chancery","Bradley Hand","Segoe Script",cursive;
-  font-size:clamp(24px,3.3vw,40px); font-weight:500; color:rgba(91,68,46,.88);
+  font-family:"Freestyle Script","FreeStyle Script","Snell Roundhand","Apple Chancery","Bradley Hand","Segoe Script",cursive;
+  font-size:clamp(28px,3.8vw,46px); font-weight:500; color:rgba(91,68,46,.88);
   line-height:1; z-index:1;
 }
 .page-kind-label:empty { display:none; }
@@ -396,6 +399,29 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 @media (max-width:760px) {
   .month-year-row { gap:7px; }
   .year-label { font-size:17px; }
-  .page-kind-label { top:56px; font-size:clamp(20px,5vw,30px); }
+  .page-kind-label { top:56px; font-size:clamp(24px,5.4vw,34px); }
   .page-meta { min-width:48px; }
+}
+
+
+/* 0.1.20 — ambito stile pagina e stato applicazione globale. */
+.scope-options { gap: 6px; }
+.page-scope-choice {
+  appearance:none; -webkit-appearance:none; min-height:30px; padding:0 9px;
+  border:1px solid rgba(75,61,43,.22); border-radius:9px;
+  background:rgba(255,255,255,.45); color:#514536;
+  font-size:9px; font-weight:760; touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.page-scope-choice.selected {
+  border-color:rgba(75,61,43,.52); background:rgba(255,255,255,.94);
+  box-shadow:0 0 0 2px rgba(75,61,43,.11);
+}
+.page-style-group.bulk-busy { opacity:.62; }
+.page-style-group.bulk-busy .page-color-choice,
+.page-style-group.bulk-busy .page-template-choice,
+.page-style-group.bulk-busy .page-scope-choice { pointer-events:none; }
+.paper[data-paper-color="black"] .page-kind-label { color:#f1e9da; }
+@media (max-width:760px) {
+  .scope-options { flex-wrap:nowrap; }
+  .page-scope-choice { padding-inline:6px; font-size:8.5px; }
 }

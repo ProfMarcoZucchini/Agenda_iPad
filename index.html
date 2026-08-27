@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.19</title>
+  <title>Agenda iPad · 0.1.20</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.19</div>
+        <div class="cover-version">v0.1.20</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -27,7 +27,7 @@
     </div>
   </section>
 
-  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · UI fix e stile pagina">
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · stile pagina e ambito">
     <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
@@ -97,6 +97,10 @@
         </div>
         <div id="pageStyleGroup" class="page-style-group" aria-label="Stile pagina">
           <div class="page-style-heading">Pagina</div>
+          <div class="style-row page-scope-row"><span>Applica a</span><div class="style-options page-options scope-options">
+            <button class="page-scope-choice selected" type="button" data-page-scope="current" aria-pressed="true">Pagina corrente</button>
+            <button class="page-scope-choice" type="button" data-page-scope="all" aria-pressed="false">Tutta l’agenda</button>
+          </div></div>
           <div class="style-row"><span>Colore carta</span><div class="style-options page-options">
             <button class="page-color-choice" type="button" data-page-color="yellow" aria-label="Carta gialla"><i class="paper-chip paper-yellow" aria-hidden="true"></i><span>Giallo</span></button>
             <button class="page-color-choice" type="button" data-page-color="white" aria-label="Carta bianca"><i class="paper-chip paper-white" aria-hidden="true"></i><span>Bianco</span></button>
@@ -122,14 +126,14 @@
         <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.19</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.20</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.19</h2>
+      <h2>Diagnostica Pencil 0.1.20</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.19';
+const APP_VERSION = '0.1.20';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -27,6 +27,12 @@ const MAX_DATE = '2028-12-31';
 const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
+const GLOBAL_PAGE_STYLE_KEY = '::global-page-style';
+const PAPER_TOOL_DEFAULTS = Object.freeze({
+  yellow: { pen: '#111111', highlighter: '#7fc8e8' },
+  white: { pen: '#111111', highlighter: '#f0d84f' },
+  black: { pen: '#f5f3eb', highlighter: '#f0d84f' }
+});
 
 const stage = document.querySelector('.stage');
 const paper = document.getElementById('paper');
@@ -53,6 +59,8 @@ const colorSwatches = [...document.querySelectorAll('[data-style-color]')];
 const widthChoices = [...document.querySelectorAll('[data-style-width]')];
 const pageColorChoices = [...document.querySelectorAll('[data-page-color]')];
 const pageTemplateChoices = [...document.querySelectorAll('[data-page-template]')];
+const pageScopeChoices = [...document.querySelectorAll('[data-page-scope]')];
+const pageStyleGroup = document.getElementById('pageStyleGroup');
 const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
@@ -98,6 +106,9 @@ let undoHistory = [];
 let redoHistory = [];
 let toolStyles = loadToolStyles();
 let pageStyle = { ...DEFAULT_PAGE_STYLE };
+let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
+let pageStyleScope = 'current';
+let pageStyleBulkBusy = false;
 
 const session = {
   startedAt: new Date().toISOString(),
@@ -189,6 +200,22 @@ function normalizePageStyle(value) {
   return { color, template };
 }
 
+function pageStyleFromRecord(record) {
+  return record?.pageStyle ? normalizePageStyle({ ...globalPageStyle, ...record.pageStyle }) : { ...globalPageStyle };
+}
+
+function paperToolDefaults(color) {
+  return PAPER_TOOL_DEFAULTS[color] ?? PAPER_TOOL_DEFAULTS.yellow;
+}
+
+function applyToolDefaultsForPaper(color) {
+  const defaults = paperToolDefaults(color);
+  toolStyles.pen = { ...toolStyles.pen, color: defaults.pen };
+  toolStyles.highlighter = { ...toolStyles.highlighter, color: defaults.highlighter };
+  saveToolStyles();
+  updateStyleUi();
+}
+
 function applyPageStyle(target = paper, value = pageStyle) {
   if (!target) return;
   const normalized = normalizePageStyle(value);
@@ -197,6 +224,12 @@ function applyPageStyle(target = paper, value = pageStyle) {
 }
 
 function updatePageStyleUi() {
+  for (const button of pageScopeChoices) {
+    const selected = button.dataset.pageScope === pageStyleScope;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+  if (pageStyleGroup) pageStyleGroup.classList.toggle('bulk-busy', pageStyleBulkBusy);
   for (const button of pageColorChoices) {
     const selected = button.dataset.pageColor === pageStyle.color;
     button.classList.toggle('selected', selected);
@@ -209,24 +242,142 @@ function updatePageStyleUi() {
   }
 }
 
-function setPageColor(color) {
-  if (drawing || pageTurning || !ALLOWED_PAGE_COLORS.includes(color)) return;
+function setPageStyleScope(scope) {
+  if (!['current', 'all'].includes(scope) || drawing || pageTurning || pageStyleBulkBusy) return;
+  pageStyleScope = scope;
+  updatePageStyleUi();
+  statusLabel.textContent = scope === 'all' ? 'ambito: tutta l’agenda' : 'ambito: pagina corrente';
+}
+
+function isInkPageRecord(record) {
+  if (!record || typeof record !== 'object') return false;
+  if (record.kind === 'agenda-day-ink' || record.kind === 'day-note-ink') return true;
+  const key = String(record.date ?? '');
+  return /^\d{4}-\d{2}-\d{2}$/.test(key) || /::note::\d+$/.test(key);
+}
+
+async function applyGlobalPageStyleField(field, value) {
+  await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    let updated = 0;
+    const globalRecord = {
+      date: GLOBAL_PAGE_STYLE_KEY,
+      kind: 'global-page-style',
+      pageStyle: normalizePageStyle(globalPageStyle),
+      version: APP_VERSION,
+      modifiedAt: new Date().toISOString()
+    };
+    store.put(globalRecord);
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) return;
+      const record = cursor.value;
+      if (isInkPageRecord(record)) {
+        const base = record?.pageStyle ? normalizePageStyle({ ...globalPageStyle, ...record.pageStyle }) : { ...globalPageStyle };
+        record.pageStyle = normalizePageStyle({ ...base, [field]: value });
+        record.version = APP_VERSION;
+        record.modifiedAt = new Date().toISOString();
+        cursor.update(record);
+        updated++;
+      }
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve(updated);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Aggiornamento globale annullato'));
+  });
+}
+
+async function setPageColor(color) {
+  if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_COLORS.includes(color)) return;
   pageStyle = { ...pageStyle, color };
   applyPageStyle();
   updatePageStyleUi();
+  applyToolDefaultsForPaper(color);
   dirty = true;
+
+  if (pageStyleScope === 'all') {
+    pageStyleBulkBusy = true;
+    updatePageStyleUi();
+    statusLabel.textContent = 'applico colore a tutta l’agenda…';
+    cancelPendingSave();
+    const descriptor = pageDescriptor();
+    const currentOk = await persistSnapshot(descriptor, strokes, false, pageStyle);
+    if (!currentOk) {
+      pageStyleBulkBusy = false;
+      updatePageStyleUi();
+      statusLabel.textContent = 'salvataggio pagina non riuscito';
+      scheduleSave();
+      return;
+    }
+    globalPageStyle = { ...globalPageStyle, color };
+    try {
+      const updated = await applyGlobalPageStyleField('color', color);
+      session.storageWrites++;
+      statusLabel.textContent = `colore applicato a tutta l’agenda (${updated} pagine salvate)`;
+      dirty = false;
+    } catch (err) {
+      session.storageErrors++;
+      console.warn('Applicazione globale colore carta non riuscita', err);
+      statusLabel.textContent = 'errore applicazione globale';
+      dirty = true;
+      scheduleSave();
+    } finally {
+      pageStyleBulkBusy = false;
+      updatePageStyleUi();
+    }
+    return;
+  }
+
   scheduleSave();
-  statusLabel.textContent = 'colore carta impostato';
+  statusLabel.textContent = 'colore carta impostato sulla pagina';
 }
 
-function setPageTemplate(template) {
-  if (drawing || pageTurning || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
+async function setPageTemplate(template) {
+  if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
   pageStyle = { ...pageStyle, template };
   applyPageStyle();
   updatePageStyleUi();
   dirty = true;
+
+  if (pageStyleScope === 'all') {
+    pageStyleBulkBusy = true;
+    updatePageStyleUi();
+    statusLabel.textContent = 'applico modello a tutta l’agenda…';
+    cancelPendingSave();
+    const descriptor = pageDescriptor();
+    const currentOk = await persistSnapshot(descriptor, strokes, false, pageStyle);
+    if (!currentOk) {
+      pageStyleBulkBusy = false;
+      updatePageStyleUi();
+      statusLabel.textContent = 'salvataggio pagina non riuscito';
+      scheduleSave();
+      return;
+    }
+    globalPageStyle = { ...globalPageStyle, template };
+    try {
+      const updated = await applyGlobalPageStyleField('template', template);
+      session.storageWrites++;
+      statusLabel.textContent = `modello applicato a tutta l’agenda (${updated} pagine salvate)`;
+      dirty = false;
+    } catch (err) {
+      session.storageErrors++;
+      console.warn('Applicazione globale modello pagina non riuscita', err);
+      statusLabel.textContent = 'errore applicazione globale';
+      dirty = true;
+      scheduleSave();
+    } finally {
+      pageStyleBulkBusy = false;
+      updatePageStyleUi();
+    }
+    return;
+  }
+
   scheduleSave();
-  statusLabel.textContent = 'modello pagina impostato';
+  statusLabel.textContent = 'modello pagina impostato sulla pagina';
 }
 
 function updateStyleUi() {
@@ -293,8 +444,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const kindLabel = root.querySelector('.page-kind-label');
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
-  if (kindLabel) kindLabel.textContent = pageKind === 'note' ? 'NOTE DEL GIORNO' : '';
-  if (noteCounter) noteCounter.textContent = pageKind === 'note' ? `${noteIndex}/${Math.max(noteIndex, noteTotal)}` : '';
+  if (kindLabel) kindLabel.textContent = pageKind === 'note' ? `Note del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}` : '';
+  if (noteCounter) noteCounter.textContent = '';
   if (hours) hours.hidden = pageKind === 'note';
 }
 
@@ -302,7 +453,7 @@ function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   if (baselineLabel) {
     baselineLabel.textContent = currentPageKind === 'note'
-      ? `NOTE DEL GIORNO ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
+      ? `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`
       : 'AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE';
   }
 }
@@ -843,6 +994,10 @@ function activateUiButton(button) {
     setStyleWidth(button.dataset.styleTool, button.dataset.styleWidth);
     return;
   }
+  if (button.matches('.page-scope-choice')) {
+    setPageStyleScope(button.dataset.pageScope);
+    return;
+  }
   if (button.matches('.page-color-choice')) {
     setPageColor(button.dataset.pageColor);
     return;
@@ -863,6 +1018,9 @@ function handlePointerDown(ev) {
   // I controlli UI vengono gestiti da listener DIRETTI sui pulsanti.
   // Il motore Ink non deve mai interpretare un contatto nato sulla toolbar/pannelli.
   if (isUiControlTarget(ev.target)) return;
+  // Un'applicazione esplicita a tutta l'agenda può aggiornare molti record IndexedDB.
+  // Per pochi istanti non avviamo un nuovo tratto, evitando competizione con la transazione bulk.
+  if (pageStyleBulkBusy) { ev.preventDefault(); return; }
   // 0.1.17: appena Apple Pencil torna sul foglio, il pannello Stile si richiude.
   // L'operazione avviene una sola volta al pointerdown e non entra nel loop di rendering Ink.
   if (ev.pointerType === 'pen' && paper?.contains(ev.target)) closeStylePanel();
@@ -1096,7 +1254,7 @@ function drawPreviewInk(preview, previewStrokes) {
 
 function footerTextFor(descriptor) {
   return descriptor.kind === 'note'
-    ? `NOTE DEL GIORNO ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`
+    ? `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`
     : 'AGENDA · ANTEPRIMA';
 }
 
@@ -1129,7 +1287,7 @@ async function loadPageForPreview(descriptor, preview) {
     session.storageReads++;
     const targetPage = {
       strokes: Array.isArray(record?.strokes) ? record.strokes : [],
-      pageStyle: normalizePageStyle(record?.pageStyle)
+      pageStyle: pageStyleFromRecord(record)
     };
     if (preview?.isConnected) {
       applyPageStyle(preview, targetPage.pageStyle);
@@ -1139,7 +1297,7 @@ async function loadPageForPreview(descriptor, preview) {
   } catch (err) {
     session.storageErrors++;
     console.warn('Anteprima pagina non disponibile', err);
-    return { strokes: [], pageStyle: { ...DEFAULT_PAGE_STYLE } };
+    return { strokes: [], pageStyle: { ...globalPageStyle } };
   }
 }
 
@@ -1321,7 +1479,7 @@ async function commitPageTurn() {
   const oldStrokes = strokes;
   const oldPageStyle = { ...pageStyle };
   const target = swipe.target;
-  const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], pageStyle: { ...DEFAULT_PAGE_STYLE } });
+  const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], pageStyle: { ...globalPageStyle } });
   const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle) : Promise.resolve(true);
   const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
   const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
@@ -1362,9 +1520,11 @@ async function commitPageTurn() {
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
-  pageStyle = normalizePageStyle(targetPage?.pageStyle);
+  const previousPaperColor = pageStyle.color;
+  pageStyle = normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
   applyPageStyle();
   updatePageStyleUi();
+  if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
   resetUndoHistory();
   dirty = false;
   if (target.createNote) session.notesCreated++;
@@ -1548,6 +1708,12 @@ for (const choice of widthChoices) {
     setStyleWidth(choice.dataset.styleTool, choice.dataset.styleWidth);
   });
 }
+for (const choice of pageScopeChoices) {
+  choice.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(choice)) return;
+    setPageStyleScope(choice.dataset.pageScope);
+  });
+}
 for (const choice of pageColorChoices) {
   choice.addEventListener('click', () => {
     if (wasJustActivatedByPencil(choice)) return;
@@ -1589,14 +1755,17 @@ async function loadInitialPage() {
   statusLabel.textContent = 'caricamento';
   try {
     await openDb();
-    const [record] = await Promise.all([
+    const [record, globalRecord] = await Promise.all([
       getRecord(currentPageKey()),
+      getRecord(GLOBAL_PAGE_STYLE_KEY),
       ensureNotesCount(currentDate)
     ]);
-    session.storageReads++;
+    session.storageReads += 2;
+    globalPageStyle = globalRecord?.pageStyle ? normalizePageStyle(globalRecord.pageStyle) : { ...DEFAULT_PAGE_STYLE };
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
-    pageStyle = normalizePageStyle(record?.pageStyle);
+    pageStyle = pageStyleFromRecord(record);
     applyPageStyle();
+    applyToolDefaultsForPaper(pageStyle.color);
     updatePageStyleUi();
     resetUndoHistory();
     dirty = false;
@@ -1695,4 +1864,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 6 · Ink baseline + sfoglio + Note del giorno + strumenti + stili + copertina/crediti`);
+console.info(`Agenda iPad ${APP_VERSION} · reintegrazione 7 · Ink stabile + stile pagina con ambito globale + colori automatici`);
