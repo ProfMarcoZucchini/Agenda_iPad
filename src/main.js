@@ -1,5 +1,5 @@
 import { initBackupFoundation } from './backup.js';
-const APP_VERSION = '0.1.23';
+const APP_VERSION = '0.1.24';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';

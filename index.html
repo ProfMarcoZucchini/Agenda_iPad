@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.23</title>
+  <title>Agenda iPad · 0.1.24</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.23</div>
+        <div class="cover-version">v0.1.24</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -140,7 +140,7 @@
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="settingsButton" class="settings-button" type="button" aria-expanded="false" title="Impostazioni e backup">⚙</button>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.23</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.24</button>
       </footer>
     </section>
   </main>
@@ -148,7 +148,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.23</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.24</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -171,21 +171,28 @@
           <label class="destination-row"><input id="destLocalFolder" type="checkbox"><span><strong>Cartella locale</strong><small id="localFolderStatus">Disponibile solo se il browser consente la scelta persistente di una cartella</small></span></label>
           <div class="destination-actions"><button id="chooseLocalFolderButton" type="button">Scegli cartella</button><button id="exportLatestButton" type="button">Esporta ultimo backup</button></div>
 
-          <label class="destination-row"><input id="destGoogleDrive" type="checkbox"><span><strong>Google Drive</strong><small>Upload API Drive · token OAuth mantenuto solo per la sessione</small></span></label>
+          <label class="destination-row"><input id="destGoogleDrive" type="checkbox"><span><strong>Google Drive</strong><small>Google Identity Services · scope Drive limitato ai file usati dall’app</small></span></label>
           <div class="cloud-grid" id="googleDriveSettings">
-            <label><span>Client ID</span><input id="googleClientId" type="text" autocomplete="off" placeholder="…apps.googleusercontent.com"></label>
-            <label><span>ID cartella Drive</span><input id="googleFolderId" type="text" autocomplete="off" placeholder="vuoto = Il mio Drive"></label>
-            <label class="token-field"><span>Access token OAuth (sessione)</span><input id="googleAccessToken" type="password" autocomplete="off" placeholder="non viene salvato"></label>
+            <label><span>Client ID OAuth Web</span><input id="googleClientId" type="text" autocomplete="off" placeholder="…apps.googleusercontent.com"></label>
+            <label><span>Nome cartella</span><input id="googleFolderName" type="text" autocomplete="off" value="Agenda iPad Backups"></label>
+            <label class="cloud-advanced"><span>ID cartella Drive</span><input id="googleFolderId" type="text" autocomplete="off" placeholder="compilato automaticamente"></label>
+            <div class="cloud-connection">
+              <div><strong>Stato Google</strong><small id="googleConnectionStatus">Non connesso</small></div>
+              <div class="cloud-actions"><button id="googleConnectButton" type="button">Connetti</button><button id="googleTestButton" type="button">Test</button><button id="googleDisconnectButton" type="button">Disconnetti</button></div>
+            </div>
           </div>
 
-          <label class="destination-row"><input id="destOneDrive" type="checkbox"><span><strong>Microsoft OneDrive</strong><small>Microsoft Graph · token OAuth mantenuto solo per la sessione</small></span></label>
+          <label class="destination-row"><input id="destOneDrive" type="checkbox"><span><strong>Microsoft OneDrive</strong><small>Microsoft Graph · Authorization Code + PKCE per applicazioni SPA</small></span></label>
           <div class="cloud-grid" id="oneDriveSettings">
-            <label><span>Client ID</span><input id="oneDriveClientId" type="text" autocomplete="off"></label>
+            <label><span>Client ID applicazione</span><input id="oneDriveClientId" type="text" autocomplete="off"></label>
             <label><span>Tenant</span><input id="oneDriveTenant" type="text" autocomplete="off" value="common"></label>
             <label><span>Cartella</span><input id="oneDriveFolder" type="text" autocomplete="off" value="Agenda iPad Backups"></label>
-            <label class="token-field"><span>Access token OAuth (sessione)</span><input id="oneDriveAccessToken" type="password" autocomplete="off" placeholder="non viene salvato"></label>
+            <div class="cloud-connection">
+              <div><strong>Stato OneDrive</strong><small id="oneDriveConnectionStatus">Non connesso</small></div>
+              <div class="cloud-actions"><button id="oneDriveConnectButton" type="button">Connetti</button><button id="oneDriveTestButton" type="button">Test</button><button id="oneDriveDisconnectButton" type="button">Disconnetti</button></div>
+            </div>
           </div>
-          <p class="settings-note">Client ID e cartelle vengono salvati localmente; i token OAuth non vengono mai inclusi nei backup e restano soltanto in memoria per la sessione corrente.</p>
+          <p class="settings-note">Client ID, tenant e cartelle vengono salvati localmente. I token OAuth non entrano mai nei backup e restano validi soltanto nella sessione corrente. Se il cloud non è autenticato, la copia nell’Archivio locale dell’app viene comunque creata.</p>
         </section>
 
         <section class="settings-section">
@@ -211,7 +218,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.23</h2>
+      <h2>Diagnostica Pencil 0.1.24</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

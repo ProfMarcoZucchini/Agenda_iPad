@@ -1,3 +1,4 @@
+import { createGoogleDriveAuth, createOneDriveAuth } from './cloud-auth.js';
 const BACKUP_DB_NAME = 'AgendaIPadBackupDB';
 const BACKUP_DB_VERSION = 1;
 const ARCHIVE_STORE = 'archives';
@@ -16,7 +17,7 @@ const DEFAULT_CONFIG = Object.freeze({
   backupOnStartup: true,
   verifyAfterBackup: true,
   destinations: { localFolder: false, googleDrive: false, oneDrive: false },
-  google: { clientId: '', folderId: '' },
+  google: { clientId: '', folderId: '', folderName: 'Agenda iPad Backups' },
   oneDrive: { clientId: '', tenant: 'common', folder: 'Agenda iPad Backups' },
   lastBackupAt: null,
   lastBackupId: null
@@ -389,10 +390,30 @@ async function uploadOneDrive(blob, filename, token, folderPath) {
   return response.json();
 }
 
-async function uploadGoogleDrive(blob, filename, token, folderId) {
-  if (!token) throw new Error('Token Google Drive mancante');
+async function ensureGoogleFolder(token, folderId, folderName = 'Agenda iPad Backups') {
+  if (folderId) return folderId;
+  const safeName = String(folderName || 'Agenda iPad Backups').replace(/'/g, "\\'");
+  const q = encodeURIComponent(`name='${safeName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+  const list = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=10`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!list.ok) throw new Error(`Google Drive cartella: HTTP ${list.status}`);
+  const existing = (await list.json()).files?.[0];
+  if (existing?.id) return existing.id;
+  const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: folderName || 'Agenda iPad Backups', mimeType: 'application/vnd.google-apps.folder' })
+  });
+  if (!create.ok) throw new Error(`Google Drive crea cartella: HTTP ${create.status}`);
+  return (await create.json()).id;
+}
+
+async function uploadGoogleDrive(blob, filename, token, folderId, folderName = 'Agenda iPad Backups') {
+  if (!token) throw new Error('Sessione Google Drive non connessa');
+  const effectiveFolderId = await ensureGoogleFolder(token, folderId, folderName);
   const metadata = { name: filename, mimeType: 'application/zip' };
-  if (folderId?.trim()) metadata.parents = [folderId.trim()];
+  if (effectiveFolderId) metadata.parents = [effectiveFolderId];
   const boundary = `agenda_ipad_${Date.now().toString(36)}`;
   const body = new Blob([
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`, JSON.stringify(metadata),
@@ -446,11 +467,18 @@ export function initBackupFoundation(options) {
   const exportLatest = document.getElementById('exportLatestButton');
   const googleClientId = document.getElementById('googleClientId');
   const googleFolderId = document.getElementById('googleFolderId');
-  const googleToken = document.getElementById('googleAccessToken');
+  const googleFolderName = document.getElementById('googleFolderName');
+  const googleConnect = document.getElementById('googleConnectButton');
+  const googleTest = document.getElementById('googleTestButton');
+  const googleDisconnect = document.getElementById('googleDisconnectButton');
+  const googleConnectionStatus = document.getElementById('googleConnectionStatus');
   const oneClientId = document.getElementById('oneDriveClientId');
   const oneTenant = document.getElementById('oneDriveTenant');
   const oneFolder = document.getElementById('oneDriveFolder');
-  const oneToken = document.getElementById('oneDriveAccessToken');
+  const oneConnect = document.getElementById('oneDriveConnectButton');
+  const oneTest = document.getElementById('oneDriveTestButton');
+  const oneDisconnect = document.getElementById('oneDriveDisconnectButton');
+  const oneConnectionStatus = document.getElementById('oneDriveConnectionStatus');
   const backupNow = document.getElementById('backupNowButton');
   const verifyButton = document.getElementById('verifyBackupButton');
   const restoreButton = document.getElementById('restoreBackupButton');
@@ -463,9 +491,30 @@ export function initBackupFoundation(options) {
   let running = false;
   let lastActivity = performance.now();
   let dueTimer = 0;
+  let authCallbackMessage = '';
   const directActivations = new WeakMap();
 
   const setStatus = (text) => { if (status) status.textContent = text; };
+
+  const cloudStateText = (connected, expiresAt) => connected
+    ? `Connesso per questa sessione · scadenza ${new Date(expiresAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`
+    : 'Non connesso';
+
+  const googleAuth = createGoogleDriveAuth({
+    getClientId: () => googleClientId?.value || config.google.clientId,
+    onChange: ({ connected, expiresAt }) => {
+      if (googleConnectionStatus) googleConnectionStatus.textContent = cloudStateText(connected, expiresAt);
+      googleConnect?.classList.toggle('connected', connected);
+    }
+  });
+  const oneDriveAuth = createOneDriveAuth({
+    getClientId: () => oneClientId?.value || config.oneDrive.clientId,
+    getTenant: () => oneTenant?.value || config.oneDrive.tenant || 'common',
+    onChange: ({ connected, expiresAt }) => {
+      if (oneConnectionStatus) oneConnectionStatus.textContent = cloudStateText(connected, expiresAt);
+      oneConnect?.classList.toggle('connected', connected);
+    }
+  });
 
   async function loadConfig() {
     const row = await backupGet(SETTINGS_STORE, SETTINGS_KEY).catch(() => null);
@@ -486,9 +535,12 @@ export function initBackupFoundation(options) {
     destOneDrive.checked = Boolean(config.destinations.oneDrive);
     googleClientId.value = config.google.clientId || '';
     googleFolderId.value = config.google.folderId || '';
+    if (googleFolderName) googleFolderName.value = config.google.folderName || 'Agenda iPad Backups';
     oneClientId.value = config.oneDrive.clientId || '';
     oneTenant.value = config.oneDrive.tenant || 'common';
     oneFolder.value = config.oneDrive.folder || 'Agenda iPad Backups';
+    if (googleConnectionStatus) googleConnectionStatus.textContent = cloudStateText(Boolean(googleAuth.getAccessToken()), googleAuth.getExpiresAt());
+    if (oneConnectionStatus) oneConnectionStatus.textContent = cloudStateText(Boolean(oneDriveAuth.getAccessToken()), oneDriveAuth.getExpiresAt());
     customDaysField.hidden = config.frequency !== 'custom';
     if (!('showDirectoryPicker' in window)) {
       chooseLocal.disabled = true;
@@ -511,6 +563,7 @@ export function initBackupFoundation(options) {
     config.destinations.oneDrive = destOneDrive.checked;
     config.google.clientId = googleClientId.value.trim();
     config.google.folderId = googleFolderId.value.trim();
+    config.google.folderName = googleFolderName?.value.trim() || 'Agenda iPad Backups';
     config.oneDrive.clientId = oneClientId.value.trim();
     config.oneDrive.tenant = oneTenant.value.trim() || 'common';
     config.oneDrive.folder = oneFolder.value.trim();
@@ -545,24 +598,33 @@ export function initBackupFoundation(options) {
   }
 
   async function deliverExternal(archive, reason) {
-    const results = [];
+    const results = [{ key: 'internal', label: 'Archivio app', ok: true, message: 'salvato' }];
     if (config.destinations.localFolder) {
-      try { await writeLocalFolder(archive); results.push('cartella locale ✓'); }
-      catch (err) { results.push(`cartella locale ✗ ${err.message}`); }
+      try { await writeLocalFolder(archive); results.push({ key: 'local', label: 'Cartella locale', ok: true, message: 'salvato' }); }
+      catch (err) { results.push({ key: 'local', label: 'Cartella locale', ok: false, message: err.message }); }
     }
     if (config.destinations.googleDrive) {
       try {
-        await uploadGoogleDrive(archive.blob, archive.filename, googleToken.value.trim(), config.google.folderId);
-        results.push('Google Drive ✓');
-      } catch (err) { results.push(`Google Drive ✗ ${err.message}`); }
+        const token = googleAuth.getAccessToken();
+        if (!token) throw new Error('sessione non connessa: premi Connetti');
+        const folderId = await ensureGoogleFolder(token, config.google.folderId, config.google.folderName);
+        if (!config.google.folderId && folderId) {
+          config.google.folderId = folderId;
+          if (googleFolderId) googleFolderId.value = folderId;
+          await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: new Date().toISOString() });
+        }
+        await uploadGoogleDrive(archive.blob, archive.filename, token, folderId, config.google.folderName);
+        results.push({ key: 'google', label: 'Google Drive', ok: true, message: 'caricato' });
+      } catch (err) { results.push({ key: 'google', label: 'Google Drive', ok: false, message: err.message }); }
     }
     if (config.destinations.oneDrive) {
       try {
-        await uploadOneDrive(archive.blob, archive.filename, oneToken.value.trim(), config.oneDrive.folder);
-        results.push('OneDrive ✓');
-      } catch (err) { results.push(`OneDrive ✗ ${err.message}`); }
+        const token = oneDriveAuth.getAccessToken();
+        if (!token) throw new Error('sessione non connessa: premi Connetti');
+        await uploadOneDrive(archive.blob, archive.filename, token, config.oneDrive.folder);
+        results.push({ key: 'onedrive', label: 'OneDrive', ok: true, message: 'caricato' });
+      } catch (err) { results.push({ key: 'onedrive', label: 'OneDrive', ok: false, message: err.message }); }
     }
-    if (!results.length && reason === 'automatic') results.push('archivio locale app ✓');
     return results;
   }
 
@@ -591,9 +653,15 @@ export function initBackupFoundation(options) {
         await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: pkg.createdAt });
       }
       await prune();
-      const external = safety ? [] : await deliverExternal(archive, reason);
+      const external = safety
+        ? [{ key: 'internal', label: 'Archivio app', ok: true, message: 'backup sicurezza' }]
+        : await deliverExternal(archive, reason);
+      archive.deliveries = external;
+      archive.deliveryUpdatedAt = new Date().toISOString();
+      await backupPut(ARCHIVE_STORE, archive);
       await renderHistory();
-      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · SHA-256 verificato${external.length ? `\n${external.join(' · ')}` : ''}`);
+      const deliveryText = external.map((item) => `${item.label} ${item.ok ? '✓' : '✗'}${item.ok ? '' : ` ${item.message}`}`).join(' · ');
+      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · SHA-256 verificato${deliveryText ? `\n${deliveryText}` : ''}`);
       setAppStatus('backup completato');
       return archive;
     } catch (err) {
@@ -624,18 +692,20 @@ export function initBackupFoundation(options) {
     if (!rows.length) { history.innerHTML = '<div class="backup-empty">Nessun backup ancora archiviato.</div>'; return; }
     history.innerHTML = rows.slice(0, 12).map((row) => `
       <div class="backup-item" data-backup-id="${row.id.replace(/"/g, '&quot;')}">
-        <div class="backup-item-main"><strong>${row.filename}</strong><small>${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${row.recordCount} record · ${row.reason}</small></div>
+        <div class="backup-item-main"><strong>${row.filename}</strong><small>${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${row.recordCount} record · ${row.reason}</small><div class="delivery-badges">${(row.deliveries || [{label:'Archivio app',ok:true}]).map((d) => `<span class="delivery-badge ${d.ok ? 'ok' : 'fail'}" title="${String(d.message || '').replace(/"/g,'&quot;')}">${d.label} ${d.ok ? '✓' : '✗'}</span>`).join('')}</div></div>
         <div class="backup-item-actions"><button type="button" data-backup-export="1">Esporta</button><button type="button" data-backup-delete="1">Elimina</button></div>
       </div>`).join('');
   }
 
   async function openSettings() {
     await loadConfig();
+    googleAuth.preload().catch(() => {});
     panel.hidden = false;
     settingsButton.setAttribute('aria-expanded', 'true');
     const next = dueAt(config);
     const nextText = config.frequency === 'off' ? 'Backup automatico disattivato.' : `Prossima scadenza: ${next.getTime() <= Date.now() ? 'adesso' : next.toLocaleString('it-IT')}`;
-    setStatus(config.lastBackupAt ? `Ultimo backup: ${new Date(config.lastBackupAt).toLocaleString('it-IT')}\n${nextText}` : `Nessun backup automatico precedente.\n${nextText}`);
+    setStatus(authCallbackMessage || (config.lastBackupAt ? `Ultimo backup: ${new Date(config.lastBackupAt).toLocaleString('it-IT')}\n${nextText}` : `Nessun backup automatico precedente.\n${nextText}`));
+    authCallbackMessage = '';
   }
 
   function closeSettings() {
@@ -717,7 +787,42 @@ export function initBackupFoundation(options) {
     });
   }
 
-  const saveFields = [frequency, customDays, retention, onStartup, verifyAfter, destLocal, destGoogle, destOneDrive, googleClientId, googleFolderId, oneClientId, oneTenant, oneFolder];
+  bindAction(googleConnect, async () => {
+    try {
+      await saveConfig();
+      setStatus('Connessione Google Drive…');
+      await googleAuth.connect({ prompt: 'consent' });
+      destGoogle.checked = true; await saveConfig();
+      await googleAuth.test();
+      setStatus('Google Drive connesso ✓ · sessione pronta per i backup.');
+    } catch (err) { setStatus(`Google Drive: ${err.message || err}`); }
+  });
+  bindAction(googleTest, async () => {
+    try { setStatus('Test Google Drive…'); await googleAuth.test(); setStatus('Google Drive: connessione valida ✓'); }
+    catch (err) { setStatus(`Google Drive: ${err.message || err}`); }
+  });
+  bindAction(googleDisconnect, async () => {
+    await googleAuth.disconnect();
+    setStatus('Google Drive disconnesso dalla sessione.');
+  });
+
+  bindAction(oneConnect, async () => {
+    try {
+      await saveConfig(); await flushCurrent();
+      setStatus('Apertura accesso Microsoft…');
+      await oneDriveAuth.beginConnect();
+    } catch (err) { setStatus(`OneDrive: ${err.message || err}`); }
+  });
+  bindAction(oneTest, async () => {
+    try { setStatus('Test OneDrive…'); await oneDriveAuth.test(); setStatus('OneDrive: connessione valida ✓'); }
+    catch (err) { setStatus(`OneDrive: ${err.message || err}`); }
+  });
+  bindAction(oneDisconnect, () => {
+    oneDriveAuth.disconnect();
+    setStatus('OneDrive disconnesso dalla sessione.');
+  });
+
+  const saveFields = [frequency, customDays, retention, onStartup, verifyAfter, destLocal, destGoogle, destOneDrive, googleClientId, googleFolderId, googleFolderName, oneClientId, oneTenant, oneFolder];
   for (const field of saveFields) field?.addEventListener('change', () => saveConfig().catch(() => {}));
   frequency?.addEventListener('change', () => { customDaysField.hidden = frequency.value !== 'custom'; });
 
@@ -762,7 +867,24 @@ export function initBackupFoundation(options) {
     }
   });
 
-  loadConfig().then(() => scheduleDueCheck('automatic')).catch((err) => console.warn('Backup foundation init', err));
+  loadConfig().then(async () => {
+    try {
+      const callback = await oneDriveAuth.completeRedirectIfPresent();
+      if (callback.handled) {
+        destOneDrive.checked = true;
+        await saveConfig();
+        await oneDriveAuth.test();
+        authCallbackMessage = 'OneDrive connesso ✓ · sessione pronta per i backup.';
+      }
+      const openRequested = callback.openSettings || oneDriveAuth.consumeOpenSettingsRequest();
+      if (callback.openSettings) oneDriveAuth.consumeOpenSettingsRequest();
+      if (openRequested) setTimeout(() => openSettings().catch(() => {}), 80);
+    } catch (err) {
+      authCallbackMessage = `OneDrive: ${err.message || err}`;
+      setTimeout(() => openSettings().catch(() => {}), 80);
+    }
+    scheduleDueCheck('automatic');
+  }).catch((err) => console.warn('Backup foundation init', err));
 
   return { openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck };
 }

@@ -682,3 +682,29 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .destination-actions { margin-left:0; }
   .baseline-label { max-width:32%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 }
+
+/* 0.1.24 — connessioni cloud guidate e log destinazioni. */
+.cloud-connection {
+  grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; gap:10px;
+  min-height:48px; padding:8px 10px; border:1px solid rgba(75,61,43,.16); border-radius:10px;
+  background:rgba(255,255,255,.42);
+}
+.cloud-connection > div:first-child { display:grid; gap:3px; }
+.cloud-connection strong { font-size:10px; }
+.cloud-connection small { font-size:8.5px; opacity:.72; }
+.cloud-actions { display:flex; flex-wrap:wrap; gap:6px; justify-content:flex-end; }
+.cloud-actions button {
+  appearance:none; min-height:32px; border:1px solid rgba(75,61,43,.24); border-radius:9px;
+  background:rgba(255,255,255,.70); color:#493d31; padding:6px 10px; font-size:9px; font-weight:750;
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+}
+.cloud-actions button.connected { background:#e2f2e2; border-color:#7fa47d; }
+.cloud-advanced { opacity:.78; }
+.delivery-badges { display:flex; flex-wrap:wrap; gap:4px; margin-top:3px; }
+.delivery-badge { display:inline-flex; align-items:center; padding:2px 6px; border-radius:999px; font-size:7.5px; font-weight:750; }
+.delivery-badge.ok { background:rgba(79,126,74,.13); color:#3e6d3a; }
+.delivery-badge.fail { background:rgba(161,69,63,.12); color:#93443e; }
+@media (max-width:700px) {
+  .cloud-connection { align-items:flex-start; flex-direction:column; }
+  .cloud-actions { justify-content:flex-start; }
+}
