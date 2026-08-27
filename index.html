@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.18</title>
+  <title>Agenda iPad · 0.1.19</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.18</div>
+        <div class="cover-version">v0.1.19</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -27,19 +27,18 @@
     </div>
   </section>
 
-  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · Copertina e crediti">
+  <main class="stage" aria-label="Agenda iPad - reintegrazione controllata · UI fix e stile pagina">
     <section id="paper" class="paper" aria-label="Pagina Agenda giornaliera">
       <header id="pageHeader" class="page-header" aria-hidden="true">
         <div class="date-block">
           <div id="dayNumber" class="day-number">26</div>
           <div class="day-text">
             <div id="dayName" class="day-name">MERCOLEDÌ</div>
-            <div id="monthName" class="month-name">agosto</div>
-            <div class="page-kind-label"></div>
+            <div class="month-year-row"><div id="monthName" class="month-name">agosto</div><div id="yearLabel" class="year-label">2026</div></div>
           </div>
         </div>
+        <div class="page-kind-label"></div>
         <div class="page-meta">
-          <div id="yearLabel" class="year-label">2026</div>
           <div class="note-counter"></div>
         </div>
       </header>
@@ -123,14 +122,14 @@
         <span class="baseline-label">AGENDA · INK + PAGE TURN + NOTE + TOOLS + PAGE STYLE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button" type="button">LAG</button>
-        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.18</button>
+        <button id="versionButton" class="version-button" type="button" title="Diagnostica">v0.1.19</button>
       </footer>
     </section>
   </main>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil 0.1.18</h2>
+      <h2>Diagnostica Pencil 0.1.19</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

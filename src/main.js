@@ -1,4 +1,4 @@
-const APP_VERSION = '0.1.18';
+const APP_VERSION = '0.1.19';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 1;
 const STORE = 'pages';
@@ -445,8 +445,20 @@ function updateToolUi() {
     button.classList.toggle('active', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
-  if (undoButton) undoButton.disabled = undoHistory.length === 0;
-  if (redoButton) redoButton.disabled = redoHistory.length === 0;
+  // 0.1.19: Undo/Redo restano sempre target Pointer reali. Lo stato
+  // disponibile/non disponibile è semantico e visivo, non usa HTML disabled.
+  if (undoButton) {
+    const available = undoHistory.length > 0;
+    undoButton.disabled = false;
+    undoButton.classList.toggle('history-unavailable', !available);
+    undoButton.setAttribute('aria-disabled', available ? 'false' : 'true');
+  }
+  if (redoButton) {
+    const available = redoHistory.length > 0;
+    redoButton.disabled = false;
+    redoButton.classList.toggle('history-unavailable', !available);
+    redoButton.setAttribute('aria-disabled', available ? 'false' : 'true');
+  }
 }
 
 function selectTool(tool) {
@@ -804,7 +816,9 @@ function getUiButtonTarget(target) {
 }
 
 function activateUiButton(button) {
-  if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+  if (!(button instanceof HTMLButtonElement)) return;
+  if (button === undoButton && !undoHistory.length) return;
+  if (button === redoButton && !redoHistory.length) return;
   if (button.matches('.tool-button[data-tool]')) {
     selectTool(button.dataset.tool);
     return;
@@ -1400,7 +1414,7 @@ function endPageSwipe(ev, cancelled = false) {
 // pulsanti vengono attivati direttamente al pointerdown. `touchstart` resta come
 // fallback estremo nel caso in cui Safari non produca Pointer Events completi.
 function activateUiFromDirectContact(button, ev, source = 'pointerdown') {
-  if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+  if (!(button instanceof HTMLButtonElement)) return;
   const now = performance.now();
   const previous = recentPencilUiActivation.get(button);
   if (Number.isFinite(previous) && now - previous < 120) {
@@ -1451,13 +1465,41 @@ const directUiButtons = [...new Set([
   ...toolButtons,
   undoButton,
   redoButton,
-  styleButton,
-  ...colorSwatches,
-  ...widthChoices,
-  ...pageColorChoices,
-  ...pageTemplateChoices
+  styleButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
+
+// 0.1.19 — gestione delegata del pannello Stile. Pencil e dito applicano
+// l'opzione al pointerdown, risalendo dal target interno al relativo button.
+function handleStylePanelDirectPointer(ev) {
+  if (ev.pointerType === 'mouse') return;
+  const button = getUiButtonTarget(ev.target);
+  if (!button || !stylePanel?.contains(button)) return;
+  if (drawing) finalizeStroke(`style-panel-${ev.pointerType || 'pointer'}-recovery`);
+  recentPencilUiActivation.set(button, performance.now());
+  activateUiButton(button);
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function handleStylePanelTouchFallback(ev) {
+  const button = getUiButtonTarget(ev.target);
+  if (!button || !stylePanel?.contains(button)) return;
+  const previous = recentPencilUiActivation.get(button);
+  if (Number.isFinite(previous) && performance.now() - previous < 180) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  if (drawing) finalizeStroke('style-panel-touchstart-recovery');
+  recentPencilUiActivation.set(button, performance.now());
+  activateUiButton(button);
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+stylePanel?.addEventListener('pointerdown', handleStylePanelDirectPointer, { passive: false, capture: true });
+stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { passive: false, capture: true });
 
 window.addEventListener('pointerdown', handlePointerDown, { passive: false, capture: true });
 window.addEventListener('pointermove', handlePointerMove, { passive: false, capture: true });

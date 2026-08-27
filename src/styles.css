@@ -119,6 +119,7 @@ button { font: inherit; }
 .tool-button[data-tool="highlighter"].active { background: rgba(240,216,79,.34); }
 .tool-button[data-tool="eraser"].active { background: rgba(224,215,201,.78); }
 .tool-button:disabled { opacity: .30; }
+.tool-button.history-unavailable { opacity: .30; }
 .tool-button:not(:disabled):active { transform: translateY(1px); }
 .page-header { padding-right: 250px; }
 .page-meta { margin-right: 205px; }
@@ -376,4 +377,25 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .style-panel { width: min(390px, calc(100% - 14px)); max-height: calc(100% - 58px); }
   .page-color-choice { padding-inline: 5px; }
   .page-template-choice { min-width: 56px; }
+}
+\n\n/* 0.1.19 — correzioni UI + intestazione Agenda/Note. */
+.month-year-row { display:flex; align-items:baseline; gap:12px; white-space:nowrap; }
+.year-label { font-size:clamp(18px,2.3vw,28px); color:#514536; font-weight:650; }
+.page-kind-label {
+  position:absolute; left:50%; top:61px; transform:translateX(-50%); margin:0;
+  min-height:0; white-space:nowrap; text-transform:none; letter-spacing:.01em;
+  font-family:"Snell Roundhand","Apple Chancery","Bradley Hand","Segoe Script",cursive;
+  font-size:clamp(24px,3.3vw,40px); font-weight:500; color:rgba(91,68,46,.88);
+  line-height:1; z-index:1;
+}
+.page-kind-label:empty { display:none; }
+.page-meta { min-width:74px; }
+.paper[data-paper-color="black"] .page-kind-label { color:#e8dcc7; }
+.tool-button.history-unavailable { cursor:default; }
+.style-panel button { position:relative; z-index:1; }
+@media (max-width:760px) {
+  .month-year-row { gap:7px; }
+  .year-label { font-size:17px; }
+  .page-kind-label { top:56px; font-size:clamp(20px,5vw,30px); }
+  .page-meta { min-width:48px; }
 }
