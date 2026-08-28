@@ -10,6 +10,8 @@ import {
 } from './cloud-crypto.js';
 
 const TRANSPORT_VERSION = 1;
+const CLOUD_PUSH_BATCH_SIZE = 10;
+const CLOUD_PUSH_TIMEOUT_MS = 60000;
 
 function normalizeEndpoint(value) {
   const raw = String(value || '').trim();
@@ -60,7 +62,8 @@ export function initCloudSyncTransport(options = {}) {
     pushed: 0, pushDuplicates: 0, pulled: 0, applied: 0, deferred: 0, ignored: 0, conflicts: 0,
     syncRuns: 0, autoRuns: 0, inkInterruptions: 0, networkRequests: 0, maxRequestMs: 0,
     blobsUploaded: 0, blobBytesUploaded: 0, blobsDownloaded: 0, blobBytesDownloaded: 0,
-    encryptedEventsUp: 0, encryptedEventsDown: 0
+    encryptedEventsUp: 0, encryptedEventsDown: 0,
+    pushBatches: 0, lastPushBatchSize: 0, timeoutAborts: 0
   };
 
   let activeController = null;
@@ -106,6 +109,18 @@ export function initCloudSyncTransport(options = {}) {
         body: init.json !== undefined ? JSON.stringify(init.json) : init.body
       });
       return init.raw ? response : await parseJson(response);
+    } catch (err) {
+      if (controller.signal.aborted) {
+        const reason = controller.signal.reason;
+        if (reason === 'timeout') {
+          stats.timeoutAborts++;
+          throw new Error(`Timeout Cloud dopo ${Math.round(timeoutMs / 1000)} s.`);
+        }
+        if (reason === 'ink-priority' || suspendedForInk || isRealtimeBusy()) {
+          throw new DOMException('Ink priority', 'AbortError');
+        }
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
       stats.maxRequestMs = Math.max(stats.maxRequestMs, performance.now() - started);
@@ -209,8 +224,13 @@ export function initCloudSyncTransport(options = {}) {
     let total = 0;
     while (true) {
       if (suspendedForInk || isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
-      const events = await loadPendingEvents(120);
+      // Aruba shared hosting: il primo Cloud Sync può includere tutto il backlog
+      // delle release precedenti. Batch piccoli evitano un'unica POST lunga che
+      // Safari potrebbe abortire prima dell'ACK. Ogni batch viene confermato e
+      // marcato cloudSentAt prima di passare al successivo.
+      const events = await loadPendingEvents(CLOUD_PUSH_BATCH_SIZE);
       if (!events.length) break;
+      stats.lastPushBatchSize = events.length;
       await uploadBlobsForEvents(events, encryptionKey);
       const envelopes = [];
       for (const event of events) {
@@ -219,15 +239,18 @@ export function initCloudSyncTransport(options = {}) {
       }
       const result = await request('events_push.php', {
         method: 'POST', json: { protocolVersion, replicaId: String(getReplicaId() || ''), events: envelopes }
-      }, 30000);
+      }, CLOUD_PUSH_TIMEOUT_MS);
       const acknowledged = Array.isArray(result?.acknowledgedEventIds) ? result.acknowledgedEventIds : [];
       if (!acknowledged.length && events.length) throw new Error('Cloud non ha confermato gli eventi inviati.');
       await markEventsSent(acknowledged);
       stats.pushed += Number(result?.accepted) || 0;
       stats.pushDuplicates += Number(result?.duplicates) || 0;
       stats.encryptedEventsUp += envelopes.length;
+      stats.pushBatches++;
       total += Number(result?.accepted) || 0;
       emit();
+      // Yield tra batch: mantiene reattiva la UI e lascia priorità a Ink.
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
     return total;
   }

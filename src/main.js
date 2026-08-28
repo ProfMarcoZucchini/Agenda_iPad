@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.34';
+const APP_VERSION = '0.1.35';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -1533,6 +1533,7 @@ function updateCloudStatus(message = '') {
     `Gruppo: ${cloudStats?.groupId || 'non configurato'}`,
     `Push/Pull: ${cloudStats?.pushed || 0}/${cloudStats?.pulled || 0} · applicati ${cloudStats?.applied || 0}`,
     `Eventi cifrati up/down: ${cloudStats?.encryptedEventsUp || 0}/${cloudStats?.encryptedEventsDown || 0}`,
+    `Batch Cloud inviati: ${cloudStats?.pushBatches || 0} · ultimo batch ${cloudStats?.lastPushBatchSize || 0} · timeout ${cloudStats?.timeoutAborts || 0}`,
     `Blob cifrati up/down: ${cloudStats?.blobsUploaded || 0}/${cloudStats?.blobsDownloaded || 0}`,
     `Differiti/conflitti: ${cloudStats?.deferred || 0}/${cloudStats?.conflicts || 0}`
   ];
