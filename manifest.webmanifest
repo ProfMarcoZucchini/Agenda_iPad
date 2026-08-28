@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.31 - LAN Transport v1 manuale, Sync Core local-first con Ink 0.1.29 invariato, backup portabile e calendario navigabile",
+  "description": "Agenda iPad 0.1.32 - Ink Convergence Fix, LAN Sync manuale HTTPS, pointermove Apple Pencil invariato, backup portabile e calendario navigabile",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

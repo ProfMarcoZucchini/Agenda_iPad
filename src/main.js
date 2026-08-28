@@ -1,7 +1,8 @@
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
-const APP_VERSION = '0.1.31';
+import { structuralErase } from './ink-erase.js';
+const APP_VERSION = '0.1.32';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 2;
 const STORE = 'pages';
@@ -190,7 +191,11 @@ const session = {
   imagesImported: 0,
   imageTransforms: 0,
   imageCrops: 0,
-  imagesDeleted: 0
+  imagesDeleted: 0,
+  structuralErasures: 0,
+  structuralEraseTouched: 0,
+  structuralEraseFragments: 0,
+  maxStructuralEraseMs: 0
 };
 
 function localISODate(date) {
@@ -767,6 +772,7 @@ async function navigateToAgendaDate(targetDate) {
     if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
     resetUndoHistory();
     dirty = false;
+    await migrateLegacyErasersOnCurrentPage();
     calendarViewDate = targetDate;
     updateHeader();
     resizeCanvas();
@@ -1151,6 +1157,88 @@ async function applyRemotePageProperty(event) {
   page.modifiedAt = new Date().toISOString();
   await putRemoteEventResult(event, 'applied', page);
   return { applied: 1 };
+}
+
+function stableLegacyFragmentId(parentId, eraserId, index) {
+  const text = `${String(parentId || '')}|${String(eraserId || '')}|${Number(index) || 0}`;
+  const hash = (seed) => {
+    let h = seed >>> 0;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+  };
+  return `stroke-legacy-frag-${hash(2166136261)}${hash(2246822519)}-${(Number(index) || 0) + 1}`;
+}
+
+async function migrateLegacyErasersOnCurrentPage() {
+  const legacy = strokes.filter((stroke) => stroke?.tool === 'eraser' && stroke?.id && Array.isArray(stroke?.points) && stroke.points.length);
+  if (!legacy.length || !syncFoundation || drawing || dirty) return false;
+
+  const descriptor = pageDescriptor();
+  const initial = [...strokes];
+  const initialIndex = new Map(initial.map((stroke, index) => [String(stroke?.id || ''), index]));
+  const eventByStrokeId = new Map();
+
+  await Promise.all(initial.filter((stroke) => stroke?.id).map(async (stroke) => {
+    const history = await getSyncEventsByEntity(`stroke:${stroke.id}`).catch(() => []);
+    const add = history
+      .filter((row) => row.operation === 'stroke.add' && row.payload?.stroke?.id === stroke.id)
+      .sort(compareHlcDeterministic)
+      .at(-1) || null;
+    eventByStrokeId.set(String(stroke.id), add);
+  }));
+
+  const orderedLegacy = [...legacy].sort((a, b) => {
+    const ae = eventByStrokeId.get(String(a.id));
+    const be = eventByStrokeId.get(String(b.id));
+    if (ae && be) return compareHlcDeterministic(ae, be);
+    return (initialIndex.get(String(a.id)) ?? 0) - (initialIndex.get(String(b.id)) ?? 0);
+  });
+
+  const birthEventById = new Map(eventByStrokeId);
+  let normalized = [...initial];
+  for (const eraser of orderedLegacy) {
+    const eraserEvent = eventByStrokeId.get(String(eraser.id));
+    const eraserOriginalIndex = initialIndex.get(String(eraser.id)) ?? Number.MAX_SAFE_INTEGER;
+    const result = structuralErase(normalized, eraser, {
+      // Geometria canonica: la migrazione legacy deve produrre la stessa proiezione
+      // su iPad e PC anche se le dimensioni CSS dei due canvas sono differenti.
+      widthPx: 1366,
+      heightPx: 1024,
+      makeFragmentId: (stroke, eraseStroke, fragmentIndex) => stableLegacyFragmentId(stroke?.id, eraseStroke?.id, fragmentIndex),
+      eligible: (stroke) => {
+        if (!stroke?.id || stroke.tool === 'eraser' || stroke.id === eraser.id) return false;
+        const birth = birthEventById.get(String(stroke.id));
+        if (eraserEvent && birth?.versionVector) {
+          return syncFoundation.compareVersionVectors(birth.versionVector, eraserEvent.versionVector) === 'before';
+        }
+        const sourceId = String(stroke.fragmentOf || stroke.id);
+        return (initialIndex.get(sourceId) ?? -1) < eraserOriginalIndex;
+      }
+    });
+    for (const change of result.changes) {
+      const birth = birthEventById.get(String(change.original?.id));
+      for (const fragment of change.fragments || []) birthEventById.set(String(fragment.id), birth || null);
+    }
+    normalized = result.strokes.filter((stroke) => stroke?.id !== eraser.id);
+  }
+
+  if (normalized.length === initial.length && normalized.every((stroke, i) => stroke === initial[i])) return false;
+  strokes = normalized;
+  renderAll();
+  try {
+    const record = await getRecord(descriptor.key);
+    if (record) {
+      await putRecord({ ...record, strokes: normalized, version: APP_VERSION, modifiedAt: new Date().toISOString() });
+      session.storageWrites++;
+    }
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Migrazione eraser legacy non persistita', err);
+  }
+  return true;
 }
 
 async function applyRemoteSyncEvents(events) {
@@ -1921,6 +2009,21 @@ function undoLastModification() {
       pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
       syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
     }
+  } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
+    const descriptor = pageDescriptor();
+    const fragmentIds = new Set(action.changes.flatMap((change) => (change.fragments || []).map((fragment) => fragment?.id).filter(Boolean)));
+    strokes = strokes.filter((stroke) => !fragmentIds.has(stroke?.id));
+    for (const change of [...action.changes].sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))) {
+      const original = change?.original;
+      if (!original?.id || strokes.some((stroke) => stroke.id === original.id)) continue;
+      const index = Math.max(0, Math.min(Number(change.originalIndex) || 0, strokes.length));
+      strokes.splice(index, 0, original);
+      syncFoundation?.recordStrokeAdded(descriptor, original);
+      for (const fragment of change.fragments || []) {
+        if (fragment?.id) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
+      }
+    }
+    pushBounded(redoHistory, action, REDO_LIMIT);
   } else if (action?.type === 'add-image' && action.image?.id) {
     const index = images.findIndex((image) => image.id === action.image.id);
     if (index >= 0) {
@@ -1960,6 +2063,20 @@ function redoLastModification() {
       pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
       syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
     }
+  } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
+    const descriptor = pageDescriptor();
+    for (const change of [...action.changes].sort((a, b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))) {
+      const original = change?.original;
+      if (!original?.id) continue;
+      const index = strokes.findIndex((stroke) => stroke.id === original.id);
+      if (index < 0) continue;
+      strokes.splice(index, 1, ...(change.fragments || []));
+      syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
+      for (const fragment of change.fragments || []) {
+        if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+      }
+    }
+    pushBounded(undoHistory, action, UNDO_LIMIT);
   } else if (action?.type === 'add-image' && action.image?.id) {
     if (!images.some((image) => image.id === action.image.id)) {
       const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
@@ -2238,7 +2355,7 @@ function startStroke(ev, reason = 'pointerdown') {
     finalizeStroke('stale-recovered-before-new-start');
   }
 
-  // 0.1.31 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
+  // 0.1.32 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
 
@@ -2266,13 +2383,54 @@ function startStroke(ev, reason = 'pointerdown') {
   return true;
 }
 
+function recordStructuralEraseChanges(changes, reason = 'eraser') {
+  const descriptor = pageDescriptor();
+  for (const change of changes || []) {
+    if (change?.original?.id) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
+    for (const fragment of change?.fragments || []) {
+      if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+    }
+  }
+}
+
+function applyCompletedEraser(eraserStroke) {
+  const eraseStarted = performance.now();
+  const before = strokes;
+  const result = structuralErase(before, eraserStroke, {
+    widthPx: Math.max(1, rect?.width || canvas.clientWidth || 1024),
+    heightPx: Math.max(1, rect?.height || canvas.clientHeight || 1366),
+    makeFragmentId: () => makeId()
+  });
+
+  // La gomma realtime usa ancora destination-out esclusivamente per il feedback
+  // immediato. A PEN UP lo stato persistente diventa strutturale: lo stroke gomma
+  // non viene mai aggiunto alla pagina e non potrà cancellare stroke concorrenti futuri.
+  strokes = result.strokes;
+  renderAll();
+  const eraseMs = performance.now() - eraseStarted;
+  session.structuralErasures++;
+  session.structuralEraseTouched += result.touched || 0;
+  session.structuralEraseFragments += result.fragments || 0;
+  session.maxStructuralEraseMs = Math.max(session.maxStructuralEraseMs, eraseMs);
+  if (!result.changes.length) return false;
+
+  rememberUndo({ type: 'erase-strokes', changes: result.changes });
+  recordStructuralEraseChanges(result.changes, 'eraser-structural');
+  return true;
+}
+
 function finalizeStroke(reason = 'pointerup') {
   if (!drawing) return;
   drawing = false;
   const completedStroke = activeStroke?.points?.length ? activeStroke : null;
-  if (completedStroke) {
+  let pageChanged = false;
+  if (completedStroke?.tool === 'eraser') {
+    pageChanged = applyCompletedEraser(completedStroke);
+  } else if (completedStroke) {
     strokes.push(completedStroke);
     rememberUndo({ type: 'add-stroke', stroke: completedStroke, index: strokes.length - 1 });
+    syncFoundation?.recordStrokeAdded(pageDescriptor(), completedStroke);
+    pageChanged = true;
   }
   if (currentStrokeDiag) {
     currentStrokeDiag.endedBy = reason;
@@ -2288,13 +2446,12 @@ function finalizeStroke(reason = 'pointerup') {
   pointerId = null;
   lastPoint = null;
   lastHandlerArrival = 0;
-  dirty = true;
-  // 0.1.31 Sync Core/LAN: nessuna logica Sync entra in pointermove.
-  // L'evento viene creato una sola volta a tratto concluso; la scrittura
-  // IndexedDB dell'outbox è ulteriormente differita dal Sync Core quando Ink è idle.
-  if (completedStroke && syncFoundation) syncFoundation.recordStrokeAdded(pageDescriptor(), completedStroke);
+  dirty = dirty || pageChanged;
+  // 0.1.32: nessuna logica Sync entra in pointermove. Penna/evidenziatore
+  // generano un solo ADD al PEN UP; la gomma genera DELETE + eventuali ADD
+  // dei frammenti residui soltanto dopo la conclusione della passata.
   lanTransport?.resumeAfterInk();
-  scheduleSave();
+  if (pageChanged) scheduleSave();
 }
 
 function isUiControlTarget(target) {
@@ -2493,6 +2650,8 @@ function buildReport() {
     `Immagini pagina: ${images.length}`,
     `Immagini importate/trasformate/ritagliate/eliminate: ${session.imagesImported}/${session.imageTransforms}/${session.imageCrops}/${session.imagesDeleted}`, 
     `Tratti completati sessione: ${session.strokesCompleted}`,
+    `Gomme strutturali/toccati/frammenti: ${session.structuralErasures}/${session.structuralEraseTouched}/${session.structuralEraseFragments}`,
+    `Max conversione gomma a PEN UP: ${fmt(session.maxStructuralEraseMs, 2)} ms`,
     `pointerdown/up/cancel: ${session.totalPointerDown}/${session.totalPointerUp}/${session.totalPointerCancel}`,
     `Recovery stale-down: ${session.recoveredStaleDown}`,
     `Recovery da pointermove: ${session.recoveredMoveStart}`,
@@ -2908,6 +3067,7 @@ async function switchPlannerMode(mode) {
     if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
     resetUndoHistory();
     dirty = false;
+    await migrateLegacyErasersOnCurrentPage();
     updateHeader();
     resizeCanvas();
     renderAll();
@@ -3012,6 +3172,7 @@ async function commitPageTurn() {
   if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
   resetUndoHistory();
   dirty = false;
+  await migrateLegacyErasersOnCurrentPage();
   if (target.createNote) session.notesCreated++;
   updateHeader();
 
@@ -3410,6 +3571,7 @@ async function loadInitialPage() {
     updatePageStyleUi();
     resetUndoHistory();
     dirty = false;
+    await migrateLegacyErasersOnCurrentPage();
     renderAll();
     renderImages();
     statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : 'pagina nuova';
@@ -3453,6 +3615,9 @@ async function bootAgenda() {
       syncStats = syncFoundation.getDiagnostics();
       // Identità replica persistita all'avvio, fuori dalla pipeline realtime Ink.
       await putSyncMeta(syncFoundation.getStateRow()).catch((err) => console.warn('Identità Sync non persistita', err));
+      // La prima pagina è stata caricata prima dell'inizializzazione Sync: eseguiamo
+      // ora l'eventuale normalizzazione degli eraser legacy 0.1.31.
+      await migrateLegacyErasersOnCurrentPage().catch((err) => console.warn('Migrazione eraser legacy non riuscita', err));
     } catch (err) {
       console.warn('Agenda Sync Core non disponibile', err);
     }
@@ -3568,4 +3733,4 @@ function handleStartupClick(ev) {
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · Sync Core local-first + Ink 0.1.29 invariato + backup portabile`);
+console.info(`Agenda iPad ${APP_VERSION} · Sync Core local-first + pointermove Ink invariato + eraser strutturale + backup portabile`);
