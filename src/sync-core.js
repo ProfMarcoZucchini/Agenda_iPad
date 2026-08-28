@@ -139,6 +139,18 @@ export function initSyncFoundation(options = {}) {
     state.hlcLogical = logical;
   }
 
+
+  function observeRemoteEvent(event) {
+    if (!event || typeof event !== 'object') return;
+    observeRemoteHlc({ wallMs: event.hlcWallMs, logical: event.hlcLogical });
+    const remoteVector = normalizeVector(event.versionVector);
+    for (const [key, value] of Object.entries(remoteVector)) {
+      state.versionVector[key] = Math.max(state.versionVector[key] || 0, value);
+    }
+    state.versionVector[state.replicaId] = Math.max(state.versionVector[state.replicaId] || 0, state.replicaSequence);
+    emitStats();
+  }
+
   function stateRow(sequenceLimit = state.replicaSequence, vectorSnapshot = state.versionVector, hlcWallMs = state.hlcWallMs, hlcLogical = state.hlcLogical) {
     return {
       key: STATE_KEY,
@@ -303,6 +315,11 @@ export function initSyncFoundation(options = {}) {
     emitStats();
   }
 
+  function setStoredPending(value) {
+    stats.storedPending = Math.max(0, Number(value) || 0);
+    emitStats();
+  }
+
   function getUncommittedForPage(pageKey) {
     const key = String(pageKey || '');
     return memoryQueue.filter((event) => String(event.descriptor?.key || '') === key);
@@ -321,10 +338,12 @@ export function initSyncFoundation(options = {}) {
     recordPageProperty,
     queueEvent,
     observeRemoteHlc,
+    observeRemoteEvent,
     compareVersionVectors,
     prepareAtomicCommit,
     markAtomicCommitSucceeded,
     markAtomicCommitFailed,
+    setStoredPending,
     getUncommittedForPage,
     getStateRow: () => stateRow(),
     getDiagnostics: () => ({ ...stats, memoryPending: memoryQueue.length })

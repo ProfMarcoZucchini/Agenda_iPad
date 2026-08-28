@@ -1,12 +1,15 @@
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
-const APP_VERSION = '0.1.30';
+import { initLanSyncTransport } from './lan-sync.js';
+const APP_VERSION = '0.1.31';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 2;
 const STORE = 'pages';
 const SYNC_EVENT_STORE = 'syncEvents';
 const SYNC_META_STORE = 'syncMeta';
 const SYNC_STATE_KEY = 'sync-state-v1';
+const LAN_STATE_KEY = 'lan-transport-state-v1';
+const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const HIGHLIGHTER_COLOR = '#f0d84f';
@@ -92,6 +95,11 @@ const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
 const creditsHint = document.getElementById('creditsHint');
+const lanHubUrlInput = document.getElementById('lanHubUrl');
+const lanSyncKeyInput = document.getElementById('lanSyncKey');
+const lanTestButton = document.getElementById('lanTestButton');
+const lanSyncNowButton = document.getElementById('lanSyncNowButton');
+const lanSyncStatus = document.getElementById('lanSyncStatus');
 
 
 let db = null;
@@ -147,6 +155,8 @@ let pageStyleScope = 'current';
 let backupFoundation = null;
 let syncFoundation = null;
 let syncStats = null;
+let lanTransport = null;
+let lanStats = null;
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
@@ -938,6 +948,292 @@ function countPendingSyncEvents() {
     req.onsuccess = () => resolve(Number(req.result) || 0);
     req.onerror = () => reject(req.error);
   });
+}
+
+function listPendingSyncEvents(limit = 200) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).index('status').getAll('pending', Math.max(1, Math.min(500, Number(limit) || 200)));
+    req.onsuccess = () => resolve((Array.isArray(req.result) ? req.result : []).sort((a, b) => (Number(a.replicaSequence) || 0) - (Number(b.replicaSequence) || 0) || String(a.eventId || '').localeCompare(String(b.eventId || ''))));
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function markSyncEventsSent(eventIds) {
+  const ids = [...new Set((eventIds || []).filter(Boolean))];
+  if (!ids.length) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readwrite');
+    const store = tx.objectStore(SYNC_EVENT_STORE);
+    for (const id of ids) {
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const row = req.result;
+        if (!row || row.status !== 'pending') return;
+        row.status = 'sent';
+        row.sentAt = new Date().toISOString();
+        store.put(row);
+      };
+    }
+    tx.oncomplete = () => {
+      countPendingSyncEvents().then((pending) => syncFoundation?.setStoredPending(pending)).catch(() => {}).finally(resolve);
+    };
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Aggiornamento outbox LAN annullato'));
+  });
+}
+
+function getSyncEvent(eventId) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).get(eventId);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function getSyncEventsByEntity(entityId) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).index('entityId').getAll(String(entityId || ''));
+    req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function getLanPullCursor(hubId) {
+  return getSyncMeta(LAN_STATE_KEY).then((row) => row?.hubId === hubId ? (Number(row.cursor) || 0) : 0);
+}
+
+function setLanPullCursor(hubId, cursor) {
+  return putSyncMeta({ key: LAN_STATE_KEY, hubId: String(hubId || ''), cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+}
+
+function compareHlcDeterministic(a, b) {
+  const aw = Number(a?.hlcWallMs) || 0;
+  const bw = Number(b?.hlcWallMs) || 0;
+  if (aw !== bw) return aw - bw;
+  const al = Number(a?.hlcLogical) || 0;
+  const bl = Number(b?.hlcLogical) || 0;
+  if (al !== bl) return al - bl;
+  return String(a?.eventId || '').localeCompare(String(b?.eventId || ''));
+}
+
+function buildEmptyPageRecord(descriptor) {
+  const d = descriptor || {};
+  return {
+    date: String(d.key || d.date || ''),
+    kind: d.kind === 'note' ? 'day-note-ink'
+      : d.kind === 'planner-weekly' ? 'planner-week-ink'
+      : d.kind === 'planner-monthly' ? 'planner-month-ink'
+      : d.kind === 'planner-yearly' ? 'planner-year-ink'
+      : 'agenda-day-ink',
+    referenceDate: String(d.date || ''),
+    plannerMode: d.plannerMode ?? null,
+    noteIndex: d.kind === 'note' ? (Number(d.noteIndex) || 0) : 0,
+    version: APP_VERSION,
+    pipeline: 'coalesced-retina-storage-sync-v1',
+    strokes: [],
+    images: [],
+    pageStyle: { ...DEFAULT_PAGE_STYLE },
+    modifiedAt: new Date().toISOString()
+  };
+}
+
+function putRemoteEventResult(event, status, pageRecord = null, detail = null) {
+  return new Promise((resolve, reject) => {
+    const stores = pageRecord ? [STORE, SYNC_EVENT_STORE, SYNC_META_STORE] : [SYNC_EVENT_STORE, SYNC_META_STORE];
+    const tx = db.transaction(stores, 'readwrite');
+    if (pageRecord) tx.objectStore(STORE).put(pageRecord);
+    const remoteRow = {
+      ...event,
+      status,
+      source: 'lan-remote',
+      receivedAt: new Date().toISOString(),
+      remoteDetail: detail || null
+    };
+    tx.objectStore(SYNC_EVENT_STORE).put(remoteRow);
+    if (syncFoundation) tx.objectStore(SYNC_META_STORE).put(syncFoundation.getStateRow());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Applicazione evento LAN annullata'));
+  });
+}
+
+function maximalEntityEvents(events) {
+  const all = (events || []).filter((event) => event?.versionVector && event?.eventId);
+  return all.filter((candidate, i) => !all.some((other, j) => {
+    if (i === j) return false;
+    return syncFoundation?.compareVersionVectors(candidate.versionVector, other.versionVector) === 'before';
+  }));
+}
+
+async function applyRemoteStrokeEvent(event) {
+  const descriptor = event.descriptor || {};
+  const pageKeyValue = String(descriptor.key || '');
+  if (!pageKeyValue) {
+    await putRemoteEventResult(event, 'deferred', null, 'descriptor pagina mancante');
+    return { deferred: 1 };
+  }
+  const [record, history] = await Promise.all([getRecord(pageKeyValue), getSyncEventsByEntity(event.entityId)]);
+  const frontier = maximalEntityEvents([...history, event]);
+  const adds = frontier.filter((row) => row.operation === 'stroke.add' && row.payload?.stroke?.id);
+  const deletes = frontier.filter((row) => row.operation === 'stroke.delete');
+  const conflict = adds.length > 0 && deletes.length > 0;
+  const page = record ? { ...record } : buildEmptyPageRecord(descriptor);
+  const pageStrokes = Array.isArray(page.strokes) ? [...page.strokes] : [];
+  const strokeId = String(event.payload?.stroke?.id || event.payload?.strokeId || event.entityId?.replace(/^stroke:/, '') || '');
+  const existingIndex = pageStrokes.findIndex((stroke) => String(stroke?.id || '') === strokeId);
+
+  if (adds.length) {
+    const winner = [...adds].sort(compareHlcDeterministic).at(-1);
+    const stroke = winner?.payload?.stroke;
+    if (stroke?.id) {
+      if (existingIndex >= 0) pageStrokes[existingIndex] = stroke;
+      else pageStrokes.push(stroke);
+    }
+  } else if (existingIndex >= 0) {
+    pageStrokes.splice(existingIndex, 1);
+  }
+
+  page.strokes = pageStrokes;
+  page.version = APP_VERSION;
+  page.modifiedAt = new Date().toISOString();
+  await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'add/delete concorrenti: stroke preservato' : null);
+  return conflict ? { applied: 1, conflicts: 1 } : { applied: 1 };
+}
+
+async function applyRemotePageClear(event) {
+  const descriptor = event.descriptor || {};
+  const pageKeyValue = String(descriptor.key || '');
+  if (!pageKeyValue) {
+    await putRemoteEventResult(event, 'deferred', null, 'descriptor pagina mancante');
+    return { deferred: 1 };
+  }
+  const record = await getRecord(pageKeyValue);
+  const page = record ? { ...record } : buildEmptyPageRecord(descriptor);
+  const strokeIds = new Set((event.payload?.removedStrokeIds || []).map(String));
+  const imageIds = new Set((event.payload?.removedImageIds || []).map(String));
+  page.strokes = (Array.isArray(page.strokes) ? page.strokes : []).filter((stroke) => !strokeIds.has(String(stroke?.id || '')));
+  page.images = (Array.isArray(page.images) ? page.images : []).filter((image) => !imageIds.has(String(image?.id || '')));
+  page.version = APP_VERSION;
+  page.modifiedAt = new Date().toISOString();
+  await putRemoteEventResult(event, 'applied', page);
+  return { applied: 1 };
+}
+
+async function applyRemotePageProperty(event) {
+  const descriptor = event.descriptor || {};
+  const field = String(event.payload?.field || '');
+  const scope = String(event.payload?.scope || 'current');
+  if (!descriptor.key || !field || scope !== 'current' || !['color', 'template'].includes(field)) {
+    await putRemoteEventResult(event, 'deferred', null, scope === 'all' ? 'proprietà globale rinviata' : 'proprietà non supportata');
+    return { deferred: 1 };
+  }
+  const history = await getSyncEventsByEntity(event.entityId);
+  const comparable = [...history, event].filter((row) => row.operation === 'page.property.set' && String(row.payload?.field || '') === field && String(row.payload?.scope || 'current') === 'current');
+  const winner = comparable.sort(compareHlcDeterministic).at(-1);
+  if (winner?.eventId !== event.eventId) {
+    await putRemoteEventResult(event, 'ignored-lww', null, `LWW-HLC: vince ${winner?.eventId || 'evento locale'}`);
+    return { ignored: 1 };
+  }
+  const record = await getRecord(descriptor.key);
+  const page = record ? { ...record } : buildEmptyPageRecord(descriptor);
+  const style = normalizePageStyle(page.pageStyle || globalPageStyle);
+  if (field === 'color' && ALLOWED_PAGE_COLORS.includes(event.payload?.value)) style.color = event.payload.value;
+  else if (field === 'template' && ALLOWED_PAGE_TEMPLATES.includes(event.payload?.value)) style.template = event.payload.value;
+  else {
+    await putRemoteEventResult(event, 'ignored-invalid', null, 'valore proprietà non valido');
+    return { ignored: 1 };
+  }
+  page.pageStyle = normalizePageStyle(style);
+  page.version = APP_VERSION;
+  page.modifiedAt = new Date().toISOString();
+  await putRemoteEventResult(event, 'applied', page);
+  return { applied: 1 };
+}
+
+async function applyRemoteSyncEvents(events) {
+  const totals = { applied: 0, deferred: 0, ignored: 0, conflicts: 0 };
+  await openDb();
+  for (const event of events || []) {
+    if (drawing || pageTurning || imageBusy || imageGesture) throw new DOMException('Ink priority', 'AbortError');
+    if (!event?.eventId || Number(event.protocolVersion) !== 1) { totals.ignored++; continue; }
+    const duplicate = await getSyncEvent(event.eventId);
+    if (duplicate) { totals.ignored++; continue; }
+    syncFoundation?.observeRemoteEvent(event);
+    let result;
+    if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') result = await applyRemoteStrokeEvent(event);
+    else if (event.operation === 'page.clear') result = await applyRemotePageClear(event);
+    else if (event.operation === 'page.property.set') result = await applyRemotePageProperty(event);
+    else if (event.entityType === 'image-object') {
+      await putRemoteEventResult(event, 'deferred-media', null, 'blob media previsto in release successiva');
+      result = { deferred: 1 };
+    } else {
+      await putRemoteEventResult(event, 'deferred', null, 'tipo evento non ancora applicato');
+      result = { deferred: 1 };
+    }
+    for (const key of Object.keys(totals)) totals[key] += Number(result?.[key]) || 0;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  if (events?.length) await loadInitialPage();
+  return totals;
+}
+
+function loadLanConfig() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LAN_CONFIG_STORAGE_KEY) || '{}');
+    return { endpoint: String(parsed.endpoint || ''), syncKey: String(parsed.syncKey || '') };
+  } catch { return { endpoint: '', syncKey: '' }; }
+}
+
+function saveLanConfig() {
+  const config = { endpoint: String(lanHubUrlInput?.value || '').trim(), syncKey: String(lanSyncKeyInput?.value || '').trim() };
+  try { localStorage.setItem(LAN_CONFIG_STORAGE_KEY, JSON.stringify(config)); } catch {}
+  return config;
+}
+
+function updateLanStatus(message = '') {
+  if (!lanSyncStatus) return;
+  if (message) { lanSyncStatus.textContent = message; return; }
+  const state = lanStats?.state || 'idle';
+  const lines = [
+    `Stato: ${state}`,
+    `Hub: ${lanStats?.hubId || 'non verificato'}`,
+    `Push/Pull: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0} · applicati ${lanStats?.applied || 0}`,
+    `Differiti/conflitti: ${lanStats?.deferred || 0}/${lanStats?.conflicts || 0}`
+  ];
+  if (lanStats?.lastSyncAt) lines.push(`Ultima sync: ${new Date(lanStats.lastSyncAt).toLocaleString('it-IT')}`);
+  if (lanStats?.lastError) lines.push(`Nota: ${lanStats.lastError}`);
+  lanSyncStatus.textContent = lines.join('\n');
+}
+
+async function handleLanTest() {
+  if (!lanTransport) return updateLanStatus('Trasporto LAN non inizializzato.');
+  saveLanConfig();
+  updateLanStatus('Test connessione LAN…');
+  try {
+    const health = await lanTransport.testConnection();
+    updateLanStatus(`Hub raggiunto ✓\nID: ${health.hubId}\nEventi hub: ${health.eventCount ?? 0} · trasporto ${health.transport || 'n/a'}`);
+  } catch (err) {
+    if (err?.name === 'AbortError') updateLanStatus('Test interrotto: priorità alla scrittura Ink.');
+    else updateLanStatus(`LAN non disponibile: ${err?.message || err}`);
+  }
+}
+
+async function handleLanSyncNow() {
+  if (!lanTransport) return updateLanStatus('Trasporto LAN non inizializzato.');
+  saveLanConfig();
+  updateLanStatus('Sincronizzazione LAN manuale…');
+  try {
+    const result = await lanTransport.syncNow();
+    const pending = await countPendingSyncEvents().catch(() => 0);
+    syncFoundation?.setStoredPending(pending);
+    updateLanStatus(`Sincronizzazione completata ✓\nInviati: ${result.pushed} · ricevuti: ${result.pulled}\nOutbox locale residua: ${pending}`);
+  } catch (err) {
+    if (err?.name === 'AbortError') updateLanStatus('Sync interrotta: la scrittura Ink ha priorità. Ripremere “Sincronizza adesso” quando si è terminato di scrivere.');
+    else updateLanStatus(`Sync LAN non riuscita: ${err?.message || err}`);
+  }
 }
 
 function resetSyncStores() {
@@ -1942,6 +2238,10 @@ function startStroke(ev, reason = 'pointerdown') {
     finalizeStroke('stale-recovered-before-new-start');
   }
 
+  // 0.1.31 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
+  // viene abortita. Nessuna logica LAN entra nel pointermove.
+  lanTransport?.suspendForInk();
+
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
   drawing = true;
@@ -1951,6 +2251,7 @@ function startStroke(ev, reason = 'pointerdown') {
   if (!pointAllowed(point)) {
     drawing = false;
     pointerId = null;
+    lanTransport?.resumeAfterInk();
     return false;
   }
   lastPoint = point;
@@ -1988,10 +2289,11 @@ function finalizeStroke(reason = 'pointerup') {
   lastPoint = null;
   lastHandlerArrival = 0;
   dirty = true;
-  // 0.1.30 Sync Core: nessuna logica Sync entra in pointermove.
+  // 0.1.31 Sync Core/LAN: nessuna logica Sync entra in pointermove.
   // L'evento viene creato una sola volta a tratto concluso; la scrittura
   // IndexedDB dell'outbox è ulteriormente differita dal Sync Core quando Ink è idle.
   if (completedStroke && syncFoundation) syncFoundation.recordStrokeAdded(pageDescriptor(), completedStroke);
+  lanTransport?.resumeAfterInk();
   scheduleSave();
 }
 
@@ -2062,6 +2364,8 @@ function activateUiButton(button) {
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
+  if (button === lanTestButton) { void handleLanTest(); return; }
+  if (button === lanSyncNowButton) { void handleLanSyncNow(); return; }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
 }
 
@@ -2173,7 +2477,7 @@ function fmt(value, digits = 1) {
 function buildReport() {
   const recent = completedDiagnostics.slice(-24);
   return [
-    `Agenda iPad SYNC CORE v${APP_VERSION}`,
+    `Agenda iPad LAN SYNC v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
     `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
     `Chiave pagina: ${currentPageKey()}`,
@@ -2211,6 +2515,11 @@ function buildReport() {
     `Sync max commit atomico: ${fmt(syncStats?.maxAtomicCommitMs, 2)} ms`,
     `Sync chiamate da pointermove: ${syncStats?.pointerMoveSyncCalls ?? 0}`,
     `Sync ultimo HLC: ${syncStats?.lastEventHlc || 'nessuno'}`,
+    `LAN stato/hub: ${lanStats?.state || 'n/a'} / ${lanStats?.hubId || 'n/a'}`,
+    `LAN push/pull/applicati: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0}/${lanStats?.applied || 0}`,
+    `LAN differiti/conflitti: ${lanStats?.deferred || 0}/${lanStats?.conflicts || 0}`,
+    `LAN richieste/max: ${lanStats?.networkRequests || 0}/${fmt(lanStats?.maxRequestMs, 2)} ms`,
+    `LAN interruzioni per Ink: ${lanStats?.inkInterruptions || 0}`,
     `Lag segnalati: ${lagMarks.length}`,
     '',
     'ULTIMI TRATTI:',
@@ -2868,7 +3177,8 @@ const directUiButtons = [...new Set([
   styleButton,
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
-  cancelImageCropButton, applyImageCropButton
+  cancelImageCropButton, applyImageCropButton,
+  lanTestButton, lanSyncNowButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -3011,6 +3321,9 @@ imageFileInput?.addEventListener('change', () => {
   if (file) void importImageFile(file);
 });
 
+lanTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanTestButton)) void handleLanTest(); });
+lanSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanSyncNowButton)) void handleLanSyncNow(); });
+
 imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
 imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
 imageLayer?.addEventListener('pointerup', (ev) => endImageGesture(ev, false), { passive: false });
@@ -3143,6 +3456,28 @@ async function bootAgenda() {
     } catch (err) {
       console.warn('Agenda Sync Core non disponibile', err);
     }
+  }
+  if (!lanTransport && syncFoundation) {
+    const config = loadLanConfig();
+    if (lanHubUrlInput) lanHubUrlInput.value = config.endpoint;
+    if (lanSyncKeyInput) lanSyncKeyInput.value = config.syncKey;
+    lanTransport = initLanSyncTransport({
+      protocolVersion: syncFoundation.protocolVersion,
+      getConfig: () => ({ endpoint: lanHubUrlInput?.value || '', syncKey: lanSyncKeyInput?.value || '' }),
+      getReplicaId: () => syncFoundation?.replicaId || '',
+      flushLocal: async () => { if (dirty) await persistNow(); },
+      loadPendingEvents: listPendingSyncEvents,
+      markEventsSent: markSyncEventsSent,
+      getPullCursor: getLanPullCursor,
+      setPullCursor: setLanPullCursor,
+      applyRemoteEvents: applyRemoteSyncEvents,
+      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      onStats: (stats) => { lanStats = stats; updateLanStatus(); }
+    });
+    lanStats = lanTransport.getDiagnostics();
+    updateLanStatus();
+    lanHubUrlInput?.addEventListener('change', saveLanConfig);
+    lanSyncKeyInput?.addEventListener('change', saveLanConfig);
   }
   ready = true;
   if (!backupFoundation) {
