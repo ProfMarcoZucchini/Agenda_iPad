@@ -20,6 +20,7 @@ button { font: inherit; }
 .day-text { display: flex; flex-direction: column; gap: 4px; }
 .day-name { font-size: clamp(18px,2.2vw,26px); letter-spacing: .085em; font-weight: 700; color: #3c342c; }
 .month-name { font-family: Georgia, "Times New Roman", serif; font-size: clamp(24px,3vw,36px); color: #6f5d49; }
+.saint-name { margin-top:2px; max-width:min(58vw,560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:rgba(82,66,48,.76); font-size:clamp(10px,1.25vw,14px); font-weight:650; letter-spacing:.015em; }
 .year-label { font-family: Georgia, "Times New Roman", serif; font-size: clamp(30px,4vw,46px); color: #514536; }
 .hours { position: absolute; left: 18px; top: calc(var(--header-h) + 18px); bottom: calc(var(--footer-h) + 11px); width: 46px; display: grid; grid-template-rows: repeat(13,1fr); align-items: start; color: rgba(78,66,51,.62); font-size: 11px; z-index: 1; pointer-events: none; }
 #inkCanvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; touch-action: none; cursor: crosshair; }
@@ -43,6 +44,7 @@ button { font: inherit; }
   .paper { width: 100%; border-radius: 0; box-shadow: none; }
   .page-header { padding: 14px 18px 12px 22px; }
   .day-number { min-width: 70px; }
+  .saint-name { max-width:52vw; font-size:10px; }
   .hours { left: 10px; width: 42px; font-size: 10px; }
   .paper::before { background-image: linear-gradient(to right, transparent 0, transparent 60px, var(--margin) 61px, transparent 62px), repeating-linear-gradient(to bottom, transparent 0, transparent 35px, var(--line) 36px, transparent 37px); }
   .baseline-footer { padding-left: 62px; gap: 5px; }
@@ -303,6 +305,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 .paper[data-paper-color="black"] .page-kind-label,
 .paper[data-paper-color="black"] .note-counter { color: #d8cbb7; }
 .paper[data-paper-color="black"] .hours { color: rgba(237,233,220,.62); }
+.paper[data-paper-color="black"] .saint-name { color:rgba(238,231,216,.76); }
 .paper[data-paper-color="black"] .baseline-footer {
   border-top-color: rgba(255,255,255,.12);
   background: rgba(38,41,43,.98);
@@ -467,12 +470,16 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 .planner-box { border:1px solid var(--planner-border); border-radius:8px; background:rgba(255,255,255,.12); min-height:0; padding:8px; }
 .planner-box h3 { padding-bottom:6px; border-bottom:1px solid var(--planner-rule); }
 
-/* Giornaliero: timeline 07-19 + priorità/to-do/note. Il canvas sopra è lo stesso dell'Agenda. */
-.planner-daily-grid { height:calc(100% - 48px); display:grid; grid-template-columns:minmax(0,1.8fr) minmax(210px,.78fr); gap:12px; }
-.planner-timeline { border:1px solid var(--planner-border); border-radius:8px; padding:8px 10px; overflow:hidden; }
-.planner-timeline > h3 { height:22px; }
-.planner-time-row { height:calc((100% - 22px) / 13); min-height:18px; display:grid; grid-template-columns:42px 1fr; align-items:start; gap:7px; }
-.planner-time-row span { font-size:8px; opacity:.68; line-height:1.1; }
+/* Giornaliero 0.1.38: la scala 07-19 coincide geometricamente con quella Agenda.
+   Il canvas resta immutato: si riallinea il modello Planning alle coordinate Ink. */
+.paper.planner-daily .planner-layer { padding:0; }
+.planner-daily-heading { position:absolute; left:72px; right:18px; top:1px; height:15px; margin:0; font-size:10px; }
+.planner-daily-grid { position:absolute; left:72px; right:18px; top:18px; bottom:11px; height:auto; display:grid; grid-template-columns:minmax(0,1.8fr) minmax(210px,.78fr); gap:12px; }
+.planner-timeline { position:relative; border:1px solid var(--planner-border); border-radius:8px; padding:0; overflow:hidden; }
+.planner-timeline > h3 { position:absolute; z-index:1; top:3px; right:7px; height:auto; padding:2px 4px; opacity:.48; }
+.planner-time-rows { position:absolute; inset:-1px 10px -1px 10px; display:grid; grid-template-rows:repeat(13,1fr); }
+.planner-time-row { height:auto; min-height:0; display:grid; grid-template-columns:42px 1fr; align-items:start; gap:7px; }
+.planner-time-row span { font-size:8px; opacity:.68; line-height:1.1; padding-top:1px; }
 .planner-time-row i { display:block; border-top:1px solid var(--planner-rule); height:100%; }
 .planner-daily-side { display:grid; grid-template-rows:.76fr .95fr 1.4fr; gap:9px; min-height:0; }
 .planner-priority div, .planner-todo div { height:24%; border-bottom:1px solid var(--planner-rule); padding-top:5px; font-size:9px; }
@@ -521,7 +528,9 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .planner-view .page-kind-label { top:57px; font-size:16px; }
   .planner-layer { padding:10px 9px 9px 52px; }
   .planner-heading { height:20px; margin-bottom:6px; font-size:10px; }
-  .planner-daily-grid { grid-template-columns:minmax(0,1.6fr) minmax(150px,.72fr); gap:7px; height:calc(100% - 40px); }
+  .paper.planner-daily .planner-layer { padding:0; }
+  .planner-daily-heading { left:52px; right:9px; top:1px; height:15px; margin:0; font-size:8.5px; }
+  .planner-daily-grid { left:52px; right:9px; top:18px; bottom:11px; grid-template-columns:minmax(0,1.6fr) minmax(150px,.72fr); gap:7px; height:auto; }
   .planner-daily-side { gap:5px; }
   .planner-box { padding:5px; }
   .planner-layer h3 { font-size:7px; }

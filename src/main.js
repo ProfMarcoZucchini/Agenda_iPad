@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.37';
+const APP_VERSION = '0.1.38';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -18,6 +18,8 @@ const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
 const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
+const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
+const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
@@ -151,6 +153,10 @@ let saveTimer = 0;
 let idleHandle = 0;
 let dpr = 1;
 let storageBusy = false;
+let saintFetchController = null;
+let saintRefreshTimer = 0;
+let saintRequestSerial = 0;
+let saintCache = loadSaintCache();
 let ready = false;
 let rafPrev = performance.now();
 let currentStrokeDiag = null;
@@ -556,6 +562,146 @@ function isPlannerKind(kind = currentPageKind) {
   return typeof kind === 'string' && kind.startsWith('planner-');
 }
 
+function loadSaintCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SAINT_CACHE_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function cachedSaintName(dateString) {
+  const value = saintCache?.[dateString];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function cacheSaintName(dateString, name) {
+  const clean = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!dateString || !clean) return;
+  saintCache[dateString] = clean;
+  try { localStorage.setItem(SAINT_CACHE_STORAGE_KEY, JSON.stringify(saintCache)); } catch {}
+}
+
+function principalSaintName(payload) {
+  const list = Array.isArray(payload) ? payload
+    : Array.isArray(payload?.santi) ? payload.santi
+    : Array.isArray(payload?.data) ? payload.data
+    : [];
+  const primary = list.find((item) => String(item?.default ?? item?.principale ?? '') === '1') || list[0];
+  return String(primary?.nome ?? primary?.name ?? primary?.titolo ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function setSaintLabel(root, dateString, state = 'cached') {
+  const label = root?.querySelector?.('.saint-name');
+  if (!label) return;
+  const name = cachedSaintName(dateString);
+  if (name) {
+    label.textContent = `Santo del giorno · ${name}`;
+    label.dataset.saintState = 'ready';
+    return;
+  }
+  label.textContent = state === 'offline' ? 'Santo del giorno · non disponibile offline' : 'Santo del giorno · …';
+  label.dataset.saintState = state;
+}
+
+function scheduleSaintRefresh(delay = 80) {
+  window.clearTimeout(saintRefreshTimer);
+  saintRefreshTimer = window.setTimeout(() => {
+    saintRefreshTimer = 0;
+    refreshSaintForCurrentDate();
+  }, delay);
+}
+
+function fetchSaintViaWidgetScript(dateString, signal) {
+  return new Promise((resolve, reject) => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const box = document.createElement('div');
+    box.id = 'BoxSantoDelGiorno';
+    box.hidden = true;
+    const image = document.createElement('img');
+    image.id = 'Immagine';
+    const text = document.createElement('p');
+    text.id = 'SantoDelGiorno';
+    box.append(image, text);
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = `https://www.santodelgiorno.it/_scriptjs/santodelgiorno.php?v=${day}/${month}/${year}`;
+    let settled = false;
+    let timer = 0;
+
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      script.remove();
+      box.remove();
+    };
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new DOMException('Aborted', 'AbortError'));
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    script.onerror = () => finish(reject, new Error('widget santo non raggiungibile'));
+    script.onload = () => {
+      const clone = text.cloneNode(true);
+      clone.querySelectorAll('i, em').forEach((node) => node.remove());
+      const name = String(clone.textContent || '').replace(/\s+/g, ' ').trim();
+      if (name) finish(resolve, name);
+      else finish(reject, new Error('widget santo senza nome principale'));
+    };
+    timer = window.setTimeout(() => finish(reject, new Error('timeout widget santo')), 9000);
+    document.body.appendChild(box);
+    box.appendChild(script);
+  });
+}
+
+async function refreshSaintForCurrentDate() {
+  const dateString = currentDate;
+  setSaintLabel(document, dateString);
+  if (cachedSaintName(dateString)) return;
+  if (!navigator.onLine) {
+    setSaintLabel(document, dateString, 'offline');
+    return;
+  }
+
+  saintFetchController?.abort();
+  const controller = new AbortController();
+  saintFetchController = controller;
+  const serial = ++saintRequestSerial;
+  try {
+    let name = '';
+    try {
+      const response = await fetch(`${SAINT_API_URL}?data=${encodeURIComponent(dateString)}`, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'force-cache',
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      name = principalSaintName(await response.json());
+      if (!name) throw new Error('santo principale non presente nella risposta');
+    } catch (apiError) {
+      if (apiError?.name === 'AbortError') throw apiError;
+      // Fallback compatibile con Safari/iPadOS: il sito sorgente documenta anche
+      // un widget <script>, che non dipende dalle regole CORS della fetch JSON.
+      name = await fetchSaintViaWidgetScript(dateString, controller.signal);
+    }
+    cacheSaintName(dateString, name);
+    if (serial === saintRequestSerial && currentDate === dateString) setSaintLabel(document, dateString);
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    console.warn('Santo del giorno non disponibile', err);
+    if (serial === saintRequestSerial && currentDate === dateString) setSaintLabel(document, dateString, navigator.onLine ? 'unavailable' : 'offline');
+  } finally {
+    if (saintFetchController === controller) saintFetchController = null;
+  }
+}
+
 function plannerModeFromKind(kind = currentPageKind) {
   return isPlannerKind(kind) ? kind.slice('planner-'.length) : null;
 }
@@ -587,6 +733,7 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   root.querySelector('.day-name').textContent = dayName;
   root.querySelector('.month-name').textContent = monthName;
   root.querySelector('.year-label').textContent = String(d.getFullYear());
+  setSaintLabel(root, dateString);
   const kindLabel = root.querySelector('.page-kind-label');
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
@@ -616,9 +763,9 @@ function plannerModeTitle(mode, dateString) {
 function buildDailyPlannerHtml(dateString) {
   const hours = Array.from({ length: 13 }, (_, i) => 7 + i)
     .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`).join('');
-  return `<div class="planner-heading">${plannerModeTitle('daily', dateString)}</div>
+  return `<div class="planner-heading planner-daily-heading">${plannerModeTitle('daily', dateString)}</div>
     <div class="planner-daily-grid">
-      <section class="planner-timeline"><h3>Programma</h3>${hours}</section>
+      <section class="planner-timeline"><h3>Programma</h3><div class="planner-time-rows">${hours}</div></section>
       <aside class="planner-daily-side">
         <section class="planner-box planner-priority"><h3>Priorità del giorno</h3><div>1.</div><div>2.</div><div>3.</div></section>
         <section class="planner-box planner-todo"><h3>To-do</h3><div>□</div><div>□</div><div>□</div><div>□</div></section>
@@ -861,6 +1008,7 @@ function configurePageRoot(root, descriptor) {
 function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   configurePageRoot(paper, pageDescriptor());
+  scheduleSaintRefresh();
   if (baselineLabel) {
     if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
@@ -2801,6 +2949,9 @@ function startStroke(ev, reason = 'pointerdown') {
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
+  // 0.1.38: anche il recupero del santo è subordinato alla Pencil.
+  // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
+  saintFetchController?.abort();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -2896,6 +3047,7 @@ function finalizeStroke(reason = 'pointerup') {
   // dei frammenti residui soltanto dopo la conclusione della passata.
   lanTransport?.resumeAfterInk();
   cloudTransport?.resumeAfterInk();
+  if (!cachedSaintName(currentDate)) scheduleSaintRefresh(700);
   if (pageChanged) scheduleSave();
 }
 
