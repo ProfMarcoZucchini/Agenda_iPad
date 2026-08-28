@@ -1141,3 +1141,55 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-crop-heading span { font-size: 8px; }
   .image-crop-handle { width: 26px; height: 26px; }
 }
+
+
+/* 0.1.36 — Impostazioni più leggibili e credenziali Cloud facilmente copiabili. */
+.settings-card { width:min(1020px,97vw); height:min(820px,94vh); }
+.settings-header { min-height:76px; padding:14px 18px 12px 20px; }
+.settings-header h2 { font-size:26px; }
+.settings-header p { font-size:13px; line-height:1.35; }
+.settings-scroll { padding:18px 22px 30px; }
+.settings-section { padding:18px 0 22px; }
+.settings-section h3 { margin-bottom:15px; font-size:18px; line-height:1.25; }
+.setting-field, .cloud-grid label { gap:7px; font-size:13px; line-height:1.25; }
+.setting-field input, .setting-field select, .setting-field textarea, .cloud-grid input, .cloud-grid textarea {
+  min-height:46px; border-radius:10px; padding:10px 12px;
+  font:600 16px/1.3 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.setting-field select { font-size:15px; }
+.setting-check { min-height:42px; gap:10px; font-size:13px; line-height:1.35; }
+.settings-note { font-size:12.5px; line-height:1.55; }
+.destination-row strong { font-size:14px; }
+.destination-row small { font-size:12px; line-height:1.45; }
+.destination-actions button, .backup-actions button, .backup-item button, .cloud-actions button, .credential-actions button {
+  min-height:42px; padding:8px 13px; font-size:13px; line-height:1.2;
+}
+.backup-status { min-height:44px; padding:11px 12px; font-size:13px; line-height:1.5; }
+.format-summary { font-size:12.5px; }
+.backup-item strong { font-size:13px; }
+.backup-item small, .backup-empty { font-size:11.5px; }
+.cloud-connection strong { font-size:13px; }
+.cloud-connection small { font-size:11.5px; }
+.cloud-code-field { grid-column:1/-1; }
+.credential-textarea {
+  min-height:82px !important; resize:vertical; overflow-wrap:anywhere; word-break:break-all;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace !important;
+  font-size:14px !important; line-height:1.45 !important;
+}
+.credential-actions { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 12px; }
+.credential-actions button { appearance:none; border:1px solid rgba(75,61,43,.24); border-radius:9px; background:rgba(255,255,255,.70); color:#493d31; font-weight:750; touch-action:manipulation; }
+/* In Impostazioni il testo deve poter essere selezionato/copiato anche su iPadOS. */
+.settings-card input, .settings-card textarea, .settings-card .backup-status, .settings-card .settings-note,
+.settings-card code, .settings-card .destination-row, .settings-card .backup-item {
+  -webkit-user-select:text; user-select:text;
+}
+.settings-card input, .settings-card textarea { touch-action:auto; -webkit-touch-callout:default; }
+.settings-card button, .settings-card select { -webkit-user-select:none; user-select:none; }
+@media (max-width:700px) {
+  .settings-card { width:99vw; height:97vh; }
+  .settings-scroll { padding:15px 15px 26px; }
+  .settings-header h2 { font-size:24px; }
+  .setting-field, .cloud-grid label { font-size:13px; }
+  .setting-field input, .setting-field select, .setting-field textarea, .cloud-grid input, .cloud-grid textarea { font-size:16px; }
+  .credential-actions { display:grid; grid-template-columns:1fr; }
+}

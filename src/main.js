@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.35';
+const APP_VERSION = '0.1.36';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -112,6 +112,9 @@ const cloudEndpointInput = document.getElementById('cloudEndpoint');
 const cloudJoinCodeInput = document.getElementById('cloudJoinCode');
 const cloudSyncModeSelect = document.getElementById('cloudSyncMode');
 const cloudCreateGroupButton = document.getElementById('cloudCreateGroupButton');
+const cloudCopyJoinCodeButton = document.getElementById('cloudCopyJoinCodeButton');
+const cloudSelectJoinCodeButton = document.getElementById('cloudSelectJoinCodeButton');
+const cloudRecoverJoinCodeButton = document.getElementById('cloudRecoverJoinCodeButton');
 const cloudTestButton = document.getElementById('cloudTestButton');
 const cloudSyncNowButton = document.getElementById('cloudSyncNowButton');
 const cloudSyncStatus = document.getElementById('cloudSyncStatus');
@@ -1468,6 +1471,58 @@ function saveCloudConfig() {
   return config;
 }
 
+function selectTextControl(control) {
+  if (!control) return false;
+  try {
+    control.focus({ preventScroll: true });
+    if (typeof control.select === 'function') control.select();
+    else if (typeof control.setSelectionRange === 'function') control.setSelectionRange(0, String(control.value || '').length);
+    return true;
+  } catch { return false; }
+}
+
+async function copyTextToClipboard(text, fallbackControl = null) {
+  const value = String(text || '');
+  if (!value) throw new Error('Nessun contenuto da copiare.');
+  if (navigator.clipboard?.writeText && globalThis.isSecureContext) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  if (!fallbackControl || !selectTextControl(fallbackControl)) throw new Error('Copia negli appunti non disponibile.');
+  const ok = document.execCommand?.('copy');
+  if (!ok) throw new Error('Copia negli appunti non riuscita.');
+  return true;
+}
+
+async function handleCloudCopyJoinCode() {
+  const code = String(cloudJoinCodeInput?.value || '').trim();
+  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud da copiare. Crea un nuovo gruppo oppure incolla un codice esistente.');
+  try {
+    await copyTextToClipboard(code, cloudJoinCodeInput);
+    updateCloudStatus('Codice gruppo Cloud copiato negli appunti ✓\nConservalo in un luogo sicuro: contiene anche la chiave di cifratura E2EE.');
+  } catch (err) {
+    selectTextControl(cloudJoinCodeInput);
+    updateCloudStatus(`Copia automatica non riuscita: ${err?.message || err}\nIl codice è stato selezionato: usa Copia dal menu di iPadOS.`);
+  }
+}
+
+function handleCloudSelectJoinCode() {
+  const code = String(cloudJoinCodeInput?.value || '').trim();
+  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud da selezionare.');
+  selectTextControl(cloudJoinCodeInput);
+  updateCloudStatus('Codice gruppo Cloud selezionato ✓\nPuoi copiarlo con il comando Copia di iPadOS.');
+}
+
+function handleCloudRecoverSavedJoinCode() {
+  const saved = loadCloudConfig();
+  const code = String(saved.joinCode || '').trim();
+  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud salvato localmente su questo dispositivo.');
+  if (cloudJoinCodeInput) cloudJoinCodeInput.value = code;
+  saveCloudConfig();
+  selectTextControl(cloudJoinCodeInput);
+  updateCloudStatus('Codice gruppo Cloud recuperato dalla memoria locale e selezionato ✓');
+}
+
 function listCloudPendingEvents(limit = 120) {
   const replicaId = String(syncFoundation?.replicaId || '');
   if (!replicaId) return Promise.resolve([]);
@@ -1544,13 +1599,19 @@ function updateCloudStatus(message = '') {
 
 async function handleCloudCreateGroup() {
   if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  const existing = String(cloudJoinCodeInput?.value || '').trim();
+  if (existing) {
+    const proceed = globalThis.confirm('Esiste già un Codice gruppo Cloud su questo dispositivo. Creando un nuovo gruppo il codice locale verrà sostituito. Hai già copiato e conservato il vecchio codice?');
+    if (!proceed) return updateCloudStatus('Creazione nuovo gruppo annullata. Il codice esistente è stato mantenuto.');
+  }
   saveCloudConfig();
-  updateCloudStatus('Creazione gruppo Agenda Cloud…');
+  updateCloudStatus('Creazione nuovo gruppo Agenda Cloud…');
   try {
     const created = await cloudTransport.createGroup();
     if (cloudJoinCodeInput) cloudJoinCodeInput.value = created.joinCode;
     saveCloudConfig();
-    updateCloudStatus(`Gruppo Cloud creato ✓\n${created.groupId}\nIl codice gruppo contiene anche la chiave E2EE: conservarlo e copiarlo solo sui propri dispositivi.`);
+    selectTextControl(cloudJoinCodeInput);
+    updateCloudStatus(`Nuovo gruppo Cloud creato ✓\n${created.groupId}\nIl codice è visibile e selezionato. Premi “Copia codice gruppo” e conservalo in un luogo sicuro.`);
   } catch (err) { updateCloudStatus(`Creazione gruppo non riuscita: ${err?.message || err}`); }
 }
 
@@ -2854,6 +2915,9 @@ function activateUiButton(button) {
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
   if (button === cloudCreateGroupButton) { void handleCloudCreateGroup(); return; }
+  if (button === cloudCopyJoinCodeButton) { void handleCloudCopyJoinCode(); return; }
+  if (button === cloudSelectJoinCodeButton) { handleCloudSelectJoinCode(); return; }
+  if (button === cloudRecoverJoinCodeButton) { handleCloudRecoverSavedJoinCode(); return; }
   if (button === cloudTestButton) { void handleCloudTest(); return; }
   if (button === cloudSyncNowButton) { void handleCloudSyncNow(); return; }
   if (button === lanTestButton) { void handleLanTest(); return; }
@@ -3682,7 +3746,7 @@ const directUiButtons = [...new Set([
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
   cancelImageCropButton, applyImageCropButton,
-  cloudCreateGroupButton, cloudTestButton, cloudSyncNowButton, lanTestButton, lanSyncNowButton
+  cloudCreateGroupButton, cloudCopyJoinCodeButton, cloudSelectJoinCodeButton, cloudRecoverJoinCodeButton, cloudTestButton, cloudSyncNowButton, lanTestButton, lanSyncNowButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -3827,6 +3891,9 @@ imageFileInput?.addEventListener('change', () => {
 
 lanTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanTestButton)) void handleLanTest(); });
 cloudCreateGroupButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudCreateGroupButton)) void handleCloudCreateGroup(); });
+cloudCopyJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudCopyJoinCodeButton)) void handleCloudCopyJoinCode(); });
+cloudSelectJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudSelectJoinCodeButton)) handleCloudSelectJoinCode(); });
+cloudRecoverJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudRecoverJoinCodeButton)) handleCloudRecoverSavedJoinCode(); });
 cloudTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudTestButton)) void handleCloudTest(); });
 cloudSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudSyncNowButton)) void handleCloudSyncNow(); });
 lanSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanSyncNowButton)) void handleLanSyncNow(); });
@@ -3996,7 +4063,10 @@ async function bootAgenda() {
     cloudStats = cloudTransport.getDiagnostics();
     updateCloudStatus();
     cloudEndpointInput?.addEventListener('change', () => { saveCloudConfig(); scheduleCloudAuto('config-change', 1200); });
+    cloudEndpointInput?.addEventListener('input', () => saveCloudConfig());
     cloudJoinCodeInput?.addEventListener('change', () => { saveCloudConfig(); scheduleCloudAuto('group-change', 1200); });
+    cloudJoinCodeInput?.addEventListener('input', () => saveCloudConfig());
+    cloudJoinCodeInput?.addEventListener('dblclick', () => selectTextControl(cloudJoinCodeInput));
     cloudSyncModeSelect?.addEventListener('change', () => { saveCloudConfig(); updateCloudStatus(); scheduleCloudAuto('mode-change', 1200); });
     startCloudHeartbeat();
     scheduleCloudAuto('startup', 1800);

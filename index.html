@@ -9,7 +9,7 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.35</title>
+  <title>Agenda iPad · 0.1.36</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -18,7 +18,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.35</div>
+        <div class="cover-version">v0.1.36</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -170,7 +170,7 @@
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
-        <button id="versionButton" class="version-button copyright-version" type="button" title="Versione e diagnostica">© Marco Zucchini · v0.1.35</button>
+        <button id="versionButton" class="version-button copyright-version" type="button" title="Versione e diagnostica">© Marco Zucchini · v0.1.36</button>
         <div class="footer-actions" aria-label="Comandi rapidi">
           <button id="calendarButton" class="footer-icon-button calendar-footer-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario" aria-label="Calendario">
             <svg class="calendar-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
@@ -196,7 +196,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.35</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.36</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -204,17 +204,22 @@
           <h3>Agenda Cloud Sync · Aruba</h3>
           <div class="settings-grid">
             <label class="setting-field"><span>Endpoint Cloud HTTPS</span><input id="cloudEndpoint" type="url" inputmode="url" autocomplete="off" value="https://www.marcozucchini.it/agenda-sync/api"></label>
-            <label class="setting-field"><span>Codice gruppo Cloud</span><input id="cloudJoinCode" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AGC1.…"></label>
             <label class="setting-field"><span>Modalità</span><select id="cloudSyncMode"><option value="auto">Automatica</option><option value="manual" selected>Manuale</option><option value="off">Disattivata</option></select></label>
+            <label class="setting-field cloud-code-field"><span>Codice gruppo Cloud · da conservare</span><textarea id="cloudJoinCode" class="credential-textarea" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AGC1.…"></textarea></label>
+          </div>
+          <div class="credential-actions" aria-label="Gestione codice gruppo Cloud">
+            <button id="cloudCopyJoinCodeButton" type="button">Copia codice gruppo</button>
+            <button id="cloudSelectJoinCodeButton" type="button">Seleziona codice</button>
+            <button id="cloudRecoverJoinCodeButton" type="button">Recupera codice salvato</button>
           </div>
           <div class="backup-actions cloud-sync-actions">
-            <button id="cloudCreateGroupButton" type="button">Crea gruppo Cloud</button>
+            <button id="cloudCreateGroupButton" type="button">Crea nuovo gruppo Cloud</button>
             <button id="cloudTestButton" type="button">Test Cloud</button>
             <button id="cloudSyncNowButton" class="primary" type="button">Sincronizza adesso</button>
           </div>
           <div id="cloudSyncStatus" class="backup-status">Cloud non ancora configurato.</div>
           <p class="settings-note"><strong>Cloud-first:</strong> in modalità Automatica Agenda sincronizza all’avvio, al ritorno in primo piano, al ritorno della rete, dopo un commit locale con debounce e periodicamente mentre l’app resta aperta. Ogni richiesta viene interrotta se riprende la scrittura Ink.</p>
-          <p class="settings-note"><strong>E2EE v1:</strong> eventi e blob immagine vengono cifrati sul dispositivo con AES-256-GCM. Aruba conserva il ciphertext; la chiave di cifratura è contenuta nel Codice gruppo Cloud e non viene inviata al server. Conservare quel codice come una password.</p>
+          <p class="settings-note"><strong>E2EE v1:</strong> eventi e blob immagine vengono cifrati sul dispositivo con AES-256-GCM. Aruba conserva il ciphertext; la chiave di cifratura è contenuta nel Codice gruppo Cloud e non viene inviata al server. <strong>Il codice va conservato come una password:</strong> usa “Copia codice gruppo” e salvalo in un luogo sicuro. Se il campo viene perso e non esiste una copia esterna, il contenuto cifrato del vecchio gruppo non è recuperabile.</p>
         </section>
 
         <section class="settings-section lan-sync-section">
@@ -222,14 +227,14 @@
           <div class="settings-grid">
             <label class="setting-field"><span>Hub LAN</span><input id="lanHubUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://PC-AGENDA.local:8787"></label>
             <label class="setting-field"><span>Codice gruppo LAN</span><input id="lanSyncKey" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="codice mostrato dall’hub"></label>
-            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.35</option></select></label>
+            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.36</option></select></label>
           </div>
           <div class="backup-actions lan-sync-actions">
             <button id="lanTestButton" type="button">Test LAN</button>
             <button id="lanSyncNowButton" class="primary" type="button">Sincronizza adesso</button>
           </div>
           <div id="lanSyncStatus" class="backup-status">LAN non ancora verificata.</div>
-          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.35 è Agenda Cloud Sync Aruba.</p>
+          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.36 è Agenda Cloud Sync Aruba.</p>
           <p class="settings-note">Se Agenda è aperta da HTTPS, iPadOS/Safari richiede anche un hub LAN HTTPS con certificato attendibile.</p>
         </section>
 
@@ -299,7 +304,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil + Sync Core 0.1.35</h2>
+      <h2>Diagnostica Pencil + Sync Core 0.1.36</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
