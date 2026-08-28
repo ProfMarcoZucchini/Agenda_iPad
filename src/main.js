@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.36';
+const APP_VERSION = '0.1.37';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -17,6 +17,7 @@ const LAN_STATE_KEY = 'lan-transport-state-v1';
 const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
 const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
+const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
@@ -1468,30 +1469,75 @@ function saveCloudConfig() {
     mode: String(cloudSyncModeSelect?.value || 'manual')
   };
   try { localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify(config)); } catch {}
+  // 0.1.37: seconda copia persistente del codice Cloud nel DB principale.
+  // Non sovrascriviamo mai il backup IndexedDB con una stringa vuota.
+  if (db && config.joinCode) {
+    void putSyncMeta({
+      key: CLOUD_CREDENTIALS_META_KEY,
+      joinCode: config.joinCode,
+      endpoint: config.endpoint,
+      mode: config.mode,
+      modifiedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
   return config;
 }
 
 function selectTextControl(control) {
   if (!control) return false;
+  const value = String(control.value || '');
+  if (!value) return false;
   try {
-    control.focus({ preventScroll: true });
-    if (typeof control.select === 'function') control.select();
-    else if (typeof control.setSelectionRange === 'function') control.setSelectionRange(0, String(control.value || '').length);
+    try { control.focus({ preventScroll: true }); } catch { control.focus?.(); }
+    if (typeof control.setSelectionRange === 'function') control.setSelectionRange(0, value.length, 'forward');
+    else if (typeof control.select === 'function') control.select();
+    requestAnimationFrame(() => {
+      try {
+        if (typeof control.setSelectionRange === 'function') control.setSelectionRange(0, value.length, 'forward');
+      } catch {}
+    });
     return true;
   } catch { return false; }
+}
+
+function legacyClipboardCopy(value, fallbackControl = null) {
+  let temp = null;
+  try {
+    const control = fallbackControl || (() => {
+      temp = document.createElement('textarea');
+      temp.value = value;
+      temp.setAttribute('aria-hidden', 'true');
+      temp.style.position = 'fixed';
+      temp.style.left = '0';
+      temp.style.top = '0';
+      temp.style.width = '2px';
+      temp.style.height = '2px';
+      temp.style.opacity = '0.01';
+      temp.style.zIndex = '-1';
+      document.body.appendChild(temp);
+      return temp;
+    })();
+    if (!selectTextControl(control)) return false;
+    return Boolean(document.execCommand?.('copy'));
+  } catch {
+    return false;
+  } finally {
+    temp?.remove();
+  }
 }
 
 async function copyTextToClipboard(text, fallbackControl = null) {
   const value = String(text || '');
   if (!value) throw new Error('Nessun contenuto da copiare.');
   if (navigator.clipboard?.writeText && globalThis.isSecureContext) {
-    await navigator.clipboard.writeText(value);
-    return true;
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {}
   }
-  if (!fallbackControl || !selectTextControl(fallbackControl)) throw new Error('Copia negli appunti non disponibile.');
-  const ok = document.execCommand?.('copy');
-  if (!ok) throw new Error('Copia negli appunti non riuscita.');
-  return true;
+  if (legacyClipboardCopy(value, fallbackControl)) return true;
+  if (fallbackControl) selectTextControl(fallbackControl);
+  throw new Error('Copia automatica non disponibile su questo iPad.');
 }
 
 async function handleCloudCopyJoinCode() {
@@ -1513,14 +1559,20 @@ function handleCloudSelectJoinCode() {
   updateCloudStatus('Codice gruppo Cloud selezionato ✓\nPuoi copiarlo con il comando Copia di iPadOS.');
 }
 
-function handleCloudRecoverSavedJoinCode() {
+async function handleCloudRecoverSavedJoinCode() {
   const saved = loadCloudConfig();
-  const code = String(saved.joinCode || '').trim();
-  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud salvato localmente su questo dispositivo.');
+  let code = String(saved.joinCode || '').trim();
+  let source = 'memoria web';
+  if (!code && db) {
+    const backup = await getSyncMeta(CLOUD_CREDENTIALS_META_KEY).catch(() => null);
+    code = String(backup?.joinCode || '').trim();
+    source = 'database locale Agenda';
+  }
+  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud recuperabile su questo dispositivo. Se il vecchio codice non è stato salvato, crea un nuovo gruppo Cloud.');
   if (cloudJoinCodeInput) cloudJoinCodeInput.value = code;
   saveCloudConfig();
   selectTextControl(cloudJoinCodeInput);
-  updateCloudStatus('Codice gruppo Cloud recuperato dalla memoria locale e selezionato ✓');
+  updateCloudStatus(`Codice gruppo Cloud recuperato dalla ${source} ✓\nIl codice è selezionato e pronto per essere copiato.`);
 }
 
 function listCloudPendingEvents(limit = 120) {
@@ -2914,14 +2966,6 @@ function activateUiButton(button) {
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
-  if (button === cloudCreateGroupButton) { void handleCloudCreateGroup(); return; }
-  if (button === cloudCopyJoinCodeButton) { void handleCloudCopyJoinCode(); return; }
-  if (button === cloudSelectJoinCodeButton) { handleCloudSelectJoinCode(); return; }
-  if (button === cloudRecoverJoinCodeButton) { handleCloudRecoverSavedJoinCode(); return; }
-  if (button === cloudTestButton) { void handleCloudTest(); return; }
-  if (button === cloudSyncNowButton) { void handleCloudSyncNow(); return; }
-  if (button === lanTestButton) { void handleLanTest(); return; }
-  if (button === lanSyncNowButton) { void handleLanSyncNow(); return; }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
 }
 
@@ -3745,8 +3789,7 @@ const directUiButtons = [...new Set([
   styleButton,
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
-  cancelImageCropButton, applyImageCropButton,
-  cloudCreateGroupButton, cloudCopyJoinCodeButton, cloudSelectJoinCodeButton, cloudRecoverJoinCodeButton, cloudTestButton, cloudSyncNowButton, lanTestButton, lanSyncNowButton
+  cancelImageCropButton, applyImageCropButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -3889,14 +3932,33 @@ imageFileInput?.addEventListener('change', () => {
   if (file) void importImageFile(file);
 });
 
-lanTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanTestButton)) void handleLanTest(); });
-cloudCreateGroupButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudCreateGroupButton)) void handleCloudCreateGroup(); });
-cloudCopyJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudCopyJoinCodeButton)) void handleCloudCopyJoinCode(); });
-cloudSelectJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudSelectJoinCodeButton)) handleCloudSelectJoinCode(); });
-cloudRecoverJoinCodeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudRecoverJoinCodeButton)) handleCloudRecoverSavedJoinCode(); });
-cloudTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudTestButton)) void handleCloudTest(); });
-cloudSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudSyncNowButton)) void handleCloudSyncNow(); });
-lanSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanSyncNowButton)) void handleLanSyncNow(); });
+// 0.1.37 — i comandi nelle Impostazioni non usano il pointerdown della toolbar Ink.
+// Dito/mouse: click nativo. Apple Pencil: pointerup.
+const settingsCommandPenActivation = new WeakMap();
+function bindSettingsCommand(button, action) {
+  if (!(button instanceof HTMLButtonElement)) return;
+  button.addEventListener('pointerup', (ev) => {
+    if (ev.pointerType !== 'pen') return;
+    settingsCommandPenActivation.set(button, performance.now());
+    action();
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { passive: false });
+  button.addEventListener('click', (ev) => {
+    const lastPen = settingsCommandPenActivation.get(button);
+    if (Number.isFinite(lastPen) && performance.now() - lastPen < 700) { ev.preventDefault(); return; }
+    action();
+  });
+}
+
+bindSettingsCommand(lanTestButton, () => void handleLanTest());
+bindSettingsCommand(cloudCreateGroupButton, () => void handleCloudCreateGroup());
+bindSettingsCommand(cloudCopyJoinCodeButton, () => void handleCloudCopyJoinCode());
+bindSettingsCommand(cloudSelectJoinCodeButton, () => handleCloudSelectJoinCode());
+bindSettingsCommand(cloudRecoverJoinCodeButton, () => void handleCloudRecoverSavedJoinCode());
+bindSettingsCommand(cloudTestButton, () => void handleCloudTest());
+bindSettingsCommand(cloudSyncNowButton, () => void handleCloudSyncNow());
+bindSettingsCommand(lanSyncNowButton, () => void handleLanSyncNow());
 
 imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
 imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
