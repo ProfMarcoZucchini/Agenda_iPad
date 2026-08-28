@@ -2,12 +2,14 @@ import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
 import { structuralErase } from './ink-erase.js';
-const APP_VERSION = '0.1.32';
+import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
+const APP_VERSION = '0.1.33';
 const DB_NAME = 'AgendaIPadReintegrationDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'pages';
 const SYNC_EVENT_STORE = 'syncEvents';
 const SYNC_META_STORE = 'syncMeta';
+const SYNC_BLOB_STORE = 'syncBlobs';
 const SYNC_STATE_KEY = 'sync-state-v1';
 const LAN_STATE_KEY = 'lan-transport-state-v1';
 const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
@@ -228,6 +230,8 @@ function normalizeImageObject(value) {
     name: String(value.name || 'Immagine'),
     mimeType: String(value.mimeType || 'image/webp'),
     src: value.src,
+    blobHash: isSha256Hash(value.blobHash) ? String(value.blobHash).toLowerCase() : null,
+    blobSize: Math.max(0, Number(value.blobSize) || 0),
     x, y, w, h,
     rotation: n(value.rotation, 0),
     createdAt: value.createdAt || new Date().toISOString(),
@@ -902,6 +906,11 @@ function openDb() {
         events.createIndex('hlcWallMs', 'hlcWallMs', { unique: false });
       }
       if (!database.objectStoreNames.contains(SYNC_META_STORE)) database.createObjectStore(SYNC_META_STORE, { keyPath: 'key' });
+      if (!database.objectStoreNames.contains(SYNC_BLOB_STORE)) {
+        const blobs = database.createObjectStore(SYNC_BLOB_STORE, { keyPath: 'hash' });
+        blobs.createIndex('mimeType', 'mimeType', { unique: false });
+        blobs.createIndex('createdAt', 'createdAt', { unique: false });
+      }
     };
     req.onsuccess = () => { db = req.result; resolve(db); };
     req.onerror = () => reject(req.error);
@@ -1005,6 +1014,70 @@ function getSyncEventsByEntity(entityId) {
     req.onsuccess = () => resolve(Array.isArray(req.result) ? req.result : []);
     req.onerror = () => reject(req.error);
   });
+}
+
+function putSyncBlob(row) {
+  if (!row?.hash || !(row.blob instanceof Blob)) return Promise.reject(new Error('Blob Sync non valido'));
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_BLOB_STORE, 'readwrite');
+    tx.objectStore(SYNC_BLOB_STORE).put({
+      hash: String(row.hash).toLowerCase(),
+      mimeType: String(row.mimeType || row.blob.type || 'application/octet-stream'),
+      size: Math.max(0, Number(row.size) || row.blob.size || 0),
+      blob: row.blob,
+      createdAt: row.createdAt || new Date().toISOString(),
+      verifiedAt: new Date().toISOString()
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Persistenza blob Sync annullata'));
+  });
+}
+
+function getSyncBlob(hash) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_BLOB_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_BLOB_STORE).get(String(hash || '').toLowerCase());
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function hasSyncBlob(hash) {
+  return getSyncBlob(hash).then(Boolean);
+}
+
+async function registerBlob(blob, mimeType = '') {
+  const hash = await sha256Blob(blob);
+  const row = { hash, blob, mimeType: mimeType || blob.type || 'application/octet-stream', size: blob.size };
+  await putSyncBlob(row);
+  return row;
+}
+
+async function ensureImageBlob(image) {
+  if (!image?.src) return false;
+  if (isSha256Hash(image.blobHash) && await hasSyncBlob(image.blobHash).catch(() => false)) return false;
+  const before = cloneImageObject(image);
+  const blob = dataUrlToBlob(image.src);
+  const row = await registerBlob(blob, image.mimeType || blob.type);
+  image.blobHash = row.hash;
+  image.blobSize = row.size;
+  image.mimeType = row.mimeType;
+  image.modifiedAt = image.modifiedAt || new Date().toISOString();
+  syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, blobMigration: true });
+  dirty = true;
+  return true;
+}
+
+async function ensureCurrentPageImageBlobs() {
+  if (!images.length) return 0;
+  let changed = 0;
+  for (const image of images) {
+    if (drawing || pageTurning) throw new DOMException('Ink priority', 'AbortError');
+    if (await ensureImageBlob(image)) changed++;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return changed;
 }
 
 function getLanPullCursor(hubId) {
@@ -1241,6 +1314,82 @@ async function migrateLegacyErasersOnCurrentPage() {
   return true;
 }
 
+function imageEventChangedFields(event) {
+  if (event?.operation === 'image.add') return ['name','mimeType','blobHash','blobSize','x','y','w','h','rotation','createdAt','modifiedAt'];
+  const fields = Array.isArray(event?.payload?.changedFields) ? event.payload.changedFields.map(String) : [];
+  return fields.length ? fields : ['name','mimeType','blobHash','blobSize','x','y','w','h','rotation','modifiedAt'];
+}
+
+async function applyRemoteImageEvent(event) {
+  const descriptor = event.descriptor || {};
+  const pageKeyValue = String(descriptor.key || '');
+  const imageId = String(event.payload?.image?.id || event.payload?.imageId || event.entityId?.replace(/^image:/, '') || '');
+  if (!pageKeyValue || !imageId) {
+    await putRemoteEventResult(event, 'deferred', null, 'descriptor/ID immagine mancante');
+    return { deferred: 1 };
+  }
+
+  const [record, history] = await Promise.all([getRecord(pageKeyValue), getSyncEventsByEntity(event.entityId)]);
+  const relevant = [...history, event].filter((row) => row?.entityType === 'image-object');
+  const frontier = maximalEntityEvents(relevant);
+  const frontierMutations = frontier.filter((row) => row.operation === 'image.add' || row.operation === 'image.update');
+  const allMutations = relevant.filter((row) => row.operation === 'image.add' || row.operation === 'image.update');
+  const deletes = frontier.filter((row) => row.operation === 'image.delete');
+  const conflict = frontierMutations.length > 0 && deletes.length > 0;
+  const page = record ? { ...record } : buildEmptyPageRecord(descriptor);
+  const pageImages = Array.isArray(page.images) ? [...page.images] : [];
+  const index = pageImages.findIndex((image) => String(image?.id || '') === imageId);
+
+  if (!frontierMutations.length) {
+    if (index >= 0) pageImages.splice(index, 1);
+    page.images = pageImages;
+    page.version = APP_VERSION;
+    page.modifiedAt = new Date().toISOString();
+    await putRemoteEventResult(event, 'applied', page);
+    return { applied: 1 };
+  }
+
+  // Merge per proprietà: per ogni campo vince l'evento causale massimo; tra eventi
+  // concorrenti il tie-break HLC/eventId rende il risultato identico su tutte le repliche.
+  const fields = ['name','mimeType','blobHash','blobSize','x','y','w','h','rotation','createdAt','modifiedAt'];
+  const base = index >= 0 ? cloneImageObject(pageImages[index]) : { id: imageId };
+  for (const field of fields) {
+    const candidates = allMutations.filter((row) => imageEventChangedFields(row).includes(field) && row.payload?.image?.[field] !== undefined);
+    if (!candidates.length) continue;
+    const fieldFrontier = maximalEntityEvents(candidates);
+    const winner = fieldFrontier.sort(compareHlcDeterministic).at(-1);
+    base[field] = winner.payload.image[field];
+  }
+  base.id = imageId;
+
+  if (isSha256Hash(base.blobHash)) {
+    const blobRow = await getSyncBlob(base.blobHash);
+    if (!blobRow?.blob) {
+      await putRemoteEventResult(event, 'deferred-media', null, `blob ${base.blobHash} non disponibile localmente`);
+      return { deferred: 1 };
+    }
+    base.src = await dataUrlFromBlob(blobRow.blob);
+    base.mimeType = base.mimeType || blobRow.mimeType || blobRow.blob.type || 'image/webp';
+    base.blobSize = Number(base.blobSize) || Number(blobRow.size) || blobRow.blob.size || 0;
+  } else if (!base.src) {
+    await putRemoteEventResult(event, 'deferred-media', null, 'evento immagine senza blobHash');
+    return { deferred: 1 };
+  }
+
+  const normalized = normalizeImageObject(base);
+  if (!normalized) {
+    await putRemoteEventResult(event, 'ignored-invalid', null, 'metadata immagine non validi');
+    return { ignored: 1 };
+  }
+  if (index >= 0) pageImages[index] = normalized;
+  else pageImages.push(normalized);
+  page.images = pageImages;
+  page.version = APP_VERSION;
+  page.modifiedAt = new Date().toISOString();
+  await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'delete/update concorrenti: immagine preservata' : null);
+  return conflict ? { applied: 1, conflicts: 1 } : { applied: 1 };
+}
+
 async function applyRemoteSyncEvents(events) {
   const totals = { applied: 0, deferred: 0, ignored: 0, conflicts: 0 };
   await openDb();
@@ -1254,10 +1403,8 @@ async function applyRemoteSyncEvents(events) {
     if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') result = await applyRemoteStrokeEvent(event);
     else if (event.operation === 'page.clear') result = await applyRemotePageClear(event);
     else if (event.operation === 'page.property.set') result = await applyRemotePageProperty(event);
-    else if (event.entityType === 'image-object') {
-      await putRemoteEventResult(event, 'deferred-media', null, 'blob media previsto in release successiva');
-      result = { deferred: 1 };
-    } else {
+    else if (event.entityType === 'image-object') result = await applyRemoteImageEvent(event);
+    else {
       await putRemoteEventResult(event, 'deferred', null, 'tipo evento non ancora applicato');
       result = { deferred: 1 };
     }
@@ -1289,6 +1436,7 @@ function updateLanStatus(message = '') {
     `Stato: ${state}`,
     `Hub: ${lanStats?.hubId || 'non verificato'}`,
     `Push/Pull: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0} · applicati ${lanStats?.applied || 0}`,
+    `Blob up/down: ${lanStats?.blobsUploaded || 0}/${lanStats?.blobsDownloaded || 0}`,
     `Differiti/conflitti: ${lanStats?.deferred || 0}/${lanStats?.conflicts || 0}`
   ];
   if (lanStats?.lastSyncAt) lines.push(`Ultima sync: ${new Date(lanStats.lastSyncAt).toLocaleString('it-IT')}`);
@@ -1326,9 +1474,10 @@ async function handleLanSyncNow() {
 
 function resetSyncStores() {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([SYNC_EVENT_STORE, SYNC_META_STORE], 'readwrite');
+    const tx = db.transaction([SYNC_EVENT_STORE, SYNC_META_STORE, SYNC_BLOB_STORE], 'readwrite');
     tx.objectStore(SYNC_EVENT_STORE).clear();
     tx.objectStore(SYNC_META_STORE).clear();
+    tx.objectStore(SYNC_BLOB_STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Reset Sync dopo restore annullato'));
@@ -1552,7 +1701,7 @@ async function compressImageFile(file) {
     mimeType = blob?.type || file.type || 'image/jpeg';
   }
   if (!blob) throw new Error('Compressione immagine non riuscita');
-  return { src: await dataUrlFromBlob(blob), mimeType, width, height };
+  return { src: await dataUrlFromBlob(blob), blob, mimeType, width, height };
 }
 
 function initialImageGeometry(pixelWidth, pixelHeight) {
@@ -1573,9 +1722,11 @@ async function importImageFile(file) {
   statusLabel.textContent = 'preparo immagine';
   try {
     const packed = await compressImageFile(file);
+    const blobRow = await registerBlob(packed.blob, packed.mimeType);
     const geom = initialImageGeometry(packed.width, packed.height);
     const image = normalizeImageObject({
       id: makeImageId(), name: file.name || 'Immagine', mimeType: packed.mimeType, src: packed.src,
+      blobHash: blobRow.hash, blobSize: blobRow.size,
       ...geom, rotation: 0, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString()
     });
     images.push(image);
@@ -1897,9 +2048,12 @@ async function applyImageCrop() {
   try {
     const before = cloneImageObject(image);
     const packed = await cropPreviewToData(rect, image.mimeType);
+    const blobRow = await registerBlob(packed.blob, packed.mimeType);
     applyCropGeometry(image, rect, imageLayerBounds());
     image.src = packed.src;
     image.mimeType = packed.mimeType;
+    image.blobHash = blobRow.hash;
+    image.blobSize = blobRow.size;
     constrainImage(image);
     rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
     session.imageTransforms++;
@@ -2355,7 +2509,7 @@ function startStroke(ev, reason = 'pointerdown') {
     finalizeStroke('stale-recovered-before-new-start');
   }
 
-  // 0.1.32 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
+  // 0.1.33 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
 
@@ -2447,7 +2601,7 @@ function finalizeStroke(reason = 'pointerup') {
   lastPoint = null;
   lastHandlerArrival = 0;
   dirty = dirty || pageChanged;
-  // 0.1.32: nessuna logica Sync entra in pointermove. Penna/evidenziatore
+  // 0.1.33: nessuna logica Sync entra in pointermove. Penna/evidenziatore
   // generano un solo ADD al PEN UP; la gomma genera DELETE + eventuali ADD
   // dei frammenti residui soltanto dopo la conclusione della passata.
   lanTransport?.resumeAfterInk();
@@ -2678,6 +2832,8 @@ function buildReport() {
     `LAN push/pull/applicati: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0}/${lanStats?.applied || 0}`,
     `LAN differiti/conflitti: ${lanStats?.deferred || 0}/${lanStats?.conflicts || 0}`,
     `LAN richieste/max: ${lanStats?.networkRequests || 0}/${fmt(lanStats?.maxRequestMs, 2)} ms`,
+    `LAN blob up/down: ${lanStats?.blobsUploaded || 0}/${lanStats?.blobsDownloaded || 0}`,
+    `LAN blob bytes up/down: ${lanStats?.blobBytesUploaded || 0}/${lanStats?.blobBytesDownloaded || 0}`,
     `LAN interruzioni per Ink: ${lanStats?.inkInterruptions || 0}`,
     `Lag segnalati: ${lagMarks.length}`,
     '',
@@ -3630,11 +3786,14 @@ async function bootAgenda() {
       protocolVersion: syncFoundation.protocolVersion,
       getConfig: () => ({ endpoint: lanHubUrlInput?.value || '', syncKey: lanSyncKeyInput?.value || '' }),
       getReplicaId: () => syncFoundation?.replicaId || '',
-      flushLocal: async () => { if (dirty) await persistNow(); },
+      flushLocal: async () => { await ensureCurrentPageImageBlobs(); if (dirty) await persistNow(); },
       loadPendingEvents: listPendingSyncEvents,
       markEventsSent: markSyncEventsSent,
       getPullCursor: getLanPullCursor,
       setPullCursor: setLanPullCursor,
+      hasLocalBlob: hasSyncBlob,
+      getLocalBlob: getSyncBlob,
+      putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
       isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
       onStats: (stats) => { lanStats = stats; updateLanStatus(); }

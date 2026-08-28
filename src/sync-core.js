@@ -245,6 +245,11 @@ export function initSyncFoundation(options = {}) {
     const safeExtra = extra && typeof extra === 'object' ? { ...extra } : {};
     if (safeExtra.before) safeExtra.before = stripBlob(safeExtra.before);
     if (safeExtra.after) safeExtra.after = stripBlob(safeExtra.after);
+    const before = safeExtra.before && typeof safeExtra.before === 'object' ? safeExtra.before : null;
+    const syncFields = ['name', 'mimeType', 'blobHash', 'blobSize', 'x', 'y', 'w', 'h', 'rotation', 'createdAt', 'modifiedAt'];
+    const changedFields = operation === 'image.add'
+      ? syncFields.filter((field) => metadata[field] !== undefined)
+      : syncFields.filter((field) => !before || JSON.stringify(before[field]) !== JSON.stringify(metadata[field]));
     return queueEvent({
       entityId: `image:${image.id}`,
       entityType: 'image-object',
@@ -253,10 +258,12 @@ export function initSyncFoundation(options = {}) {
       payload: {
         pageEntityId: pageEntityId(descriptor),
         image: metadata,
-        blobDeferred: typeof src === 'string' && src.length > 0,
+        blobHash: typeof metadata.blobHash === 'string' ? metadata.blobHash : null,
+        blobSize: Number(metadata.blobSize) || 0,
+        changedFields,
         ...safeExtra
       },
-      flags: { mediaBlobProtocolPending: true }
+      flags: { mediaBlobProtocol: metadata.blobHash ? 'sha256-v1' : 'metadata-only' }
     });
   }
 

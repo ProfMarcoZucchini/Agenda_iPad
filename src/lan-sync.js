@@ -1,3 +1,4 @@
+import { sha256Blob } from './blob-store.js';
 const TRANSPORT_VERSION = 1;
 const API_PREFIX = '/agenda-sync/v1';
 
@@ -37,6 +38,9 @@ export function initLanSyncTransport(options = {}) {
   const markEventsSent = typeof options.markEventsSent === 'function' ? options.markEventsSent : async () => {};
   const getPullCursor = typeof options.getPullCursor === 'function' ? options.getPullCursor : async () => 0;
   const setPullCursor = typeof options.setPullCursor === 'function' ? options.setPullCursor : async () => {};
+  const hasLocalBlob = typeof options.hasLocalBlob === 'function' ? options.hasLocalBlob : async () => false;
+  const getLocalBlob = typeof options.getLocalBlob === 'function' ? options.getLocalBlob : async () => null;
+  const putLocalBlob = typeof options.putLocalBlob === 'function' ? options.putLocalBlob : async () => {};
   const applyRemoteEvents = typeof options.applyRemoteEvents === 'function' ? options.applyRemoteEvents : async () => ({ applied: 0, deferred: 0, ignored: 0, conflicts: 0 });
   const isRealtimeBusy = typeof options.isRealtimeBusy === 'function' ? options.isRealtimeBusy : () => false;
   const onStats = typeof options.onStats === 'function' ? options.onStats : () => {};
@@ -59,7 +63,11 @@ export function initLanSyncTransport(options = {}) {
     syncRuns: 0,
     inkInterruptions: 0,
     networkRequests: 0,
-    maxRequestMs: 0
+    maxRequestMs: 0,
+    blobsUploaded: 0,
+    blobBytesUploaded: 0,
+    blobsDownloaded: 0,
+    blobBytesDownloaded: 0
   };
 
   let activeController = null;
@@ -154,12 +162,103 @@ export function initLanSyncTransport(options = {}) {
     }
   }
 
+  function blobHashesFromEvents(events) {
+    const hashes = new Set();
+    for (const event of events || []) {
+      if (event?.entityType !== 'image-object') continue;
+      const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
+      if (/^sha256:[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
+    }
+    return [...hashes];
+  }
+
+  async function uploadBlobsForEvents(events) {
+    const hashes = blobHashesFromEvents(events);
+    if (!hashes.length) return;
+    const check = await request('/blobs/has', { method: 'POST', body: JSON.stringify({ hashes }) }, 15000);
+    const present = new Set(Array.isArray(check?.present) ? check.present.map((x) => String(x).toLowerCase()) : []);
+    for (const hash of hashes) {
+      if (present.has(hash)) continue;
+      if (suspendedForInk || isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
+      const row = await getLocalBlob(hash);
+      if (!row?.blob) throw new Error(`Blob locale mancante: ${hash}`);
+      const result = await request(`/blobs/${encodeURIComponent(hash)}`, {
+        method: 'PUT',
+        body: row.blob,
+        headers: {
+          'Content-Type': row.mimeType || row.blob.type || 'application/octet-stream',
+          'X-Agenda-Blob-Mime': row.mimeType || row.blob.type || 'application/octet-stream'
+        }
+      }, 30000);
+      if (String(result?.hash || '').toLowerCase() !== hash) throw new Error(`ACK blob non valido: ${hash}`);
+      stats.blobsUploaded++;
+      stats.blobBytesUploaded += Number(row.size) || row.blob.size || 0;
+      emit();
+    }
+  }
+
+  async function requestBlob(path, timeoutMs = 30000) {
+    if (suspendedForInk || isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
+    const { endpoint, syncKey } = validateConfig();
+    const controller = new AbortController();
+    activeController = controller;
+    const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+    const started = performance.now();
+    stats.networkRequests++;
+    emit();
+    try {
+      const response = await fetch(endpointUrl(endpoint, path), {
+        method: 'GET', cache: 'no-store', signal: controller.signal,
+        headers: { 'X-Agenda-Sync-Key': syncKey }
+      });
+      if (!response.ok) {
+        let detail = '';
+        try { detail = (await response.json())?.error || ''; } catch {}
+        throw new Error(detail || `Errore LAN HTTP ${response.status}`);
+      }
+      return {
+        blob: await response.blob(),
+        hash: String(response.headers.get('X-Agenda-Blob-Hash') || '').toLowerCase(),
+        mimeType: String(response.headers.get('Content-Type') || 'application/octet-stream')
+      };
+    } finally {
+      clearTimeout(timer);
+      stats.maxRequestMs = Math.max(stats.maxRequestMs, performance.now() - started);
+      if (activeController === controller) activeController = null;
+      emit();
+    }
+  }
+
+  async function downloadBlobsForEvents(events) {
+    const hashes = blobHashesFromEvents(events);
+    const mimeByHash = new Map();
+    for (const event of events || []) {
+      const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
+      const mime = String(event?.payload?.image?.mimeType || '');
+      if (hash && mime) mimeByHash.set(hash, mime);
+    }
+    for (const hash of hashes) {
+      if (await hasLocalBlob(hash)) continue;
+      const remote = await requestBlob(`/blobs/${encodeURIComponent(hash)}`);
+      if (remote.hash && remote.hash !== hash) throw new Error(`Hash blob remoto non coerente: ${hash}`);
+      const mimeType = mimeByHash.get(hash) || remote.mimeType || 'application/octet-stream';
+      const typedBlob = remote.blob.type === mimeType ? remote.blob : new Blob([await remote.blob.arrayBuffer()], { type: mimeType });
+      const actualHash = await sha256Blob(typedBlob);
+      if (actualHash !== hash) throw new Error(`Checksum blob ricevuto non valido: atteso ${hash}, ottenuto ${actualHash}`);
+      await putLocalBlob({ hash, blob: typedBlob, mimeType, size: typedBlob.size });
+      stats.blobsDownloaded++;
+      stats.blobBytesDownloaded += typedBlob.size;
+      emit();
+    }
+  }
+
   async function pushPending() {
     let total = 0;
     while (true) {
       if (suspendedForInk || isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
       const events = await loadPendingEvents(200);
       if (!events.length) break;
+      await uploadBlobsForEvents(events);
       const body = JSON.stringify({
         protocolVersion,
         replicaId: String(getReplicaId() || ''),
@@ -195,6 +294,7 @@ export function initLanSyncTransport(options = {}) {
       const nextCursor = Number(result?.nextCursor);
       if (!Number.isSafeInteger(nextCursor) || nextCursor < cursor) throw new Error('Cursor LAN non valido.');
       if (events.length) {
+        await downloadBlobsForEvents(events);
         const applied = await applyRemoteEvents(events);
         stats.pulled += events.length;
         stats.applied += Number(applied?.applied) || 0;
