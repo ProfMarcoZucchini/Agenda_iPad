@@ -1,9 +1,11 @@
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
+import { initCloudSyncTransport } from './cloud-sync.js';
+import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.33';
+const APP_VERSION = '0.1.34';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -13,6 +15,9 @@ const SYNC_BLOB_STORE = 'syncBlobs';
 const SYNC_STATE_KEY = 'sync-state-v1';
 const LAN_STATE_KEY = 'lan-transport-state-v1';
 const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
+const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
+const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
+const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const HIGHLIGHTER_COLOR = '#f0d84f';
@@ -103,6 +108,13 @@ const lanSyncKeyInput = document.getElementById('lanSyncKey');
 const lanTestButton = document.getElementById('lanTestButton');
 const lanSyncNowButton = document.getElementById('lanSyncNowButton');
 const lanSyncStatus = document.getElementById('lanSyncStatus');
+const cloudEndpointInput = document.getElementById('cloudEndpoint');
+const cloudJoinCodeInput = document.getElementById('cloudJoinCode');
+const cloudSyncModeSelect = document.getElementById('cloudSyncMode');
+const cloudCreateGroupButton = document.getElementById('cloudCreateGroupButton');
+const cloudTestButton = document.getElementById('cloudTestButton');
+const cloudSyncNowButton = document.getElementById('cloudSyncNowButton');
+const cloudSyncStatus = document.getElementById('cloudSyncStatus');
 
 
 let db = null;
@@ -160,6 +172,9 @@ let syncFoundation = null;
 let syncStats = null;
 let lanTransport = null;
 let lanStats = null;
+let cloudTransport = null;
+let cloudStats = null;
+let cloudHeartbeatTimer = 0;
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
@@ -1415,6 +1430,162 @@ async function applyRemoteSyncEvents(events) {
   return totals;
 }
 
+
+function loadCloudConfig() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CLOUD_CONFIG_STORAGE_KEY) || '{}');
+    return {
+      endpoint: String(parsed.endpoint || CLOUD_DEFAULT_ENDPOINT),
+      joinCode: String(parsed.joinCode || ''),
+      mode: ['auto','manual','off'].includes(parsed.mode) ? parsed.mode : 'manual'
+    };
+  } catch { return { endpoint: CLOUD_DEFAULT_ENDPOINT, joinCode: '', mode: 'manual' }; }
+}
+
+function cloudCredentialsFromUi() {
+  const code = String(cloudJoinCodeInput?.value || '').trim();
+  if (!code) return { groupId: '', authKey: '', encryptionKey: '' };
+  return decodeCloudJoinCode(code);
+}
+
+function cloudTransportConfig() {
+  let credentials = { groupId: '', authKey: '', encryptionKey: '' };
+  try { credentials = cloudCredentialsFromUi(); } catch {}
+  return {
+    endpoint: String(cloudEndpointInput?.value || CLOUD_DEFAULT_ENDPOINT).trim(),
+    mode: String(cloudSyncModeSelect?.value || 'manual'),
+    ...credentials
+  };
+}
+
+function saveCloudConfig() {
+  const config = {
+    endpoint: String(cloudEndpointInput?.value || CLOUD_DEFAULT_ENDPOINT).trim(),
+    joinCode: String(cloudJoinCodeInput?.value || '').trim(),
+    mode: String(cloudSyncModeSelect?.value || 'manual')
+  };
+  try { localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify(config)); } catch {}
+  return config;
+}
+
+function listCloudPendingEvents(limit = 120) {
+  const replicaId = String(syncFoundation?.replicaId || '');
+  if (!replicaId) return Promise.resolve([]);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).index('replicaId').getAll(replicaId);
+    req.onsuccess = () => {
+      const rows = (Array.isArray(req.result) ? req.result : [])
+        .filter((row) => !row.cloudSentAt)
+        .sort((a, b) => (Number(a.replicaSequence) || 0) - (Number(b.replicaSequence) || 0) || String(a.eventId || '').localeCompare(String(b.eventId || '')))
+        .slice(0, Math.max(1, Math.min(200, Number(limit) || 120)));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function countCloudPendingEvents() {
+  const replicaId = String(syncFoundation?.replicaId || '');
+  if (!replicaId) return Promise.resolve(0);
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readonly');
+    const req = tx.objectStore(SYNC_EVENT_STORE).index('replicaId').getAll(replicaId);
+    req.onsuccess = () => resolve((Array.isArray(req.result) ? req.result : []).filter((row) => !row.cloudSentAt).length);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function markCloudEventsSent(eventIds) {
+  const ids = [...new Set((eventIds || []).filter(Boolean))];
+  if (!ids.length) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SYNC_EVENT_STORE, 'readwrite');
+    const store = tx.objectStore(SYNC_EVENT_STORE);
+    for (const id of ids) {
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const row = req.result;
+        if (!row) return;
+        row.cloudSentAt = row.cloudSentAt || new Date().toISOString();
+        store.put(row);
+      };
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Aggiornamento outbox Cloud annullato'));
+  });
+}
+
+function getCloudPullCursor() {
+  return getSyncMeta(CLOUD_STATE_KEY).then((row) => Math.max(0, Number(row?.cursor) || 0));
+}
+
+function setCloudPullCursor(cursor) {
+  return putSyncMeta({ key: CLOUD_STATE_KEY, cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+}
+
+function updateCloudStatus(message = '') {
+  if (!cloudSyncStatus) return;
+  if (message) { cloudSyncStatus.textContent = message; return; }
+  const lines = [
+    `Stato: ${cloudStats?.state || 'idle'} · modalità ${cloudSyncModeSelect?.value || 'manual'}`,
+    `Gruppo: ${cloudStats?.groupId || 'non configurato'}`,
+    `Push/Pull: ${cloudStats?.pushed || 0}/${cloudStats?.pulled || 0} · applicati ${cloudStats?.applied || 0}`,
+    `Eventi cifrati up/down: ${cloudStats?.encryptedEventsUp || 0}/${cloudStats?.encryptedEventsDown || 0}`,
+    `Blob cifrati up/down: ${cloudStats?.blobsUploaded || 0}/${cloudStats?.blobsDownloaded || 0}`,
+    `Differiti/conflitti: ${cloudStats?.deferred || 0}/${cloudStats?.conflicts || 0}`
+  ];
+  if (cloudStats?.lastSyncAt) lines.push(`Ultima sync: ${new Date(cloudStats.lastSyncAt).toLocaleString('it-IT')}`);
+  if (cloudStats?.lastError) lines.push(`Nota: ${cloudStats.lastError}`);
+  cloudSyncStatus.textContent = lines.join('\n');
+}
+
+async function handleCloudCreateGroup() {
+  if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  saveCloudConfig();
+  updateCloudStatus('Creazione gruppo Agenda Cloud…');
+  try {
+    const created = await cloudTransport.createGroup();
+    if (cloudJoinCodeInput) cloudJoinCodeInput.value = created.joinCode;
+    saveCloudConfig();
+    updateCloudStatus(`Gruppo Cloud creato ✓\n${created.groupId}\nIl codice gruppo contiene anche la chiave E2EE: conservarlo e copiarlo solo sui propri dispositivi.`);
+  } catch (err) { updateCloudStatus(`Creazione gruppo non riuscita: ${err?.message || err}`); }
+}
+
+async function handleCloudTest() {
+  if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  saveCloudConfig(); updateCloudStatus('Test Cloud Aruba…');
+  try {
+    const result = await cloudTransport.testConnection();
+    updateCloudStatus(`Cloud raggiunto ✓\nID: ${result.cloudId}\nEventi: ${result.group?.eventCount ?? 0} · blob: ${result.group?.blobCount ?? 0} · cursor: ${result.group?.cursor ?? 0}`);
+  } catch (err) { updateCloudStatus(`Cloud non disponibile: ${err?.message || err}`); }
+}
+
+async function handleCloudSyncNow() {
+  if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  saveCloudConfig(); updateCloudStatus('Sincronizzazione Cloud…');
+  try {
+    const result = await cloudTransport.syncNow({ auto: false, reason: 'manual' });
+    const pending = await countCloudPendingEvents().catch(() => 0);
+    updateCloudStatus(`Sincronizzazione Cloud completata ✓\nInviati: ${result.pushed || 0} · ricevuti: ${result.pulled || 0}\nOutbox Cloud residua: ${pending}`);
+  } catch (err) {
+    if (err?.name === 'AbortError') updateCloudStatus('Sync Cloud interrotta: priorità alla scrittura Ink.');
+    else updateCloudStatus(`Sync Cloud non riuscita: ${err?.message || err}`);
+  }
+}
+
+function scheduleCloudAuto(reason = 'change', delayMs = 5000) {
+  cloudTransport?.scheduleAuto(reason, delayMs);
+}
+
+function startCloudHeartbeat() {
+  if (cloudHeartbeatTimer) return;
+  cloudHeartbeatTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible') scheduleCloudAuto('heartbeat', 1200);
+  }, 60000);
+}
+
 function loadLanConfig() {
   try {
     const parsed = JSON.parse(localStorage.getItem(LAN_CONFIG_STORAGE_KEY) || '{}');
@@ -2470,7 +2641,10 @@ async function persistNow() {
   const snapshot = strokes;
   const imageSnapshot = images;
   const ok = await persistSnapshot(descriptor, snapshot, true, pageStyle, imageSnapshot);
-  if (ok && currentPageKey() === saveKey && strokes === snapshot) dirty = false;
+  if (ok && currentPageKey() === saveKey && strokes === snapshot) {
+    dirty = false;
+    scheduleCloudAuto('local-commit', 5000);
+  }
 }
 
 function scheduleSave() {
@@ -2512,6 +2686,7 @@ function startStroke(ev, reason = 'pointerdown') {
   // 0.1.33 LAN Transport: al PEN DOWN una eventuale richiesta di rete manuale
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
+  cloudTransport?.suspendForInk();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -2523,6 +2698,7 @@ function startStroke(ev, reason = 'pointerdown') {
     drawing = false;
     pointerId = null;
     lanTransport?.resumeAfterInk();
+    cloudTransport?.resumeAfterInk();
     return false;
   }
   lastPoint = point;
@@ -2605,6 +2781,7 @@ function finalizeStroke(reason = 'pointerup') {
   // generano un solo ADD al PEN UP; la gomma genera DELETE + eventuali ADD
   // dei frammenti residui soltanto dopo la conclusione della passata.
   lanTransport?.resumeAfterInk();
+  cloudTransport?.resumeAfterInk();
   if (pageChanged) scheduleSave();
 }
 
@@ -2675,6 +2852,9 @@ function activateUiButton(button) {
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === deleteImageButton) { deleteSelectedImage(); return; }
+  if (button === cloudCreateGroupButton) { void handleCloudCreateGroup(); return; }
+  if (button === cloudTestButton) { void handleCloudTest(); return; }
+  if (button === cloudSyncNowButton) { void handleCloudSyncNow(); return; }
   if (button === lanTestButton) { void handleLanTest(); return; }
   if (button === lanSyncNowButton) { void handleLanSyncNow(); return; }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
@@ -2788,7 +2968,7 @@ function fmt(value, digits = 1) {
 function buildReport() {
   const recent = completedDiagnostics.slice(-24);
   return [
-    `Agenda iPad LAN SYNC v${APP_VERSION}`,
+    `Agenda iPad CLOUD SYNC v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
     `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
     `Chiave pagina: ${currentPageKey()}`,
@@ -2828,6 +3008,12 @@ function buildReport() {
     `Sync max commit atomico: ${fmt(syncStats?.maxAtomicCommitMs, 2)} ms`,
     `Sync chiamate da pointermove: ${syncStats?.pointerMoveSyncCalls ?? 0}`,
     `Sync ultimo HLC: ${syncStats?.lastEventHlc || 'nessuno'}`,
+    `CLOUD stato/gruppo: ${cloudStats?.state || 'n/a'} / ${cloudStats?.groupId || 'n/a'}`,
+    `CLOUD push/pull/applicati: ${cloudStats?.pushed || 0}/${cloudStats?.pulled || 0}/${cloudStats?.applied || 0}`,
+    `CLOUD cifrati up/down: ${cloudStats?.encryptedEventsUp || 0}/${cloudStats?.encryptedEventsDown || 0}`,
+    `CLOUD blob up/down: ${cloudStats?.blobsUploaded || 0}/${cloudStats?.blobsDownloaded || 0}`,
+    `CLOUD richieste/max: ${cloudStats?.networkRequests || 0}/${fmt(cloudStats?.maxRequestMs, 2)} ms`,
+    `CLOUD auto run/interruzioni Ink: ${cloudStats?.autoRuns || 0}/${cloudStats?.inkInterruptions || 0}`,
     `LAN stato/hub: ${lanStats?.state || 'n/a'} / ${lanStats?.hubId || 'n/a'}`,
     `LAN push/pull/applicati: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0}/${lanStats?.applied || 0}`,
     `LAN differiti/conflitti: ${lanStats?.deferred || 0}/${lanStats?.conflicts || 0}`,
@@ -3495,7 +3681,7 @@ const directUiButtons = [...new Set([
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
   cancelImageCropButton, applyImageCropButton,
-  lanTestButton, lanSyncNowButton
+  cloudCreateGroupButton, cloudTestButton, cloudSyncNowButton, lanTestButton, lanSyncNowButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
@@ -3639,6 +3825,9 @@ imageFileInput?.addEventListener('change', () => {
 });
 
 lanTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanTestButton)) void handleLanTest(); });
+cloudCreateGroupButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudCreateGroupButton)) void handleCloudCreateGroup(); });
+cloudTestButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudTestButton)) void handleCloudTest(); });
+cloudSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cloudSyncNowButton)) void handleCloudSyncNow(); });
 lanSyncNowButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lanSyncNowButton)) void handleLanSyncNow(); });
 
 imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
@@ -3699,8 +3888,12 @@ document.addEventListener('visibilitychange', () => {
     if (drawing) finalizeStroke('visibility-hidden');
     if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
     if (ready && dirty) persistNow();
+  } else if (ready) {
+    scheduleCloudAuto('foreground', 1200);
   }
 });
+
+window.addEventListener('online', () => { if (ready) scheduleCloudAuto('network-online', 1200); });
 
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
@@ -3777,6 +3970,35 @@ async function bootAgenda() {
     } catch (err) {
       console.warn('Agenda Sync Core non disponibile', err);
     }
+  }
+  if (!cloudTransport && syncFoundation) {
+    const config = loadCloudConfig();
+    if (cloudEndpointInput) cloudEndpointInput.value = config.endpoint || CLOUD_DEFAULT_ENDPOINT;
+    if (cloudJoinCodeInput) cloudJoinCodeInput.value = config.joinCode;
+    if (cloudSyncModeSelect) cloudSyncModeSelect.value = config.mode;
+    cloudTransport = initCloudSyncTransport({
+      protocolVersion: syncFoundation.protocolVersion,
+      getConfig: cloudTransportConfig,
+      getReplicaId: () => syncFoundation?.replicaId || '',
+      flushLocal: async () => { await ensureCurrentPageImageBlobs(); if (dirty) await persistNow(); },
+      loadPendingEvents: listCloudPendingEvents,
+      markEventsSent: markCloudEventsSent,
+      getPullCursor: getCloudPullCursor,
+      setPullCursor: setCloudPullCursor,
+      hasLocalBlob: hasSyncBlob,
+      getLocalBlob: getSyncBlob,
+      putLocalBlob: putSyncBlob,
+      applyRemoteEvents: applyRemoteSyncEvents,
+      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      onStats: (stats) => { cloudStats = stats; updateCloudStatus(); }
+    });
+    cloudStats = cloudTransport.getDiagnostics();
+    updateCloudStatus();
+    cloudEndpointInput?.addEventListener('change', () => { saveCloudConfig(); scheduleCloudAuto('config-change', 1200); });
+    cloudJoinCodeInput?.addEventListener('change', () => { saveCloudConfig(); scheduleCloudAuto('group-change', 1200); });
+    cloudSyncModeSelect?.addEventListener('change', () => { saveCloudConfig(); updateCloudStatus(); scheduleCloudAuto('mode-change', 1200); });
+    startCloudHeartbeat();
+    scheduleCloudAuto('startup', 1800);
   }
   if (!lanTransport && syncFoundation) {
     const config = loadLanConfig();
