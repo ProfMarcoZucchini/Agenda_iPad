@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.44';
+const APP_VERSION = '0.1.46';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -19,10 +19,9 @@ const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
-const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v1';
+const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v2';
 const SHARED_WEEKLY_TIMETABLE_ROWS = 11;
 const SHARED_WEEKLY_TIMETABLE_DAYS = 5;
-const SHARED_WEEKLY_TIMETABLE_INK_COLUMNS = 6; // Orari + Lun-Ven
 const WEEKLY_TIMETABLE_INK_COLOR = '#ffffff';
 const WEEKLY_TIMETABLE_INK_WIDTH = 2.2;
 const WEEKLY_TIMETABLE_INK_MAX_POINTS = 4096;
@@ -69,6 +68,9 @@ const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
 const versionButton = document.getElementById('versionButton');
+const authorCreditsButton = document.getElementById('authorCreditsButton');
+const infoCreditsOverlay = document.getElementById('infoCreditsOverlay');
+const idleCoverOverlay = document.getElementById('idleCoverOverlay');
 const statusLabel = document.getElementById('statusLabel');
 const reportPanel = document.getElementById('reportPanel');
 const reportText = document.getElementById('reportText');
@@ -140,6 +142,8 @@ const saintDetailSource = document.getElementById('saintDetailSource');
 const closeSaintDetailButton = document.getElementById('closeSaintDetailButton');
 const weeklyTimetablePanel = document.getElementById('weeklyTimetablePanel');
 const weeklyTimetableGrid = document.getElementById('weeklyTimetableGrid');
+const weeklyTimetableInkCanvas = document.getElementById('weeklyTimetableInkCanvas');
+const weeklyTimetableInkCtx = weeklyTimetableInkCanvas?.getContext('2d', { alpha:true, desynchronized:true }) ?? null;
 const closeWeeklyTimetableButton = document.getElementById('closeWeeklyTimetableButton');
 
 
@@ -186,12 +190,11 @@ let saintRefreshTimer = 0;
 let saintRequestSerial = 0;
 let saintCache = loadSaintCache();
 let sharedWeeklyTimetableCache = null;
-let sharedWeeklyTimetableSaveTimer = 0;
 let sharedWeeklyTimetableSaving = false;
-const sharedWeeklyTimetableChangedCells = new Set();
-let sharedWeeklyTimetablePendingInkStrokes = [];
+let sharedWeeklyTimetablePersistPending = false;
 let weeklyTimetableInkPointer = null;
 let weeklyTimetableInkResizeRaf = 0;
+let weeklyTimetableInkDpr = 1;
 let weeklyPlannerLastTap = null;
 let ready = false;
 let rafPrev = performance.now();
@@ -1019,7 +1022,7 @@ function plannerHtml(mode, dateString) {
 }
 
 
-function normalizeWeeklyTimetableInkStroke(value) {
+function normalizeSharedWeeklyTimetableStroke(value) {
   if (!value || typeof value !== 'object') return null;
   const id = String(value.id || '');
   if (!id) return null;
@@ -1027,22 +1030,27 @@ function normalizeWeeklyTimetableInkStroke(value) {
     .slice(0, WEEKLY_TIMETABLE_INK_MAX_POINTS)
     .map((point) => ({
       x: Math.max(0, Math.min(1, Number(point?.x) || 0)),
-      y: Math.max(0, Math.min(1, Number(point?.y) || 0))
+      y: Math.max(0, Math.min(1, Number(point?.y) || 0)),
+      p: Math.max(0, Math.min(1, Number(point?.p) || .5)),
+      t: Number.isFinite(Number(point?.t)) ? Number(point.t) : 0
     }));
   if (!points.length) return null;
   return {
     id,
+    tool: 'pen',
     color: WEEKLY_TIMETABLE_INK_COLOR,
+    opacity: 1,
     width: Math.max(.8, Math.min(8, Number(value.width) || WEEKLY_TIMETABLE_INK_WIDTH)),
+    pointerType: String(value.pointerType || 'pen'),
     points
   };
 }
 
-function normalizeWeeklyTimetableInkCell(value) {
+function normalizeSharedWeeklyTimetableStrokes(value) {
   const seen = new Set();
   const result = [];
   for (const candidate of Array.isArray(value) ? value : []) {
-    const stroke = normalizeWeeklyTimetableInkStroke(candidate);
+    const stroke = normalizeSharedWeeklyTimetableStroke(candidate);
     if (!stroke || seen.has(stroke.id)) continue;
     seen.add(stroke.id);
     result.push(stroke);
@@ -1050,40 +1058,10 @@ function normalizeWeeklyTimetableInkCell(value) {
   return result;
 }
 
-function defaultSharedWeeklyTimetable() {
-  return {
-    schemaVersion: 2,
-    rows: Array.from({ length: SHARED_WEEKLY_TIMETABLE_ROWS }, () => ({
-      time: '',
-      days: Array.from({ length: SHARED_WEEKLY_TIMETABLE_DAYS }, () => ''),
-      inkCells: Array.from({ length: SHARED_WEEKLY_TIMETABLE_INK_COLUMNS }, () => [])
-    })),
-    modifiedAt: ''
-  };
-}
-
-function normalizeSharedWeeklyTimetable(value) {
-  const base = defaultSharedWeeklyTimetable();
-  const sourceRows = Array.isArray(value?.rows) ? value.rows : [];
-  base.rows = Array.from({ length: SHARED_WEEKLY_TIMETABLE_ROWS }, (_, rowIndex) => {
-    const source = sourceRows[rowIndex] && typeof sourceRows[rowIndex] === 'object' ? sourceRows[rowIndex] : {};
-    const sourceDays = Array.isArray(source.days) ? source.days : [];
-    const sourceInkCells = Array.isArray(source.inkCells) ? source.inkCells : [];
-    return {
-      time: String(source.time ?? '').slice(0, 80),
-      days: Array.from({ length: SHARED_WEEKLY_TIMETABLE_DAYS }, (_, dayIndex) => String(sourceDays[dayIndex] ?? '').slice(0, 500)),
-      inkCells: Array.from({ length: SHARED_WEEKLY_TIMETABLE_INK_COLUMNS }, (_, inkIndex) => normalizeWeeklyTimetableInkCell(sourceInkCells[inkIndex]))
-    };
-  });
-  base.schemaVersion = 2;
-  base.modifiedAt = String(value?.modifiedAt || '');
-  return base;
-}
-
 function sharedWeeklyTimetableDescriptor() {
   return {
     key: SHARED_WEEKLY_TIMETABLE_KEY,
-    date: '',
+    date: SHARED_WEEKLY_TIMETABLE_KEY,
     kind: 'planner-shared-weekly-timetable',
     plannerMode: 'weekly',
     noteIndex: 0,
@@ -1091,39 +1069,17 @@ function sharedWeeklyTimetableDescriptor() {
   };
 }
 
-function sharedWeeklyTimetableCellEntityId(row, column) {
-  return `planner:weekly-timetable:cell:${row}:${column}`;
-}
-
-function sharedWeeklyTimetableInkEntityId(row, column, strokeId) {
-  return `planner:weekly-timetable:ink:${row}:${column}:${strokeId}`;
-}
-
-function sharedWeeklyTimetableInkColumnIndex(column) {
-  if (String(column) === 'time') return 0;
-  const day = Number(column);
-  return Number.isInteger(day) && day >= 0 && day < SHARED_WEEKLY_TIMETABLE_DAYS ? day + 1 : -1;
-}
-
-function sharedWeeklyTimetableCellInk(timetable, row, column) {
-  const inkIndex = sharedWeeklyTimetableInkColumnIndex(column);
-  if (inkIndex < 0 || !timetable?.rows?.[row]) return [];
-  return timetable.rows[row].inkCells[inkIndex];
-}
-
 async function getSharedWeeklyTimetable() {
-  if (sharedWeeklyTimetableCache) return normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+  if (sharedWeeklyTimetableCache) return normalizeSharedWeeklyTimetableStrokes(sharedWeeklyTimetableCache);
   await openDb();
   const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
   session.storageReads++;
-  sharedWeeklyTimetableCache = normalizeSharedWeeklyTimetable(record?.timetable);
-  return normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+  sharedWeeklyTimetableCache = normalizeSharedWeeklyTimetableStrokes(record?.strokes);
+  return normalizeSharedWeeklyTimetableStrokes(sharedWeeklyTimetableCache);
 }
 
 function renderSharedWeeklyTimetable() {
   if (!weeklyTimetableGrid) return;
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
-  sharedWeeklyTimetableCache = timetable;
   weeklyTimetableGrid.replaceChildren();
   const headers = ['ORARI', 'LUNEDÌ', 'MARTEDÌ', 'MERCOLEDÌ', 'GIOVEDÌ', 'VENERDÌ'];
   for (const label of headers) {
@@ -1136,105 +1092,72 @@ function renderSharedWeeklyTimetable() {
   for (let row = 0; row < SHARED_WEEKLY_TIMETABLE_ROWS; row++) {
     const compact = row === 3 || row === 7;
     for (let col = -1; col < SHARED_WEEKLY_TIMETABLE_DAYS; col++) {
-      const column = col === -1 ? 'time' : String(col);
       const cell = document.createElement('div');
       cell.className = `weekly-timetable-cell${col === -1 ? ' time' : ''}${compact ? ' break-row' : ''}`;
       cell.dataset.timetableRow = String(row);
-      cell.dataset.timetableColumn = column;
+      cell.dataset.timetableColumn = col === -1 ? 'time' : String(col);
       cell.setAttribute('role', 'cell');
-
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.autocomplete = 'off';
-      input.spellcheck = false;
-      input.dataset.timetableRow = String(row);
-      input.dataset.timetableColumn = column;
-      input.value = col === -1 ? timetable.rows[row].time : timetable.rows[row].days[col];
-      // 0.1.44: nessuna scritta "orario"/"intervallo" nelle celle della prima colonna.
-      input.placeholder = '';
-      input.setAttribute('aria-label', col === -1 ? `Cella orari riga ${row + 1}` : `${headers[col + 1]} riga ${row + 1}`);
-      cell.appendChild(input);
-
-      const inkCanvas = document.createElement('canvas');
-      inkCanvas.className = 'weekly-timetable-ink-canvas';
-      inkCanvas.dataset.timetableRow = String(row);
-      inkCanvas.dataset.timetableColumn = column;
-      inkCanvas.setAttribute('aria-hidden', 'true');
-      cell.appendChild(inkCanvas);
+      cell.setAttribute('aria-label', col === -1 ? `Orari riga ${row + 1}` : `${headers[col + 1]} riga ${row + 1}`);
       weeklyTimetableGrid.appendChild(cell);
     }
   }
   scheduleWeeklyTimetableInkResize();
 }
 
-function weeklyTimetableInkCanvas(row, column) {
-  if (!weeklyTimetableGrid) return null;
-  const selector = `canvas.weekly-timetable-ink-canvas[data-timetable-row="${row}"][data-timetable-column="${String(column)}"]`;
-  return weeklyTimetableGrid.querySelector(selector);
-}
-
-function sizeWeeklyTimetableInkCanvas(canvas) {
-  if (!(canvas instanceof HTMLCanvasElement)) return null;
-  const bounds = canvas.getBoundingClientRect();
+function sizeWeeklyTimetableInkCanvas() {
+  if (!(weeklyTimetableInkCanvas instanceof HTMLCanvasElement) || !weeklyTimetableInkCtx) return null;
+  const bounds = weeklyTimetableInkCanvas.getBoundingClientRect();
   if (bounds.width < 1 || bounds.height < 1) return null;
-  const ratio = Math.max(1, Math.min(3, Number(window.devicePixelRatio) || 1));
-  const pixelWidth = Math.max(1, Math.round(bounds.width * ratio));
-  const pixelHeight = Math.max(1, Math.round(bounds.height * ratio));
-  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
-    canvas.width = pixelWidth;
-    canvas.height = pixelHeight;
+  weeklyTimetableInkDpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio) || 1));
+  const pixelWidth = Math.max(1, Math.round(bounds.width * weeklyTimetableInkDpr));
+  const pixelHeight = Math.max(1, Math.round(bounds.height * weeklyTimetableInkDpr));
+  if (weeklyTimetableInkCanvas.width !== pixelWidth || weeklyTimetableInkCanvas.height !== pixelHeight) {
+    weeklyTimetableInkCanvas.width = pixelWidth;
+    weeklyTimetableInkCanvas.height = pixelHeight;
   }
-  const inkCtx = canvas.getContext('2d', { alpha: true, desynchronized: true });
-  inkCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  inkCtx.lineCap = 'round';
-  inkCtx.lineJoin = 'round';
-  return { ctx: inkCtx, width: bounds.width, height: bounds.height };
+  weeklyTimetableInkCtx.setTransform(weeklyTimetableInkDpr, 0, 0, weeklyTimetableInkDpr, 0, 0);
+  weeklyTimetableInkCtx.lineCap = 'round';
+  weeklyTimetableInkCtx.lineJoin = 'round';
+  return { ctx: weeklyTimetableInkCtx, width: bounds.width, height: bounds.height, bounds };
 }
 
-function drawWeeklyTimetableInkStroke(canvas, stroke, clear = false) {
-  const sized = sizeWeeklyTimetableInkCanvas(canvas);
+function drawSharedWeeklyTimetableStroke(stroke, clear = false) {
+  const sized = sizeWeeklyTimetableInkCanvas();
   if (!sized) return;
-  const { ctx: inkCtx, width, height } = sized;
-  if (clear) inkCtx.clearRect(0, 0, width, height);
-  const normalized = normalizeWeeklyTimetableInkStroke(stroke);
+  const { ctx: targetCtx, width, height } = sized;
+  if (clear) targetCtx.clearRect(0, 0, width, height);
+  const normalized = normalizeSharedWeeklyTimetableStroke(stroke);
   if (!normalized) return;
-  inkCtx.save();
-  inkCtx.strokeStyle = WEEKLY_TIMETABLE_INK_COLOR;
-  inkCtx.fillStyle = WEEKLY_TIMETABLE_INK_COLOR;
-  inkCtx.globalAlpha = 1;
-  inkCtx.lineWidth = normalized.width;
-  const points = normalized.points;
-  if (points.length === 1) {
-    inkCtx.beginPath();
-    inkCtx.arc(points[0].x * width, points[0].y * height, Math.max(.8, normalized.width / 2), 0, Math.PI * 2);
-    inkCtx.fill();
+  targetCtx.save();
+  setupStrokeStyle(normalized, targetCtx);
+  if (normalized.points.length === 1) {
+    const point = normalized.points[0];
+    targetCtx.beginPath();
+    targetCtx.arc(point.x * width, point.y * height, Math.max(.8, normalized.width / 2), 0, Math.PI * 2);
+    targetCtx.fill();
   } else {
-    inkCtx.beginPath();
-    inkCtx.moveTo(points[0].x * width, points[0].y * height);
-    for (let i = 1; i < points.length; i++) inkCtx.lineTo(points[i].x * width, points[i].y * height);
-    inkCtx.stroke();
+    targetCtx.beginPath();
+    targetCtx.moveTo(normalized.points[0].x * width, normalized.points[0].y * height);
+    for (let i = 1; i < normalized.points.length; i++) {
+      const point = normalized.points[i];
+      targetCtx.lineTo(point.x * width, point.y * height);
+    }
+    targetCtx.stroke();
   }
-  inkCtx.restore();
+  targetCtx.restore();
 }
 
-function renderWeeklyTimetableInkCell(row, column) {
-  const canvas = weeklyTimetableInkCanvas(row, column);
-  if (!(canvas instanceof HTMLCanvasElement)) return;
-  const sized = sizeWeeklyTimetableInkCanvas(canvas);
+function renderWeeklyTimetableInk() {
+  const sized = sizeWeeklyTimetableInkCanvas();
   if (!sized) return;
   sized.ctx.clearRect(0, 0, sized.width, sized.height);
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
-  for (const stroke of sharedWeeklyTimetableCellInk(timetable, row, column)) drawWeeklyTimetableInkStroke(canvas, stroke, false);
+  for (const stroke of normalizeSharedWeeklyTimetableStrokes(sharedWeeklyTimetableCache)) drawSharedWeeklyTimetableStroke(stroke, false);
 }
 
 function resizeAndRenderWeeklyTimetableInk() {
   weeklyTimetableInkResizeRaf = 0;
-  if (!weeklyTimetableGrid || weeklyTimetablePanel?.hidden) return;
-  for (const canvas of weeklyTimetableGrid.querySelectorAll('canvas.weekly-timetable-ink-canvas')) {
-    const row = Number(canvas.dataset.timetableRow);
-    const column = String(canvas.dataset.timetableColumn || '');
-    renderWeeklyTimetableInkCell(row, column);
-  }
+  if (weeklyTimetablePanel?.hidden) return;
+  renderWeeklyTimetableInk();
 }
 
 function scheduleWeeklyTimetableInkResize() {
@@ -1242,65 +1165,53 @@ function scheduleWeeklyTimetableInkResize() {
   weeklyTimetableInkResizeRaf = requestAnimationFrame(resizeAndRenderWeeklyTimetableInk);
 }
 
-function normalizedWeeklyTimetableInkPoint(ev, canvas) {
-  const bounds = canvas.getBoundingClientRect();
-  if (bounds.width < 1 || bounds.height < 1) return null;
+function normalizedWeeklyTimetableInkPoint(ev) {
+  const sized = sizeWeeklyTimetableInkCanvas();
+  if (!sized) return null;
   return {
-    x: Math.max(0, Math.min(1, (ev.clientX - bounds.left) / bounds.width)),
-    y: Math.max(0, Math.min(1, (ev.clientY - bounds.top) / bounds.height))
+    x: Math.max(0, Math.min(1, (ev.clientX - sized.bounds.left) / sized.bounds.width)),
+    y: Math.max(0, Math.min(1, (ev.clientY - sized.bounds.top) / sized.bounds.height)),
+    p: ev.pointerType === 'pen' && ev.pressure > 0 ? ev.pressure : .5,
+    t: Number.isFinite(ev.timeStamp) ? ev.timeStamp : performance.now()
   };
 }
 
 function drawWeeklyTimetableInkSegment(pointer, point) {
-  const canvas = pointer?.canvas;
-  const sized = sizeWeeklyTimetableInkCanvas(canvas);
-  if (!sized || !pointer.lastPoint || !point) return;
-  const { ctx: inkCtx, width, height } = sized;
-  inkCtx.save();
-  inkCtx.strokeStyle = WEEKLY_TIMETABLE_INK_COLOR;
-  inkCtx.fillStyle = WEEKLY_TIMETABLE_INK_COLOR;
-  inkCtx.lineWidth = pointer.stroke.width;
-  inkCtx.lineCap = 'round';
-  inkCtx.lineJoin = 'round';
-  inkCtx.beginPath();
-  inkCtx.moveTo(pointer.lastPoint.x * width, pointer.lastPoint.y * height);
-  inkCtx.lineTo(point.x * width, point.y * height);
-  inkCtx.stroke();
-  inkCtx.restore();
+  const sized = sizeWeeklyTimetableInkCanvas();
+  if (!sized || !pointer?.lastPoint || !point) return;
+  const { ctx: targetCtx, width, height } = sized;
+  targetCtx.save();
+  setupStrokeStyle(pointer.stroke, targetCtx);
+  targetCtx.beginPath();
+  targetCtx.moveTo(pointer.lastPoint.x * width, pointer.lastPoint.y * height);
+  targetCtx.lineTo(point.x * width, point.y * height);
+  targetCtx.stroke();
+  targetCtx.restore();
 }
 
 function beginWeeklyTimetableInk(ev) {
-  if (ev.pointerType !== 'pen' || weeklyTimetablePanel?.hidden || weeklyTimetableInkPointer) return;
-  const cell = ev.target instanceof Element ? ev.target.closest('.weekly-timetable-cell') : null;
-  if (!(cell instanceof HTMLElement) || !weeklyTimetableGrid?.contains(cell)) return;
-  const row = Number(cell.dataset.timetableRow);
-  const column = String(cell.dataset.timetableColumn || '');
-  if (!Number.isInteger(row) || sharedWeeklyTimetableInkColumnIndex(column) < 0) return;
-  const canvas = weeklyTimetableInkCanvas(row, column);
-  if (!(canvas instanceof HTMLCanvasElement)) return;
-  const point = normalizedWeeklyTimetableInkPoint(ev, canvas);
+  if (weeklyTimetablePanel?.hidden || weeklyTimetableInkPointer) return;
+  const isPen = ev.pointerType === 'pen';
+  const isMouse = ev.pointerType === 'mouse' && (ev.buttons & 1) === 1;
+  if (!isPen && !isMouse) return;
+  const point = normalizedWeeklyTimetableInkPoint(ev);
   if (!point) return;
-
-  const active = document.activeElement;
-  if (active instanceof HTMLInputElement && active.closest('#weeklyTimetableGrid')) active.blur();
-  // Anche l'Ink della tabella ha priorità assoluta su rete/Sync mentre la Pencil è a contatto.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
   ev.preventDefault();
   ev.stopPropagation();
-  try { weeklyTimetableGrid.setPointerCapture(ev.pointerId); } catch {}
-  const stroke = { id: makeId(), color: WEEKLY_TIMETABLE_INK_COLOR, width: WEEKLY_TIMETABLE_INK_WIDTH, points: [point] };
-  weeklyTimetableInkPointer = { pointerId: ev.pointerId, row, column, canvas, stroke, lastPoint: point };
-  // Il punto iniziale deve essere visibile anche per un semplice tap.
-  const sized = sizeWeeklyTimetableInkCanvas(canvas);
-  if (sized) {
-    sized.ctx.save();
-    sized.ctx.fillStyle = WEEKLY_TIMETABLE_INK_COLOR;
-    sized.ctx.beginPath();
-    sized.ctx.arc(point.x * sized.width, point.y * sized.height, Math.max(.8, WEEKLY_TIMETABLE_INK_WIDTH / 2), 0, Math.PI * 2);
-    sized.ctx.fill();
-    sized.ctx.restore();
-  }
+  try { weeklyTimetableInkCanvas?.setPointerCapture(ev.pointerId); } catch {}
+  const stroke = {
+    id: makeId(),
+    tool: 'pen',
+    color: WEEKLY_TIMETABLE_INK_COLOR,
+    opacity: 1,
+    width: WEEKLY_TIMETABLE_INK_WIDTH,
+    pointerType: ev.pointerType,
+    points: [point]
+  };
+  weeklyTimetableInkPointer = { pointerId: ev.pointerId, stroke, lastPoint: point };
+  drawSharedWeeklyTimetableStroke(stroke, false);
 }
 
 function moveWeeklyTimetableInk(ev) {
@@ -1316,11 +1227,13 @@ function moveWeeklyTimetableInk(ev) {
     } catch {}
   }
   for (const sample of samples) {
-    const point = normalizedWeeklyTimetableInkPoint(sample, pointer.canvas);
+    const point = normalizedWeeklyTimetableInkPoint(sample);
     if (!point) continue;
-    const dx = point.x - pointer.lastPoint.x;
-    const dy = point.y - pointer.lastPoint.y;
-    if ((dx * dx + dy * dy) < 0.000001) continue;
+    const sized = sizeWeeklyTimetableInkCanvas();
+    if (!sized) continue;
+    const dx = (point.x - pointer.lastPoint.x) * sized.width;
+    const dy = (point.y - pointer.lastPoint.y) * sized.height;
+    if ((dx * dx + dy * dy) < .01) continue;
     if (pointer.stroke.points.length < WEEKLY_TIMETABLE_INK_MAX_POINTS) pointer.stroke.points.push(point);
     drawWeeklyTimetableInkSegment(pointer, point);
     pointer.lastPoint = point;
@@ -1333,118 +1246,67 @@ function finishWeeklyTimetableInk(ev) {
   if (ev) {
     ev.preventDefault();
     ev.stopPropagation();
-    try { weeklyTimetableGrid?.releasePointerCapture(ev.pointerId); } catch {}
+    try { weeklyTimetableInkCanvas?.releasePointerCapture(ev.pointerId); } catch {}
   }
   weeklyTimetableInkPointer = null;
   lanTransport?.resumeAfterInk();
   cloudTransport?.resumeAfterInk();
-  const stroke = normalizeWeeklyTimetableInkStroke(pointer.stroke);
+  const stroke = normalizeSharedWeeklyTimetableStroke(pointer.stroke);
   if (!stroke) return;
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
-  const inkIndex = sharedWeeklyTimetableInkColumnIndex(pointer.column);
-  const cellInk = timetable.rows[pointer.row].inkCells[inkIndex];
-  if (!cellInk.some((item) => item.id === stroke.id)) cellInk.push(stroke);
-  timetable.modifiedAt = new Date().toISOString();
-  sharedWeeklyTimetableCache = timetable;
-  sharedWeeklyTimetablePendingInkStrokes.push({ row: pointer.row, column: pointer.column, stroke });
-  // Persistenza immediata a PEN UP: niente debounce Scribble e niente layer temporaneo iPadOS.
-  queueSharedWeeklyTimetableSave(0);
-  renderWeeklyTimetableInkCell(pointer.row, pointer.column);
-}
-
-function updateSharedWeeklyTimetableFromInput(input) {
-  if (!(input instanceof HTMLInputElement)) return;
-  const row = Number(input.dataset.timetableRow);
-  const column = String(input.dataset.timetableColumn || '');
-  if (!Number.isInteger(row) || row < 0 || row >= SHARED_WEEKLY_TIMETABLE_ROWS) return;
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
-  if (column === 'time') timetable.rows[row].time = input.value.slice(0, 80);
-  else {
-    const day = Number(column);
-    if (!Number.isInteger(day) || day < 0 || day >= SHARED_WEEKLY_TIMETABLE_DAYS) return;
-    timetable.rows[row].days[day] = input.value.slice(0, 500);
-  }
-  timetable.modifiedAt = new Date().toISOString();
-  sharedWeeklyTimetableCache = timetable;
-  sharedWeeklyTimetableChangedCells.add(`${row}:${column}`);
-  queueSharedWeeklyTimetableSave();
-}
-
-function updateVisibleSharedWeeklyTimetableCell(row, column, value) {
-  if (!weeklyTimetableGrid) return;
-  const selector = `input[data-timetable-row="${row}"][data-timetable-column="${String(column)}"]`;
-  const input = weeklyTimetableGrid.querySelector(selector);
-  if (!(input instanceof HTMLInputElement)) return;
-  const key = `${row}:${column}`;
-  if (document.activeElement === input || sharedWeeklyTimetableChangedCells.has(key)) return;
-  input.value = String(value ?? '');
-}
-
-function queueSharedWeeklyTimetableSave(delay = 220) {
-  clearTimeout(sharedWeeklyTimetableSaveTimer);
-  sharedWeeklyTimetableSaveTimer = window.setTimeout(() => {
-    sharedWeeklyTimetableSaveTimer = 0;
-    void persistSharedWeeklyTimetable();
-  }, Math.max(0, Number(delay) || 0));
+  const current = normalizeSharedWeeklyTimetableStrokes(sharedWeeklyTimetableCache);
+  if (!current.some((item) => item.id === stroke.id)) current.push(stroke);
+  sharedWeeklyTimetableCache = current;
+  syncFoundation?.recordStrokeAdded(sharedWeeklyTimetableDescriptor(), stroke);
+  // Stessa semantica del Planning: un normale stroke persistente, commit solo a PEN UP.
+  void persistSharedWeeklyTimetable();
 }
 
 async function persistSharedWeeklyTimetable() {
-  if (sharedWeeklyTimetableSaving || (!sharedWeeklyTimetableChangedCells.size && !sharedWeeklyTimetablePendingInkStrokes.length)) return;
+  if (sharedWeeklyTimetableSaving) {
+    sharedWeeklyTimetablePersistPending = true;
+    return;
+  }
   sharedWeeklyTimetableSaving = true;
-  const batchKeys = [...sharedWeeklyTimetableChangedCells];
-  for (const key of batchKeys) sharedWeeklyTimetableChangedCells.delete(key);
-  const inkBatch = sharedWeeklyTimetablePendingInkStrokes.splice(0);
-  let syncCommit = null;
   try {
-    await openDb();
-    const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
-    const descriptor = sharedWeeklyTimetableDescriptor();
-    for (const key of batchKeys) {
-      const [rowText, column] = key.split(':');
-      const row = Number(rowText);
-      const value = column === 'time' ? timetable.rows[row]?.time ?? '' : timetable.rows[row]?.days[Number(column)] ?? '';
-      syncFoundation?.queueEvent({
-        entityId: sharedWeeklyTimetableCellEntityId(row, column),
-        entityType: 'planner-shared-table-cell',
-        operation: 'planner.timetable.cell.set',
-        descriptor,
-        payload: { row, column, value, conflictPolicy: 'lww-hlc-cell' }
-      });
-    }
-    for (const item of inkBatch) {
-      syncFoundation?.queueEvent({
-        entityId: sharedWeeklyTimetableInkEntityId(item.row, item.column, item.stroke.id),
-        entityType: 'planner-shared-table-ink-stroke',
-        operation: 'planner.timetable.ink.stroke.add',
-        descriptor,
-        payload: { row: item.row, column: item.column, stroke: item.stroke, conflictPolicy: 'immutable-stroke-add' }
-      });
-    }
-    syncCommit = syncFoundation?.prepareAtomicCommit(SHARED_WEEKLY_TIMETABLE_KEY) ?? { events: [], eventIds: [], stateRow: null };
-    const record = {
-      date: SHARED_WEEKLY_TIMETABLE_KEY,
-      kind: 'planner-shared-weekly-timetable',
-      version: APP_VERSION,
-      timetable,
-      modifiedAt: new Date().toISOString()
-    };
-    const started = performance.now();
-    await putRecordWithSync(record, syncCommit);
-    const elapsed = performance.now() - started;
-    if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, elapsed);
-    session.storageWrites++;
-    scheduleCloudAuto('local-commit', 5000);
-    statusLabel.textContent = 'orario settimanale salvato';
+    do {
+      sharedWeeklyTimetablePersistPending = false;
+      await openDb();
+      const descriptor = sharedWeeklyTimetableDescriptor();
+      const pageStrokes = normalizeSharedWeeklyTimetableStrokes(sharedWeeklyTimetableCache);
+      const syncCommit = syncFoundation?.prepareAtomicCommit(SHARED_WEEKLY_TIMETABLE_KEY) ?? { events: [], eventIds: [], stateRow: null };
+      const record = {
+        date: SHARED_WEEKLY_TIMETABLE_KEY,
+        kind: descriptor.kind,
+        plannerMode: 'weekly',
+        version: APP_VERSION,
+        strokes: pageStrokes,
+        images: [],
+        modifiedAt: new Date().toISOString()
+      };
+      const started = performance.now();
+      try {
+        await putRecordWithSync(record, syncCommit);
+        const elapsed = performance.now() - started;
+        if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, elapsed);
+        session.storageWrites++;
+        scheduleCloudAuto('local-commit', 5000);
+        statusLabel.textContent = 'orario settimanale salvato';
+      } catch (err) {
+        if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
+        throw err;
+      }
+    } while (sharedWeeklyTimetablePersistPending);
   } catch (err) {
-    for (const key of batchKeys) sharedWeeklyTimetableChangedCells.add(key);
-    if (inkBatch.length) sharedWeeklyTimetablePendingInkStrokes = [...inkBatch, ...sharedWeeklyTimetablePendingInkStrokes];
-    if (syncCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
     session.storageErrors++;
+    sharedWeeklyTimetablePersistPending = true;
     console.warn('Salvataggio orario settimanale condiviso non riuscito', err);
     statusLabel.textContent = 'errore salvataggio orario';
   } finally {
     sharedWeeklyTimetableSaving = false;
-    if (sharedWeeklyTimetableChangedCells.size || sharedWeeklyTimetablePendingInkStrokes.length) queueSharedWeeklyTimetableSave(250);
+    if (sharedWeeklyTimetablePersistPending) {
+      sharedWeeklyTimetablePersistPending = false;
+      setTimeout(() => void persistSharedWeeklyTimetable(), 250);
+    }
   }
 }
 
@@ -1464,15 +1326,8 @@ async function openWeeklyTimetable() {
 function closeWeeklyTimetable() {
   if (!weeklyTimetablePanel) return;
   if (weeklyTimetableInkPointer) finishWeeklyTimetableInk();
-  const active = document.activeElement;
-  if (active instanceof HTMLInputElement && active.closest('#weeklyTimetableGrid')) {
-    updateSharedWeeklyTimetableFromInput(active);
-    active.blur();
-  }
   weeklyTimetablePanel.hidden = true;
-  clearTimeout(sharedWeeklyTimetableSaveTimer);
-  sharedWeeklyTimetableSaveTimer = 0;
-  if (sharedWeeklyTimetableChangedCells.size || sharedWeeklyTimetablePendingInkStrokes.length) void persistSharedWeeklyTimetable();
+  if (sharedWeeklyTimetablePersistPending) void persistSharedWeeklyTimetable();
 }
 
 function registerWeeklyPlannerDoubleTap(target, x, y) {
@@ -1980,75 +1835,15 @@ function maximalEntityEvents(events) {
 
 
 async function applyRemoteSharedWeeklyTimetableEvent(event) {
-  const row = Number(event.payload?.row);
-  const column = String(event.payload?.column ?? '');
-  if (!Number.isInteger(row) || row < 0 || row >= SHARED_WEEKLY_TIMETABLE_ROWS || (column !== 'time' && (!Number.isInteger(Number(column)) || Number(column) < 0 || Number(column) >= SHARED_WEEKLY_TIMETABLE_DAYS))) {
-    await putRemoteEventResult(event, 'ignored-invalid', null, 'cella orario settimanale non valida');
-    return { ignored: 1 };
-  }
-  const dirtyKey = `${row}:${column}`;
-  if (sharedWeeklyTimetableChangedCells.has(dirtyKey)) {
-    await putRemoteEventResult(event, 'ignored-local-edit', null, 'cella in modifica locale: prevale la modifica locale non ancora confermata');
-    return { ignored: 1 };
-  }
-
-  const history = await getSyncEventsByEntity(event.entityId);
-  const comparable = [...history, event].filter((rowEvent) => rowEvent.operation === 'planner.timetable.cell.set');
-  const winner = comparable.sort(compareHlcDeterministic).at(-1);
-  if (winner?.eventId !== event.eventId) {
-    await putRemoteEventResult(event, 'ignored-lww', null, `LWW-HLC cella: vince ${winner?.eventId || 'evento locale'}`);
-    return { ignored: 1 };
-  }
-
-  const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache || record?.timetable);
-  const value = String(event.payload?.value ?? '');
-  if (column === 'time') timetable.rows[row].time = value.slice(0, 80);
-  else timetable.rows[row].days[Number(column)] = value.slice(0, 500);
-  timetable.modifiedAt = event.wallTimeUtc || new Date().toISOString();
-  const sharedRecord = {
-    date: SHARED_WEEKLY_TIMETABLE_KEY,
-    kind: 'planner-shared-weekly-timetable',
-    version: APP_VERSION,
-    timetable,
-    modifiedAt: new Date().toISOString()
-  };
-  sharedWeeklyTimetableCache = timetable;
-  await putRemoteEventResult(event, 'applied', sharedRecord);
-  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) {
-    updateVisibleSharedWeeklyTimetableCell(row, column, value);
-  }
-  return { applied: 1 };
+  // Compatibilità 0.1.41–0.1.45: i vecchi eventi cella appartengono alla tecnologia dismessa.
+  await putRemoteEventResult(event, 'ignored-legacy', null, 'orario v1 dismesso: la 0.1.46 usa normali stroke del Planning');
+  return { ignored: 1 };
 }
 
 async function applyRemoteSharedWeeklyTimetableInkStrokeEvent(event) {
-  const row = Number(event.payload?.row);
-  const column = String(event.payload?.column ?? '');
-  const inkIndex = sharedWeeklyTimetableInkColumnIndex(column);
-  const stroke = normalizeWeeklyTimetableInkStroke(event.payload?.stroke);
-  if (!Number.isInteger(row) || row < 0 || row >= SHARED_WEEKLY_TIMETABLE_ROWS || inkIndex < 0 || !stroke) {
-    await putRemoteEventResult(event, 'ignored-invalid', null, 'stroke Ink orario settimanale non valido');
-    return { ignored: 1 };
-  }
-  const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
-  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache || record?.timetable);
-  const cellInk = timetable.rows[row].inkCells[inkIndex];
-  if (!cellInk.some((item) => item.id === stroke.id)) cellInk.push(stroke);
-  timetable.modifiedAt = event.wallTimeUtc || new Date().toISOString();
-  const sharedRecord = {
-    date: SHARED_WEEKLY_TIMETABLE_KEY,
-    kind: 'planner-shared-weekly-timetable',
-    version: APP_VERSION,
-    timetable,
-    modifiedAt: new Date().toISOString()
-  };
-  sharedWeeklyTimetableCache = timetable;
-  await putRemoteEventResult(event, 'applied', sharedRecord);
-  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) {
-    const activeSameCell = weeklyTimetableInkPointer && weeklyTimetableInkPointer.row === row && weeklyTimetableInkPointer.column === column;
-    if (!activeSameCell) renderWeeklyTimetableInkCell(row, column);
-  }
-  return { applied: 1 };
+  // Compatibilità 0.1.44–0.1.45: nessun canvas per cella viene più ricostruito.
+  await putRemoteEventResult(event, 'ignored-legacy', null, 'Ink per-cella v1 dismesso: usa superficie Ink unica v2');
+  return { ignored: 1 };
 }
 
 async function applyRemoteStrokeEvent(event) {
@@ -2083,6 +1878,10 @@ async function applyRemoteStrokeEvent(event) {
   page.version = APP_VERSION;
   page.modifiedAt = new Date().toISOString();
   await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'add/delete concorrenti: stroke preservato' : null);
+  if (pageKeyValue === SHARED_WEEKLY_TIMETABLE_KEY) {
+    sharedWeeklyTimetableCache = normalizeSharedWeeklyTimetableStrokes(pageStrokes);
+    if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden && !weeklyTimetableInkPointer) renderWeeklyTimetableInk();
+  }
   return conflict ? { applied: 1, conflicts: 1 } : { applied: 1 };
 }
 
@@ -4180,8 +3979,10 @@ function createPreview(descriptor) {
   configurePageRoot(clone, descriptor);
   const footer = clone.querySelector('.baseline-footer');
   if (footer) {
-    const copyright = footer.querySelector('.copyright-version, .version-button');
-    if (copyright) copyright.textContent = `© Marco Zucchini · v${APP_VERSION}`;
+    const author = footer.querySelector('.author-credits-button');
+    const version = footer.querySelector('.footer-version-button, .version-button');
+    if (author) author.textContent = '© Marco Zucchini';
+    if (version) version.textContent = `v${APP_VERSION}`;
     footer.querySelectorAll('button').forEach((button) => { button.disabled = true; button.setAttribute('aria-disabled', 'true'); });
   }
   const r = paper.getBoundingClientRect();
@@ -4829,29 +4630,10 @@ closeSaintDetailButton?.addEventListener('pointerup', (ev) => {
 closeSaintDetailButton?.addEventListener('click', closeSaintDetails);
 saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDetailPanel) closeSaintDetails(); });
 
-weeklyTimetableGrid?.addEventListener('pointerdown', beginWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableGrid?.addEventListener('pointermove', moveWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableGrid?.addEventListener('pointerup', finishWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableGrid?.addEventListener('pointercancel', finishWeeklyTimetableInk, { passive:false, capture:true });
-
-weeklyTimetableGrid?.addEventListener('input', (ev) => {
-  if (ev.target instanceof HTMLInputElement) updateSharedWeeklyTimetableFromInput(ev.target);
-});
-weeklyTimetableGrid?.addEventListener('compositionend', (ev) => {
-  if (!(ev.target instanceof HTMLInputElement)) return;
-  updateSharedWeeklyTimetableFromInput(ev.target);
-  queueSharedWeeklyTimetableSave(0);
-});
-weeklyTimetableGrid?.addEventListener('change', (ev) => {
-  if (!(ev.target instanceof HTMLInputElement)) return;
-  updateSharedWeeklyTimetableFromInput(ev.target);
-  queueSharedWeeklyTimetableSave(0);
-});
-weeklyTimetableGrid?.addEventListener('blur', (ev) => {
-  if (!(ev.target instanceof HTMLInputElement)) return;
-  updateSharedWeeklyTimetableFromInput(ev.target);
-  queueSharedWeeklyTimetableSave(0);
-}, true);
+weeklyTimetableInkCanvas?.addEventListener('pointerdown', beginWeeklyTimetableInk, { passive:false, capture:true });
+weeklyTimetableInkCanvas?.addEventListener('pointermove', moveWeeklyTimetableInk, { passive:false, capture:true });
+weeklyTimetableInkCanvas?.addEventListener('pointerup', finishWeeklyTimetableInk, { passive:false, capture:true });
+weeklyTimetableInkCanvas?.addEventListener('pointercancel', finishWeeklyTimetableInk, { passive:false, capture:true });
 closeWeeklyTimetableButton?.addEventListener('click', closeWeeklyTimetable);
 weeklyTimetablePanel?.addEventListener('click', (ev) => { if (ev.target === weeklyTimetablePanel) closeWeeklyTimetable(); });
 window.addEventListener('resize', () => { if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) scheduleWeeklyTimetableInkResize(); });
@@ -4861,6 +4643,97 @@ paper?.addEventListener('dblclick', (ev) => {
   ev.preventDefault();
   ev.stopPropagation();
   void openWeeklyTimetable();
+});
+
+// 0.1.45 — Crediti richiamabili dal nome autore e copertina privacy dopo 2 minuti di inattività.
+const IDLE_COVER_MS = 2 * 60 * 1000;
+let idleCoverTimer = 0;
+let lastUserActivityAt = Date.now();
+let lastAuthorPenActivationAt = -Infinity;
+
+function showInfoCredits() {
+  if (!infoCreditsOverlay) return;
+  infoCreditsOverlay.hidden = false;
+}
+
+function hideInfoCredits(ev) {
+  if (!infoCreditsOverlay || infoCreditsOverlay.hidden) return;
+  infoCreditsOverlay.hidden = true;
+  if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+  registerUserActivity();
+}
+
+function activateAuthorCreditsWithPen(ev) {
+  if (ev.pointerType !== 'pen') return;
+  lastAuthorPenActivationAt = performance.now();
+  showInfoCredits();
+  registerUserActivity();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function clearIdleCoverTimer() {
+  if (idleCoverTimer) window.clearTimeout(idleCoverTimer);
+  idleCoverTimer = 0;
+}
+
+function scheduleIdleCover(delay = IDLE_COVER_MS) {
+  clearIdleCoverTimer();
+  if (startup.phase !== 'done' || document.visibilityState !== 'visible' || !idleCoverOverlay?.hidden) return;
+  idleCoverTimer = window.setTimeout(showIdleCover, Math.max(250, delay));
+}
+
+function showIdleCover() {
+  clearIdleCoverTimer();
+  if (startup.phase !== 'done' || document.visibilityState !== 'visible') return;
+  if (drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || weeklyTimetableInk.active) {
+    lastUserActivityAt = Date.now();
+    scheduleIdleCover();
+    return;
+  }
+  if (dirty) void persistNow();
+  closeStylePanel();
+  if (infoCreditsOverlay && !infoCreditsOverlay.hidden) infoCreditsOverlay.hidden = true;
+  idleCoverOverlay.hidden = false;
+}
+
+function dismissIdleCover(ev) {
+  if (!idleCoverOverlay || idleCoverOverlay.hidden) return;
+  idleCoverOverlay.hidden = true;
+  lastUserActivityAt = Date.now();
+  scheduleIdleCover();
+  if (ev) { ev.preventDefault?.(); ev.stopPropagation?.(); }
+}
+
+function registerUserActivity() {
+  if (startup.phase !== 'done') return;
+  lastUserActivityAt = Date.now();
+  if (idleCoverOverlay && !idleCoverOverlay.hidden) return;
+  scheduleIdleCover();
+}
+
+authorCreditsButton?.addEventListener('pointerup', activateAuthorCreditsWithPen, { passive:false });
+authorCreditsButton?.addEventListener('click', (ev) => {
+  if (performance.now() - lastAuthorPenActivationAt < 700) { ev.preventDefault(); return; }
+  showInfoCredits();
+  registerUserActivity();
+});
+infoCreditsOverlay?.addEventListener('pointerup', (ev) => {
+  if (ev.pointerType === 'pen') hideInfoCredits(ev);
+}, { passive:false });
+infoCreditsOverlay?.addEventListener('click', hideInfoCredits);
+idleCoverOverlay?.addEventListener('pointerup', dismissIdleCover, { passive:false });
+idleCoverOverlay?.addEventListener('click', dismissIdleCover);
+
+window.addEventListener('pointerdown', () => registerUserActivity(), { capture:true, passive:true });
+window.addEventListener('keydown', () => registerUserActivity(), { capture:true, passive:true });
+document.addEventListener('input', () => registerUserActivity(), { capture:true, passive:true });
+document.addEventListener('visibilitychange', () => {
+  if (startup.phase !== 'done') return;
+  if (document.visibilityState !== 'visible') { clearIdleCoverTimer(); return; }
+  const elapsed = Date.now() - lastUserActivityAt;
+  if (elapsed >= IDLE_COVER_MS) showIdleCover();
+  else scheduleIdleCover(IDLE_COVER_MS - elapsed);
 });
 
 versionButton.addEventListener('click', showReport);
@@ -4992,6 +4865,7 @@ window.addEventListener('resize', () => {
 
 window.addEventListener('blur', () => {
   if (drawing) finalizeStroke('window-blur');
+  if (weeklyTimetableInkPointer) finishWeeklyTimetableInk();
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -4999,7 +4873,8 @@ document.addEventListener('visibilitychange', () => {
     if (drawing) finalizeStroke('visibility-hidden');
     if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
     if (ready && dirty) persistNow();
-    if (ready && sharedWeeklyTimetableChangedCells.size) void persistSharedWeeklyTimetable();
+    if (weeklyTimetableInkPointer) finishWeeklyTimetableInk();
+    if (ready && sharedWeeklyTimetablePersistPending) void persistSharedWeeklyTimetable();
   } else if (ready) {
     scheduleCloudAuto('foreground', 1200);
   }
@@ -5010,7 +4885,8 @@ window.addEventListener('online', () => { if (ready) scheduleCloudAuto('network-
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
   if (ready && dirty) persistNow();
-  if (ready && sharedWeeklyTimetableChangedCells.size) void persistSharedWeeklyTimetable();
+  if (weeklyTimetableInkPointer) finishWeeklyTimetableInk();
+  if (ready && sharedWeeklyTimetablePersistPending) void persistSharedWeeklyTimetable();
 });
 
 async function loadInitialPage() {
@@ -5200,6 +5076,8 @@ async function finishStartup() {
     await beginAgendaBoot();
   } finally {
     startup.phase = 'done';
+    lastUserActivityAt = Date.now();
+    scheduleIdleCover();
     startupOverlay.classList.add('startup-exit');
     document.body.classList.remove('startup-active');
     window.setTimeout(() => {

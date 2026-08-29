@@ -1645,3 +1645,52 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 /* La prima colonna resta volutamente vuota: nessun placeholder "orario"/"intervallo". */
 .weekly-timetable-cell.time input::placeholder { color:transparent !important; opacity:0 !important; }
+\n\n/* 0.1.45 — autore/crediti e copertina privacy dopo inattività. */\n.copyright-block {\n  position:absolute; left:12px; top:50%; transform:translateY(-50%);\n  display:flex; align-items:center; gap:4px; max-width:52%; z-index:3;\n  white-space:nowrap; overflow:hidden;\n}\n.author-credits-button,\n.footer-version-button {\n  appearance:none; -webkit-appearance:none; border:0; background:transparent; color:inherit;\n  padding:5px 0; margin:0; font:inherit; line-height:1; letter-spacing:.015em;\n  opacity:.82; touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.author-credits-button { font-size:9.5px; cursor:pointer; }\n.footer-version-button { position:static; transform:none; font-size:9px; opacity:.68; padding-left:1px; }\n.author-credits-button:active, .footer-version-button:active { transform:translateY(1px); }\n.paper[data-paper-color="black"] .author-credits-button,\n.paper[data-paper-color="black"] .footer-version-button { color:rgba(255,255,255,.84); }\n@media (max-width:760px) {\n  .copyright-block { left:9px; max-width:48%; gap:3px; }\n  .author-credits-button { font-size:8.5px; }\n  .footer-version-button { font-size:8px; }\n}\n\n.runtime-overlay {\n  position:fixed; inset:0; z-index:1800; display:grid; place-items:center;\n  touch-action:manipulation; -webkit-tap-highlight-color:transparent;\n}\n.runtime-overlay[hidden] { display:none !important; }\n.info-credits-overlay { background:#191511; padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); }\n.info-credits-screen { width:100%; height:100%; display:grid; place-items:center; }\n.info-credits-screen img {\n  display:block; max-width:min(92vw,820px); max-height:94vh; width:auto; height:auto; object-fit:contain;\n  filter:drop-shadow(0 16px 34px rgba(0,0,0,.38)); pointer-events:none; user-select:none; -webkit-user-select:none;\n}\n\n.idle-cover-overlay {\n  z-index:1900;\n  background:radial-gradient(circle at 50% 42%,#473625 0,#201b16 58%,#100e0c 100%);\n  padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));\n}\n.idle-cover-card {\n  position:relative; height:min(96vh,900px); max-width:94vw; aspect-ratio:377/559; border-radius:5px;\n  background:\n    radial-gradient(circle at 50% 57%,rgba(239,183,71,.20) 0 3%,transparent 3.4%),\n    radial-gradient(circle at 50% 57%,rgba(8,65,45,.95) 0 16%,transparent 16.4%),\n    radial-gradient(circle at 50% 57%,rgba(184,112,43,.92) 0 20%,transparent 20.5%),\n    linear-gradient(135deg,#8d2f2b 0,#b14b38 48%,#76241f 100%);\n  border:10px solid #133c2f; box-shadow:inset 0 0 0 3px #be7b2c,inset 0 0 0 7px #061e18,0 20px 38px rgba(0,0,0,.44);\n  overflow:hidden; user-select:none; -webkit-user-select:none;\n}\n.idle-cover-card::before, .idle-cover-card::after {\n  content:""; position:absolute; inset:12px; pointer-events:none;\n}\n.idle-cover-card::before {\n  border:3px solid #c88a3b; box-shadow:inset 0 0 0 2px #0e382b;\n  background:\n    radial-gradient(circle at 8px 8px,#d98c38 0 2px,transparent 2.5px) 0 0/28px 28px,\n    radial-gradient(circle at 20px 20px,#2d6f4e 0 3px,transparent 3.5px) 0 0/28px 28px;\n  opacity:.75;\n}\n.idle-cover-card::after {\n  inset:31px; border:2px solid rgba(225,166,74,.82); box-shadow:inset 0 0 28px rgba(36,10,8,.45);\n}\n.idle-cover-inner { position:absolute; inset:44px; display:grid; place-items:center; border:1px solid rgba(239,188,90,.35); }\n.idle-cover-medallion {\n  width:46%; aspect-ratio:1; transform:rotate(45deg); border-radius:18%;\n  background:radial-gradient(circle,#c44735 0 10%,#d99a42 10.5% 16%,#0d4b38 16.5% 48%,#d88d39 48.5% 53%,#082d23 53.5%);\n  box-shadow:0 0 0 4px rgba(219,145,55,.75),0 0 0 8px rgba(7,47,35,.88);\n}\n.idle-cover-medallion span {\n  position:absolute; inset:23%; border-radius:50%; background:radial-gradient(circle,#e2a24a 0 18%,#ae372d 19% 42%,#0a4a36 43%);\n}\n@media (orientation:portrait) { .idle-cover-card { width:min(96vw,600px); height:auto; } }\n
+
+/* 0.1.46 — Orario settimanale ricostruito con la stessa architettura Ink del Planning:
+   una sola griglia statica + una sola superficie Ink persistente. */
+.weekly-timetable-body { position:relative; }
+.weekly-timetable-surface {
+  position:relative;
+  width:100%;
+  height:100%;
+  min-width:0;
+  min-height:0;
+}
+.weekly-timetable-grid {
+  position:absolute;
+  inset:0;
+  z-index:1;
+}
+.weekly-timetable-cell {
+  position:relative;
+  overflow:hidden;
+  background:#050505;
+  pointer-events:none;
+}
+.weekly-timetable-cell.time { background:#080808; }
+.weekly-timetable-cell.break-row { background:#151515; }
+.weekly-timetable-ink-canvas {
+  position:absolute;
+  z-index:4;
+  left:0;
+  right:0;
+  top:40px;
+  bottom:0;
+  width:100%;
+  height:calc(100% - 40px);
+  display:block;
+  background:transparent;
+  pointer-events:auto;
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+}
+/* Nessun input/Scribble e nessun canvas per singola cella. */
+.weekly-timetable-cell input { display:none !important; }
+@media (max-width:760px) {
+  .weekly-timetable-ink-canvas {
+    top:34px;
+    height:calc(100% - 34px);
+  }
+}
