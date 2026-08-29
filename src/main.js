@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.39';
+const APP_VERSION = '0.1.41';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -19,6 +19,9 @@ const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
+const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v1';
+const SHARED_WEEKLY_TIMETABLE_ROWS = 9;
+const SHARED_WEEKLY_TIMETABLE_DAYS = 5;
 const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
 const WIKIPEDIA_API_URL = 'https://it.wikipedia.org/w/api.php';
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
@@ -130,6 +133,9 @@ const saintDetailName = document.getElementById('saintDetailName');
 const saintDetailText = document.getElementById('saintDetailText');
 const saintDetailSource = document.getElementById('saintDetailSource');
 const closeSaintDetailButton = document.getElementById('closeSaintDetailButton');
+const weeklyTimetablePanel = document.getElementById('weeklyTimetablePanel');
+const weeklyTimetableGrid = document.getElementById('weeklyTimetableGrid');
+const closeWeeklyTimetableButton = document.getElementById('closeWeeklyTimetableButton');
 
 
 let db = null;
@@ -167,6 +173,11 @@ let saintBioFetchController = null;
 let saintRefreshTimer = 0;
 let saintRequestSerial = 0;
 let saintCache = loadSaintCache();
+let sharedWeeklyTimetableCache = null;
+let sharedWeeklyTimetableSaveTimer = 0;
+let sharedWeeklyTimetableSaving = false;
+const sharedWeeklyTimetableChangedCells = new Set();
+let weeklyPlannerLastTap = null;
 let ready = false;
 let rafPrev = performance.now();
 let currentStrokeDiag = null;
@@ -877,9 +888,13 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
     else if (isPlannerKind(pageKind)) {
       const mode = plannerModeFromKind(pageKind);
       const plannerDate = new Date(`${dateString}T12:00:00`);
-      if (mode === 'monthly') kindLabel.textContent = `Planner mensile - ${new Intl.DateTimeFormat('it-IT', { month:'long', year:'numeric' }).format(plannerDate)}`;
-      else if (mode === 'yearly') kindLabel.textContent = `Planner annuale - ${plannerDate.getFullYear()}`;
-      else kindLabel.textContent = 'Planner';
+      if (mode === 'daily') {
+        const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(plannerDate);
+        const dayMonth = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long' }).format(plannerDate);
+        kindLabel.textContent = `Planner di ${weekday} ${dayMonth}`;
+      } else if (mode === 'weekly') kindLabel.textContent = plannerModeTitle('weekly', dateString);
+      else if (mode === 'monthly') kindLabel.textContent = plannerModeTitle('monthly', dateString);
+      else kindLabel.textContent = plannerModeTitle('yearly', dateString);
     } else kindLabel.textContent = '';
   }
   if (noteCounter) noteCounter.textContent = '';
@@ -943,8 +958,7 @@ function buildWeeklyPlannerHtml(dateString) {
     const d = new Date(monday); d.setDate(d.getDate() + i);
     return `<section class="planner-week-day"><h3>${fmt.format(d).replace('.', '').toUpperCase()}</h3><div class="planner-week-lines"></div></section>`;
   }).join('');
-  return `<div class="planner-heading">${plannerModeTitle('weekly', dateString)}</div>
-    <div class="planner-week-grid">${cols}</div>
+  return `<div class="planner-week-grid">${cols}</div>
     <div class="planner-week-bottom"><section class="planner-box"><h3>To-do della settimana</h3></section><section class="planner-box"><h3>Obiettivi / Note</h3></section></div>`;
 }
 
@@ -986,6 +1000,202 @@ function plannerHtml(mode, dateString) {
   if (mode === 'monthly') return buildMonthlyPlannerHtml(dateString);
   if (mode === 'yearly') return buildYearlyPlannerHtml(dateString);
   return buildDailyPlannerHtml(dateString);
+}
+
+
+function defaultSharedWeeklyTimetable() {
+  return {
+    schemaVersion: 1,
+    rows: Array.from({ length: SHARED_WEEKLY_TIMETABLE_ROWS }, () => ({
+      time: '',
+      days: Array.from({ length: SHARED_WEEKLY_TIMETABLE_DAYS }, () => '')
+    })),
+    modifiedAt: ''
+  };
+}
+
+function normalizeSharedWeeklyTimetable(value) {
+  const base = defaultSharedWeeklyTimetable();
+  const sourceRows = Array.isArray(value?.rows) ? value.rows : [];
+  base.rows = Array.from({ length: SHARED_WEEKLY_TIMETABLE_ROWS }, (_, rowIndex) => {
+    const source = sourceRows[rowIndex] && typeof sourceRows[rowIndex] === 'object' ? sourceRows[rowIndex] : {};
+    const sourceDays = Array.isArray(source.days) ? source.days : [];
+    return {
+      time: String(source.time ?? '').slice(0, 80),
+      days: Array.from({ length: SHARED_WEEKLY_TIMETABLE_DAYS }, (_, dayIndex) => String(sourceDays[dayIndex] ?? '').slice(0, 500))
+    };
+  });
+  base.modifiedAt = String(value?.modifiedAt || '');
+  return base;
+}
+
+function sharedWeeklyTimetableDescriptor() {
+  return {
+    key: SHARED_WEEKLY_TIMETABLE_KEY,
+    date: '',
+    kind: 'planner-shared-weekly-timetable',
+    plannerMode: 'weekly',
+    noteIndex: 0,
+    noteTotal: 0
+  };
+}
+
+function sharedWeeklyTimetableCellEntityId(row, column) {
+  return `planner:weekly-timetable:cell:${row}:${column}`;
+}
+
+async function getSharedWeeklyTimetable() {
+  if (sharedWeeklyTimetableCache) return normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+  await openDb();
+  const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
+  session.storageReads++;
+  sharedWeeklyTimetableCache = normalizeSharedWeeklyTimetable(record?.timetable);
+  return normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+}
+
+function renderSharedWeeklyTimetable() {
+  if (!weeklyTimetableGrid) return;
+  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+  sharedWeeklyTimetableCache = timetable;
+  weeklyTimetableGrid.replaceChildren();
+  const headers = ['ORARI', 'LUNEDÌ', 'MARTEDÌ', 'MERCOLEDÌ', 'GIOVEDÌ', 'VENERDÌ'];
+  for (const label of headers) {
+    const head = document.createElement('div');
+    head.className = 'weekly-timetable-head';
+    head.setAttribute('role', 'columnheader');
+    head.textContent = label;
+    weeklyTimetableGrid.appendChild(head);
+  }
+  for (let row = 0; row < SHARED_WEEKLY_TIMETABLE_ROWS; row++) {
+    const compact = row === 3;
+    for (let col = -1; col < SHARED_WEEKLY_TIMETABLE_DAYS; col++) {
+      const cell = document.createElement('div');
+      cell.className = `weekly-timetable-cell${col === -1 ? ' time' : ''}${compact ? ' break-row' : ''}`;
+      cell.setAttribute('role', 'cell');
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.dataset.timetableRow = String(row);
+      input.dataset.timetableColumn = col === -1 ? 'time' : String(col);
+      input.value = col === -1 ? timetable.rows[row].time : timetable.rows[row].days[col];
+      input.placeholder = col === -1 ? (compact ? 'intervallo' : 'orario') : '';
+      input.setAttribute('aria-label', col === -1 ? `Orario riga ${row + 1}` : `${headers[col + 1]} riga ${row + 1}`);
+      cell.appendChild(input);
+      weeklyTimetableGrid.appendChild(cell);
+    }
+  }
+}
+
+function updateSharedWeeklyTimetableFromInput(input) {
+  if (!(input instanceof HTMLInputElement)) return;
+  const row = Number(input.dataset.timetableRow);
+  const column = String(input.dataset.timetableColumn || '');
+  if (!Number.isInteger(row) || row < 0 || row >= SHARED_WEEKLY_TIMETABLE_ROWS) return;
+  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+  if (column === 'time') timetable.rows[row].time = input.value.slice(0, 80);
+  else {
+    const day = Number(column);
+    if (!Number.isInteger(day) || day < 0 || day >= SHARED_WEEKLY_TIMETABLE_DAYS) return;
+    timetable.rows[row].days[day] = input.value.slice(0, 500);
+  }
+  timetable.modifiedAt = new Date().toISOString();
+  sharedWeeklyTimetableCache = timetable;
+  sharedWeeklyTimetableChangedCells.add(`${row}:${column}`);
+  queueSharedWeeklyTimetableSave();
+}
+
+function queueSharedWeeklyTimetableSave(delay = 550) {
+  clearTimeout(sharedWeeklyTimetableSaveTimer);
+  sharedWeeklyTimetableSaveTimer = window.setTimeout(() => {
+    sharedWeeklyTimetableSaveTimer = 0;
+    void persistSharedWeeklyTimetable();
+  }, Math.max(0, Number(delay) || 0));
+}
+
+async function persistSharedWeeklyTimetable() {
+  if (sharedWeeklyTimetableSaving || !sharedWeeklyTimetableChangedCells.size) return;
+  sharedWeeklyTimetableSaving = true;
+  const batchKeys = [...sharedWeeklyTimetableChangedCells];
+  for (const key of batchKeys) sharedWeeklyTimetableChangedCells.delete(key);
+  let syncCommit = null;
+  try {
+    await openDb();
+    const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache);
+    const descriptor = sharedWeeklyTimetableDescriptor();
+    for (const key of batchKeys) {
+      const [rowText, column] = key.split(':');
+      const row = Number(rowText);
+      const value = column === 'time' ? timetable.rows[row]?.time ?? '' : timetable.rows[row]?.days[Number(column)] ?? '';
+      syncFoundation?.queueEvent({
+        entityId: sharedWeeklyTimetableCellEntityId(row, column),
+        entityType: 'planner-shared-table-cell',
+        operation: 'planner.timetable.cell.set',
+        descriptor,
+        payload: { row, column, value, conflictPolicy: 'lww-hlc-cell' }
+      });
+    }
+    syncCommit = syncFoundation?.prepareAtomicCommit(SHARED_WEEKLY_TIMETABLE_KEY) ?? { events: [], eventIds: [], stateRow: null };
+    const record = {
+      date: SHARED_WEEKLY_TIMETABLE_KEY,
+      kind: 'planner-shared-weekly-timetable',
+      version: APP_VERSION,
+      timetable,
+      modifiedAt: new Date().toISOString()
+    };
+    const started = performance.now();
+    await putRecordWithSync(record, syncCommit);
+    const elapsed = performance.now() - started;
+    if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, elapsed);
+    session.storageWrites++;
+    scheduleCloudAuto('local-commit', 5000);
+    statusLabel.textContent = 'orario settimanale salvato';
+  } catch (err) {
+    for (const key of batchKeys) sharedWeeklyTimetableChangedCells.add(key);
+    if (syncCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
+    session.storageErrors++;
+    console.warn('Salvataggio orario settimanale condiviso non riuscito', err);
+    statusLabel.textContent = 'errore salvataggio orario';
+  } finally {
+    sharedWeeklyTimetableSaving = false;
+    if (sharedWeeklyTimetableChangedCells.size) queueSharedWeeklyTimetableSave(250);
+  }
+}
+
+async function openWeeklyTimetable() {
+  if (!weeklyTimetablePanel || drawing || pageTurning) return;
+  try {
+    sharedWeeklyTimetableCache = await getSharedWeeklyTimetable();
+    renderSharedWeeklyTimetable();
+    weeklyTimetablePanel.hidden = false;
+    requestAnimationFrame(() => weeklyTimetableGrid?.querySelector('input')?.focus({ preventScroll: true }));
+  } catch (err) {
+    console.warn('Orario settimanale non disponibile', err);
+    statusLabel.textContent = 'orario settimanale non disponibile';
+  }
+}
+
+function closeWeeklyTimetable() {
+  if (!weeklyTimetablePanel) return;
+  weeklyTimetablePanel.hidden = true;
+  clearTimeout(sharedWeeklyTimetableSaveTimer);
+  sharedWeeklyTimetableSaveTimer = 0;
+  if (sharedWeeklyTimetableChangedCells.size) void persistSharedWeeklyTimetable();
+}
+
+function registerWeeklyPlannerDoubleTap(target, x, y) {
+  if (currentPageKind !== 'planner-weekly' || !weeklyTimetablePanel?.hidden) return false;
+  if (!(target instanceof Element) || !paper.contains(target) || isUiControlTarget(target)) return false;
+  const now = performance.now();
+  const previous = weeklyPlannerLastTap;
+  weeklyPlannerLastTap = { at: now, x, y };
+  if (!previous) return false;
+  const closeInTime = now - previous.at <= 430;
+  const closeInSpace = Math.hypot(x - previous.x, y - previous.y) <= 42;
+  if (!closeInTime || !closeInSpace) return false;
+  weeklyPlannerLastTap = null;
+  void openWeeklyTimetable();
+  return true;
 }
 
 function calendarMonthDate(dateString) {
@@ -1476,6 +1686,41 @@ function maximalEntityEvents(events) {
   }));
 }
 
+
+async function applyRemoteSharedWeeklyTimetableEvent(event) {
+  const row = Number(event.payload?.row);
+  const column = String(event.payload?.column ?? '');
+  if (!Number.isInteger(row) || row < 0 || row >= SHARED_WEEKLY_TIMETABLE_ROWS || (column !== 'time' && (!Number.isInteger(Number(column)) || Number(column) < 0 || Number(column) >= SHARED_WEEKLY_TIMETABLE_DAYS))) {
+    await putRemoteEventResult(event, 'ignored-invalid', null, 'cella orario settimanale non valida');
+    return { ignored: 1 };
+  }
+  const history = await getSyncEventsByEntity(event.entityId);
+  const comparable = [...history, event].filter((rowEvent) => rowEvent.operation === 'planner.timetable.cell.set');
+  const winner = comparable.sort(compareHlcDeterministic).at(-1);
+  if (winner?.eventId !== event.eventId) {
+    await putRemoteEventResult(event, 'ignored-lww', null, `LWW-HLC cella: vince ${winner?.eventId || 'evento locale'}`);
+    return { ignored: 1 };
+  }
+
+  const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
+  const timetable = normalizeSharedWeeklyTimetable(record?.timetable || sharedWeeklyTimetableCache);
+  const value = String(event.payload?.value ?? '');
+  if (column === 'time') timetable.rows[row].time = value.slice(0, 80);
+  else timetable.rows[row].days[Number(column)] = value.slice(0, 500);
+  timetable.modifiedAt = event.wallTimeUtc || new Date().toISOString();
+  const sharedRecord = {
+    date: SHARED_WEEKLY_TIMETABLE_KEY,
+    kind: 'planner-shared-weekly-timetable',
+    version: APP_VERSION,
+    timetable,
+    modifiedAt: new Date().toISOString()
+  };
+  sharedWeeklyTimetableCache = timetable;
+  await putRemoteEventResult(event, 'applied', sharedRecord);
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) renderSharedWeeklyTimetable();
+  return { applied: 1 };
+}
+
 async function applyRemoteStrokeEvent(event) {
   const descriptor = event.descriptor || {};
   const pageKeyValue = String(descriptor.key || '');
@@ -1730,6 +1975,7 @@ async function applyRemoteSyncEvents(events) {
     syncFoundation?.observeRemoteEvent(event);
     let result;
     if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') result = await applyRemoteStrokeEvent(event);
+    else if (event.operation === 'planner.timetable.cell.set') result = await applyRemoteSharedWeeklyTimetableEvent(event);
     else if (event.operation === 'page.clear') result = await applyRemotePageClear(event);
     else if (event.operation === 'page.property.set') result = await applyRemotePageProperty(event);
     else if (event.entityType === 'image-object') result = await applyRemoteImageEvent(event);
@@ -3099,6 +3345,7 @@ function newStrokeDiag(ev, reason) {
 function startStroke(ev, reason = 'pointerdown') {
   if (!ready || pageTurning || activeTool === 'image') return false;
   if (saintDetailPanel && !saintDetailPanel.hidden) return false;
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -3112,7 +3359,7 @@ function startStroke(ev, reason = 'pointerdown') {
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
-  // 0.1.39: anche il recupero del santo è subordinato alla Pencil.
+  // 0.1.41: anche il recupero del santo è subordinato alla Pencil.
   // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
   saintFetchController?.abort();
   saintBioFetchController?.abort();
@@ -3216,7 +3463,7 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .image-layer, .image-inspector'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .weekly-timetable-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -4040,7 +4287,12 @@ function handlePaperTouchEnd(ev, cancelled = false) {
   if (!ended && !cancelled) return;
   nativeTouchGestureId = null;
   if (!pageSwipe?.nativeTouch) return;
+  const wasSwipeLocked = Boolean(pageSwipe.locked);
+  const tapTarget = ev.target;
+  const tapX = ended?.clientX ?? 0;
+  const tapY = ended?.clientY ?? 0;
   endPageSwipe({ pointerId: NATIVE_TOUCH_POINTER_ID }, cancelled);
+  if (!cancelled && !wasSwipeLocked) registerWeeklyPlannerDoubleTap(tapTarget, tapX, tapY);
   ev.preventDefault();
 }
 
@@ -4192,7 +4444,7 @@ window.addEventListener('pointerup', handlePointerUp, { passive: false, capture:
 window.addEventListener('pointercancel', handlePointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
-  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body')) return;
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .weekly-timetable-body')) return;
   ev.preventDefault();
 }, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
@@ -4213,6 +4465,22 @@ closeSaintDetailButton?.addEventListener('pointerup', (ev) => {
 }, { passive:false });
 closeSaintDetailButton?.addEventListener('click', closeSaintDetails);
 saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDetailPanel) closeSaintDetails(); });
+
+weeklyTimetableGrid?.addEventListener('input', (ev) => {
+  if (ev.target instanceof HTMLInputElement) updateSharedWeeklyTimetableFromInput(ev.target);
+});
+weeklyTimetableGrid?.addEventListener('change', (ev) => {
+  if (ev.target instanceof HTMLInputElement) updateSharedWeeklyTimetableFromInput(ev.target);
+});
+closeWeeklyTimetableButton?.addEventListener('click', closeWeeklyTimetable);
+weeklyTimetablePanel?.addEventListener('click', (ev) => { if (ev.target === weeklyTimetablePanel) closeWeeklyTimetable(); });
+paper?.addEventListener('dblclick', (ev) => {
+  if (currentPageKind !== 'planner-weekly') return;
+  if (!(ev.target instanceof Element) || isUiControlTarget(ev.target)) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  void openWeeklyTimetable();
+});
 
 versionButton.addEventListener('click', showReport);
 markLagButton.addEventListener('click', markLag);
@@ -4350,6 +4618,7 @@ document.addEventListener('visibilitychange', () => {
     if (drawing) finalizeStroke('visibility-hidden');
     if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
     if (ready && dirty) persistNow();
+    if (ready && sharedWeeklyTimetableChangedCells.size) void persistSharedWeeklyTimetable();
   } else if (ready) {
     scheduleCloudAuto('foreground', 1200);
   }
@@ -4360,6 +4629,7 @@ window.addEventListener('online', () => { if (ready) scheduleCloudAuto('network-
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
   if (ready && dirty) persistNow();
+  if (ready && sharedWeeklyTimetableChangedCells.size) void persistSharedWeeklyTimetable();
 });
 
 async function loadInitialPage() {

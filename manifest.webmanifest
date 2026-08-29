@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.39 - rifiniture Planner, santo interattivo, Impostazioni allineate e Ink invariato",
+  "description": "Agenda iPad 0.1.41 - titoli Planner dinamici e geometrie Planner ottimizzate, Ink e Sync invariati",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
