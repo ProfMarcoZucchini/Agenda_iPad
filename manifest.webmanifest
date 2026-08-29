@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.54 - meteo GPS, santo compatto, evento storico del giorno, Ink nativo e Sync Cloud Aruba",
+  "description": "Agenda iPad 0.1.55 - meteo GPS, santo compatto, evento storico del giorno, Ink nativo e Sync Cloud Aruba",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

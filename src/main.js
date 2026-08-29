@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.54';
+const APP_VERSION = '0.1.55';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -1370,8 +1370,10 @@ function buildSharedWeeklyTimetablePlannerHtml(timetableIndex = currentTimetable
   }).join('');
   return `<div class="planner-timetable-page">
     <div class="planner-timetable-title">Orario settimanale <span>${timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}</span></div>
-    <div class="planner-timetable-person"><strong>Nome e cognome</strong><div aria-hidden="true"></div></div>
-    <div class="planner-timetable-grid">${heads}${rows}</div>
+    <div class="planner-timetable-grid">
+      <div class="planner-timetable-owner-row"><strong>Nome e cognome</strong><div aria-hidden="true"></div></div>
+      ${heads}${rows}
+    </div>
   </div>`;
 }
 
