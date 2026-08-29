@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.53';
+const APP_VERSION = '0.1.54';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -574,8 +574,11 @@ function updateStyleUi() {
   const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== activeTool;
-for (const swatch of colorSwatches) {
-    const matches = swatch.dataset.styleTool === activeTool && swatch.dataset.styleColor?.toLowerCase() === toolStyles[activeTool]?.color?.toLowerCase();
+  const effectiveColor = currentPageKind === 'planner-timetable' && activeTool === 'pen'
+    ? WEEKLY_TIMETABLE_INK_COLOR
+    : toolStyles[activeTool]?.color;
+  for (const swatch of colorSwatches) {
+    const matches = swatch.dataset.styleTool === activeTool && swatch.dataset.styleColor?.toLowerCase() === effectiveColor?.toLowerCase();
     swatch.classList.toggle('selected', matches);
     swatch.setAttribute('aria-pressed', matches ? 'true' : 'false');
   }
@@ -585,7 +588,7 @@ for (const swatch of colorSwatches) {
     choice.setAttribute('aria-pressed', matches ? 'true' : 'false');
   }
   if (styleButton) {
-    const color = activeTool === 'eraser' ? '#e7dfd1' : toolStyles[activeTool]?.color ?? PEN_COLOR;
+    const color = activeTool === 'eraser' ? '#e7dfd1' : effectiveColor ?? PEN_COLOR;
     styleButton.style.setProperty('--active-style-color', color);
   }
   updatePageStyleUi();
@@ -1382,12 +1385,14 @@ function plannerHtml(mode, dateString, timetableIndex = currentTimetableIndex) {
 
 
 async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveToolStyles = false) {
+  const enteringTimetable = currentPageKind !== 'planner-timetable' && target.kind === 'planner-timetable';
   await openDb();
   const record = await getRecord(target.key);
   session.storageReads++;
   currentPageKind = target.kind;
   currentPlannerMode = target.plannerMode ?? plannerModeFromKind(target.kind) ?? currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
+  if (enteringTimetable) activeTool = 'pen';
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(record?.strokes) ? record.strokes : [];
@@ -1405,6 +1410,8 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   resizeCanvas();
   renderAll();
   renderImages();
+  updateToolUi();
+  updateStyleUi();
 }
 
 async function openWeeklyTimetable() {
@@ -2748,7 +2755,7 @@ function toolStrokeStyle(tool = activeTool) {
   const style = toolStyles[tool] ?? toolStyles.pen;
   const resolved = { tool: tool === 'eraser' ? 'eraser' : tool === 'highlighter' ? 'highlighter' : 'pen', ...style };
   // Orario settimanale: stesso motore Ink dell'Agenda, ma penna sempre bianca sul fondo nero.
-  if (currentPageKind === 'planner-timetable' && resolved.tool === 'pen') resolved.color = '#ffffff';
+  if (currentPageKind === 'planner-timetable' && resolved.tool === 'pen') resolved.color = WEEKLY_TIMETABLE_INK_COLOR;
   return resolved;
 }
 
@@ -4513,6 +4520,7 @@ async function commitPageTurn() {
   const oldImages = images;
   const oldPageStyle = { ...pageStyle };
   const target = swipe.target;
+  const enteringTimetable = oldDescriptor.kind !== 'planner-timetable' && target.kind === 'planner-timetable';
   const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
   const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages) : Promise.resolve(true);
   const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
@@ -4554,6 +4562,7 @@ async function commitPageTurn() {
   currentPageKind = target.kind;
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
+  if (enteringTimetable) activeTool = 'pen';
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
@@ -4571,6 +4580,8 @@ async function commitPageTurn() {
   await migrateLegacyErasersOnCurrentPage();
   if (target.createNote) session.notesCreated++;
   updateHeader();
+  updateToolUi();
+  updateStyleUi();
 
   paper.style.visibility = 'hidden';
   resetTurnStyles();

@@ -1708,19 +1708,22 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .planner-daily-grid { left:19px; top:10px; }
 }
 
-/* 0.1.53 — Fino a 10 Orari settimanali sul canvas Ink principale. */
+/* 0.1.54 — Orario esteso verso l'alto; più spazio per titolare e tabella. */
 .paper.planner-timetable { background:#050505 !important; }
+.paper.planner-timetable .page-header {
+  height:54px; padding:0; border-bottom:0; background:#050505;
+}
 .paper.planner-timetable .planner-mode-bar { display:none !important; }
 .paper.planner-timetable .date-block { visibility:hidden; }
 .paper.planner-timetable .page-kind-label {
   display:none !important;
 }
 .paper.planner-timetable .planner-layer {
-  padding:5px 10px 8px; color:#fff; --planner-border:rgba(255,255,255,.42); --planner-rule:rgba(255,255,255,.30);
+  top:54px; padding:4px 10px 8px; color:#fff; --planner-border:rgba(255,255,255,.42); --planner-rule:rgba(255,255,255,.30);
 }
 .planner-timetable-page {
   width:100%; height:100%; min-height:0; display:grid;
-  grid-template-rows:28px 32px minmax(0,1fr); gap:4px;
+  grid-template-rows:31px 52px minmax(0,1fr); gap:5px;
 }
 .planner-timetable-title {
   min-width:0; display:flex; align-items:center; justify-content:flex-start; gap:9px;
@@ -1733,9 +1736,9 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .planner-timetable-person {
   min-width:0; min-height:0; display:grid; grid-template-columns:max-content minmax(0,1fr); align-items:center; gap:10px;
   padding:0 9px; border:1px solid rgba(255,255,255,.54); border-radius:6px; background:#080808;
-  color:#fff; font-size:10px; letter-spacing:.04em; text-transform:uppercase;
+  color:#fff; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
 }
-.planner-timetable-person div { height:72%; border-left:1px solid rgba(255,255,255,.38); }
+.planner-timetable-person div { height:82%; border-left:1px solid rgba(255,255,255,.38); }
 .planner-timetable-grid {
   width:100%; height:100%; display:grid;
   grid-template-columns:minmax(64px,.52fr) repeat(5,minmax(0,1fr));
@@ -1755,11 +1758,12 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 /* La vecchia finestra è definitivamente dismessa: l'orario non possiede più un canvas Ink proprio. */
 #weeklyTimetablePanel { display:none !important; }
 @media (max-width:760px) {
-  .paper.planner-timetable .planner-layer { padding:3px 4px 5px; }
-  .planner-timetable-page { grid-template-rows:23px 27px minmax(0,1fr); gap:3px; }
+  .paper.planner-timetable .page-header { height:48px; }
+  .paper.planner-timetable .planner-layer { top:48px; padding:3px 4px 5px; }
+  .planner-timetable-page { grid-template-rows:25px 43px minmax(0,1fr); gap:3px; }
   .planner-timetable-title { font-size:15px; gap:6px; }
   .planner-timetable-title span { font-size:8.5px; }
-  .planner-timetable-person { padding:0 5px; gap:6px; font-size:8px; }
+  .planner-timetable-person { padding:0 6px; gap:7px; font-size:8.5px; }
   .planner-timetable-grid { grid-template-columns:minmax(46px,.45fr) repeat(5,minmax(0,1fr)); grid-template-rows:29px repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr)); }
   .planner-timetable-head { font-size:9.2px; }
 }
