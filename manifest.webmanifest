@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.47 - orario settimanale con Ink Apple Pencil reale e persistente, layout nero, Sync core Agenda invariato",
+  "description": "Agenda iPad 0.1.48 - orario settimanale con Ink Apple Pencil reale e persistente, layout nero, Sync core Agenda invariato",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

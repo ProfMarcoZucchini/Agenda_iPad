@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.47';
+const APP_VERSION = '0.1.48';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -195,7 +195,7 @@ let sharedWeeklyTimetablePersistPending = false;
 let weeklyTimetableInkPointer = null;
 let weeklyTimetableInkResizeRaf = 0;
 let weeklyTimetableInkDpr = 1;
-let weeklyPlannerLastTap = null;
+let pageDoubleTapLastTap = null;
 let ready = false;
 let rafPrev = performance.now();
 let currentStrokeDiag = null;
@@ -1338,19 +1338,38 @@ function closeWeeklyTimetable() {
   if (sharedWeeklyTimetablePersistPending) void persistSharedWeeklyTimetable();
 }
 
-function registerWeeklyPlannerDoubleTap(target, x, y) {
-  if (currentPageKind !== 'planner-weekly' || !weeklyTimetablePanel?.hidden) return false;
+function isWeeklyTimetableTitleTarget(target) {
+  return currentPageKind === 'planner-weekly'
+    && target instanceof Element
+    && Boolean(target.closest('.page-kind-label'));
+}
+
+function registerPageDoubleTap(target, x, y) {
   if (!(target instanceof Element) || !paper.contains(target) || isUiControlTarget(target)) return false;
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return false;
   const now = performance.now();
-  const previous = weeklyPlannerLastTap;
-  weeklyPlannerLastTap = { at: now, x, y };
+  const pageKey = `${currentPageKind}|${currentDate}|${currentNoteIndex}`;
+  const previous = pageDoubleTapLastTap;
+  pageDoubleTapLastTap = { at: now, x, y, title: isWeeklyTimetableTitleTarget(target), pageKey };
   if (!previous) return false;
   const closeInTime = now - previous.at <= 430;
   const closeInSpace = Math.hypot(x - previous.x, y - previous.y) <= 42;
-  if (!closeInTime || !closeInSpace) return false;
-  weeklyPlannerLastTap = null;
-  void openWeeklyTimetable();
-  return true;
+  const samePage = previous.pageKey === pageKey;
+  if (!closeInTime || !closeInSpace || !samePage) return false;
+  pageDoubleTapLastTap = null;
+
+  // Il Planner settimanale conserva il richiamo storico dell'orario, ma solo sul titolo.
+  if (previous.title && isWeeklyTimetableTitleTarget(target)) {
+    void openWeeklyTimetable();
+    return true;
+  }
+
+  // Agenda, Note e qualunque Planner: doppio tap sul corpo pagina = copertina privacy.
+  if (currentPageKind === 'agenda' || currentPageKind === 'note' || isPlannerKind(currentPageKind)) {
+    showIdleCover(true);
+    return true;
+  }
+  return false;
 }
 
 function calendarMonthDate(dateString) {
@@ -1844,7 +1863,7 @@ function maximalEntityEvents(events) {
 
 async function applyRemoteSharedWeeklyTimetableEvent(event) {
   // Compatibilità 0.1.41–0.1.45: i vecchi eventi cella appartengono alla tecnologia dismessa.
-  await putRemoteEventResult(event, 'ignored-legacy', null, 'orario v1 dismesso: la 0.1.47 usa normali stroke del Planning');
+  await putRemoteEventResult(event, 'ignored-legacy', null, 'orario v1 dismesso: la 0.1.48 usa normali stroke del Planning');
   return { ignored: 1 };
 }
 
@@ -3990,7 +4009,7 @@ function createPreview(descriptor) {
     const author = footer.querySelector('.author-credits-button');
     const version = footer.querySelector('.footer-version-button, .version-button');
     if (author) author.textContent = '© Marco Zucchini';
-    if (version) version.textContent = `v${APP_VERSION}`;
+    if (version) version.textContent = `V.${APP_VERSION}`;
     footer.querySelectorAll('button').forEach((button) => { button.disabled = true; button.setAttribute('aria-disabled', 'true'); });
   }
   const r = paper.getBoundingClientRect();
@@ -4443,7 +4462,7 @@ function handlePaperTouchEnd(ev, cancelled = false) {
   const tapX = ended?.clientX ?? 0;
   const tapY = ended?.clientY ?? 0;
   endPageSwipe({ pointerId: NATIVE_TOUCH_POINTER_ID }, cancelled);
-  if (!cancelled && !wasSwipeLocked) registerWeeklyPlannerDoubleTap(tapTarget, tapX, tapY);
+  if (!cancelled && !wasSwipeLocked) registerPageDoubleTap(tapTarget, tapX, tapY);
   ev.preventDefault();
 }
 
@@ -4668,13 +4687,18 @@ closeWeeklyTimetableButton?.addEventListener('click', closeWeeklyTimetable);
 weeklyTimetablePanel?.addEventListener('click', (ev) => { if (ev.target === weeklyTimetablePanel) closeWeeklyTimetable(); });
 window.addEventListener('resize', () => { if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) scheduleWeeklyTimetableInkResize(); });
 paper?.addEventListener('dblclick', (ev) => {
-  if (currentPageKind !== 'planner-weekly') return;
   if (!(ev.target instanceof Element) || isUiControlTarget(ev.target)) return;
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return;
   ev.preventDefault();
   ev.stopPropagation();
-  void openWeeklyTimetable();
+  if (isWeeklyTimetableTitleTarget(ev.target)) {
+    void openWeeklyTimetable();
+    return;
+  }
+  if (currentPageKind === 'agenda' || currentPageKind === 'note' || isPlannerKind(currentPageKind)) showIdleCover(true);
 });
 
+// 0.1.48 — Crediti dal footer + copertina privacy automatica e su doppio tap pagina.
 // 0.1.45 — Crediti richiamabili dal nome autore e copertina privacy dopo 2 minuti di inattività.
 const IDLE_COVER_MS = 2 * 60 * 1000;
 let idleCoverTimer = 0;
@@ -4713,10 +4737,10 @@ function scheduleIdleCover(delay = IDLE_COVER_MS) {
   idleCoverTimer = window.setTimeout(showIdleCover, Math.max(250, delay));
 }
 
-function showIdleCover() {
+function showIdleCover(manual = false) {
   clearIdleCoverTimer();
   if (startup.phase !== 'done' || document.visibilityState !== 'visible') return;
-  if (drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || weeklyTimetableInk.active) {
+  if (!manual && (drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || weeklyTimetableInk.active)) {
     lastUserActivityAt = Date.now();
     scheduleIdleCover();
     return;
