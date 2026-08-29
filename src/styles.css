@@ -1749,3 +1749,73 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .author-credits-button { order:1; }
 .footer-version-button { order:2; flex:0 0 auto; }
 @media (max-width:760px) { .copyright-block { max-width:none; } }
+
+/* 0.1.52 — Meteo locale, santo compatto ed evento storico nell'intestazione Agenda. */
+.weather-badge {
+  position:absolute;
+  left:6px;
+  top:7px;
+  width:31px;
+  height:31px;
+  z-index:4;
+  display:grid;
+  place-items:center;
+  pointer-events:none;
+}
+.weather-badge[hidden] { display:none !important; }
+.weather-icon { width:30px; height:30px; display:block; object-fit:contain; }
+.paper:not(.planner-view):not(.note-view) .date-block { margin-left:6px; }
+.day-meta-row {
+  display:flex;
+  align-items:center;
+  gap:9px;
+  min-width:0;
+  max-width:min(66vw,690px);
+  margin-top:2px;
+  white-space:nowrap;
+}
+.day-meta-row .saint-name {
+  flex:0 1 auto;
+  min-width:0;
+  max-width:42%;
+  margin-top:0;
+}
+.history-event {
+  appearance:none;
+  -webkit-appearance:none;
+  border:0;
+  padding:0;
+  margin:0;
+  background:transparent;
+  color:rgba(82,66,48,.76);
+  display:inline-flex;
+  align-items:center;
+  gap:4px;
+  min-width:0;
+  max-width:58%;
+  cursor:pointer;
+  pointer-events:auto;
+  font-size:clamp(9px,1.1vw,12.5px);
+  font-weight:650;
+  line-height:1.15;
+  letter-spacing:.01em;
+  text-align:left;
+  -webkit-tap-highlight-color:transparent;
+}
+.history-event[hidden] { display:none !important; }
+.history-event:disabled { cursor:default; opacity:.7; }
+.history-event:not(:disabled):active { opacity:.58; }
+.history-event-symbol { flex:0 0 auto; font-size:1.08em; line-height:1; }
+.history-event-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.paper[data-paper-color="black"] .history-event { color:rgba(238,231,216,.80); }
+.history-detail-panel .saint-detail-body p { white-space:pre-wrap; }
+
+@media (max-width:760px) {
+  .weather-badge { left:3px; top:5px; width:27px; height:27px; }
+  .weather-icon { width:26px; height:26px; }
+  .paper:not(.planner-view):not(.note-view) .date-block { margin-left:11px; }
+  .day-meta-row { gap:6px; max-width:62vw; }
+  .day-meta-row .saint-name { max-width:45%; font-size:9px; }
+  .history-event { max-width:55%; font-size:8.3px; gap:3px; }
+  .history-event-symbol { font-size:9px; }
+}

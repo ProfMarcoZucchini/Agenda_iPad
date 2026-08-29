@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.50';
+const APP_VERSION = '0.1.52';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -19,6 +19,7 @@ const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
+const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v3';
 const SHARED_WEEKLY_TIMETABLE_ROWS = 11;
 const SHARED_WEEKLY_TIMETABLE_DAYS = 5;
@@ -27,6 +28,9 @@ const WEEKLY_TIMETABLE_INK_WIDTH = 2.2;
 const WEEKLY_TIMETABLE_INK_MAX_POINTS = 4096;
 const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
 const WIKIPEDIA_API_URL = 'https://it.wikipedia.org/w/api.php';
+const WIKIPEDIA_ONTHISDAY_URL = 'https://it.wikipedia.org/api/rest_v1/feed/onthisday';
+const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+const WEATHER_MAX_FORECAST_DAYS = 15;
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
@@ -133,6 +137,10 @@ const cloudTestButton = document.getElementById('cloudTestButton');
 const cloudSyncNowButton = document.getElementById('cloudSyncNowButton');
 const cloudSyncStatus = document.getElementById('cloudSyncStatus');
 const saintNameButton = document.getElementById('saintNameButton');
+const weatherBadge = document.getElementById('weatherBadge');
+const weatherIcon = document.getElementById('weatherIcon');
+const historyEventButton = document.getElementById('historyEventButton');
+const historyEventLabel = historyEventButton?.querySelector('.history-event-label');
 const saintDetailPanel = document.getElementById('saintDetailPanel');
 const saintDetailTitle = document.getElementById('saintDetailTitle');
 const saintDetailDate = document.getElementById('saintDetailDate');
@@ -140,6 +148,13 @@ const saintDetailName = document.getElementById('saintDetailName');
 const saintDetailText = document.getElementById('saintDetailText');
 const saintDetailSource = document.getElementById('saintDetailSource');
 const closeSaintDetailButton = document.getElementById('closeSaintDetailButton');
+const historyDetailPanel = document.getElementById('historyDetailPanel');
+const historyDetailTitle = document.getElementById('historyDetailTitle');
+const historyDetailDate = document.getElementById('historyDetailDate');
+const historyDetailName = document.getElementById('historyDetailName');
+const historyDetailText = document.getElementById('historyDetailText');
+const historyDetailSource = document.getElementById('historyDetailSource');
+const closeHistoryDetailButton = document.getElementById('closeHistoryDetailButton');
 
 
 let db = null;
@@ -184,6 +199,21 @@ let saintBioFetchController = null;
 let saintRefreshTimer = 0;
 let saintRequestSerial = 0;
 let saintCache = loadSaintCache();
+let historyCache = loadHistoryCache();
+const weatherForecastCache = new Map();
+let weatherLocationState = 'unknown';
+let weatherCoords = null;
+let weatherCoordsAt = 0;
+let weatherLocationKey = '';
+let weatherForecastLocationKey = '';
+let weatherLocationLastFailureAt = 0;
+let weatherLocationPromise = null;
+let weatherFetchController = null;
+let weatherRefreshTimer = 0;
+let historyFetchController = null;
+let historyDetailFetchController = null;
+let historyRefreshTimer = 0;
+let historyRequestSerial = 0;
 let weeklyTimetableReturnDescriptor = null;
 let pageDoubleTapLastTap = null;
 let ready = false;
@@ -449,6 +479,9 @@ async function setPageColor(color) {
   applyPageStyle();
   updatePageStyleUi();
   applyToolDefaultsForPaper(color);
+  // Il cambio tema ridisegna immediatamente gli stroke esistenti con il
+  // contrasto appropriato, senza modificarne il colore memorizzato.
+  renderAll();
   dirty = true;
 
   if (pageStyleScope === 'all') {
@@ -591,6 +624,312 @@ function isPlannerKind(kind = currentPageKind) {
   return typeof kind === 'string' && kind.startsWith('planner-');
 }
 
+
+function agendaDateEligibleForWeather(dateString) {
+  const today = new Date();
+  const base = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0);
+  const target = new Date(`${dateString}T12:00:00`);
+  const days = Math.round((target - base) / 86400000);
+  return Number.isFinite(days) && days >= 0 && days <= WEATHER_MAX_FORECAST_DAYS;
+}
+
+function weatherVisualForCode(code) {
+  const n = Number(code);
+  if (n === 0) return { asset:'sun.svg', label:'Sole' };
+  if (n === 1 || n === 2) return { asset:'sun-cloud.svg', label:'Sole con nuvole' };
+  if (n === 3) return { asset:'cloud.svg', label:'Nuvoloso' };
+  if (n === 45 || n === 48) return { asset:'fog.svg', label:'Foschia o nebbia' };
+  if ([71,73,75,77,85,86].includes(n)) return { asset:'snow.svg', label:'Neve' };
+  if ([51,53,55,56,57,61,63,65,66,67,80,81,82,95,96,99].includes(n)) return { asset:'rain.svg', label:'Pioggia' };
+  return { asset:'cloud.svg', label:'Nuvoloso' };
+}
+
+function setWeatherBadgeFor(root, dateString, pageKind = currentPageKind) {
+  const badge = root?.querySelector?.('.weather-badge');
+  const img = root?.querySelector?.('.weather-icon');
+  if (!badge || !img) return;
+  const forecast = weatherForecastCache.get(dateString);
+  const visible = root === document && pageKind === 'agenda' && Boolean(forecast);
+  badge.hidden = !visible;
+  if (!visible) return;
+  const visual = weatherVisualForCode(forecast.code);
+  img.src = `./assets/weather/${visual.asset}`;
+  img.alt = `Previsione: ${visual.label}`;
+  badge.title = visual.label;
+  badge.setAttribute('aria-label', `Previsione meteo locale: ${visual.label}`);
+}
+
+function scheduleWeatherRefresh(delay = 800) {
+  window.clearTimeout(weatherRefreshTimer);
+  weatherRefreshTimer = window.setTimeout(() => {
+    weatherRefreshTimer = 0;
+    void refreshWeatherForCurrentDate();
+  }, delay);
+}
+
+function getDeviceWeatherPosition() {
+  const now = Date.now();
+  if (weatherCoords && now - weatherCoordsAt < 10 * 60 * 1000) return Promise.resolve(weatherCoords);
+  if (weatherLocationState === 'denied') return Promise.resolve(null);
+  if (weatherLocationState === 'unavailable' && now - weatherLocationLastFailureAt < 5 * 60 * 1000) return Promise.resolve(null);
+  if (weatherLocationState === 'unavailable') weatherLocationState = 'unknown';
+  if (weatherLocationPromise) return weatherLocationPromise;
+  if (!navigator.geolocation || !window.isSecureContext) {
+    weatherLocationState = 'unavailable';
+    return Promise.resolve(null);
+  }
+  weatherLocationState = 'pending';
+  weatherLocationPromise = new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition((position) => {
+      const lat = Number(position?.coords?.latitude);
+      const lon = Number(position?.coords?.longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        const nextKey = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+        if (weatherLocationKey && nextKey !== weatherLocationKey) weatherForecastCache.clear();
+        weatherCoords = { lat, lon };
+        weatherCoordsAt = Date.now();
+        weatherLocationKey = nextKey;
+        weatherLocationState = 'ready';
+        resolve(weatherCoords);
+      } else {
+        weatherLocationState = 'unavailable';
+        weatherLocationLastFailureAt = Date.now();
+        resolve(null);
+      }
+    }, (error) => {
+      weatherLocationState = error?.code === 1 ? 'denied' : 'unavailable';
+      weatherLocationLastFailureAt = Date.now();
+      resolve(null);
+    }, { enableHighAccuracy:false, timeout:7000, maximumAge:30 * 60 * 1000 });
+  }).finally(() => { weatherLocationPromise = null; });
+  return weatherLocationPromise;
+}
+
+async function refreshWeatherForCurrentDate() {
+  const dateString = currentDate;
+  if (currentPageKind !== 'agenda' || !agendaDateEligibleForWeather(dateString)) {
+    setWeatherBadgeFor(document, dateString, currentPageKind);
+    return;
+  }
+  const locationIsFresh = weatherCoords && Date.now() - weatherCoordsAt < 10 * 60 * 1000;
+  if (weatherForecastCache.has(dateString) && locationIsFresh && weatherForecastLocationKey === weatherLocationKey) {
+    setWeatherBadgeFor(document, dateString, currentPageKind);
+    return;
+  }
+  const coords = await getDeviceWeatherPosition();
+  if (!coords || currentPageKind !== 'agenda' || currentDate !== dateString) {
+    setWeatherBadgeFor(document, dateString, currentPageKind);
+    return;
+  }
+  if (weatherForecastCache.has(dateString) && weatherForecastLocationKey === weatherLocationKey) {
+    setWeatherBadgeFor(document, dateString, currentPageKind);
+    return;
+  }
+  weatherFetchController?.abort();
+  const controller = new AbortController();
+  weatherFetchController = controller;
+  try {
+    const params = new URLSearchParams({
+      latitude: String(coords.lat), longitude: String(coords.lon),
+      daily: 'weather_code', timezone: 'auto', forecast_days: '16'
+    });
+    const response = await fetch(`${OPEN_METEO_FORECAST_URL}?${params.toString()}`, {
+      method:'GET', mode:'cors', credentials:'omit', cache:'no-store', signal:controller.signal
+    });
+    if (!response.ok) throw new Error(`Meteo HTTP ${response.status}`);
+    const payload = await response.json();
+    const times = Array.isArray(payload?.daily?.time) ? payload.daily.time : [];
+    const codes = Array.isArray(payload?.daily?.weather_code) ? payload.daily.weather_code : [];
+    weatherForecastCache.clear();
+    weatherForecastLocationKey = weatherLocationKey;
+    for (let i = 0; i < Math.min(times.length, codes.length); i++) {
+      if (typeof times[i] === 'string' && Number.isFinite(Number(codes[i]))) weatherForecastCache.set(times[i], { code:Number(codes[i]) });
+    }
+  } catch (err) {
+    if (err?.name !== 'AbortError') console.warn('Previsione meteo non disponibile', err);
+  } finally {
+    if (weatherFetchController === controller) weatherFetchController = null;
+  }
+  if (currentPageKind === 'agenda' && currentDate === dateString) setWeatherBadgeFor(document, dateString, currentPageKind);
+}
+
+function loadHistoryCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HISTORY_CACHE_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function historyDayKey(dateString) { return String(dateString || '').slice(5); }
+
+function cleanHistoryText(value, maxLength = 1200) {
+  const raw = String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  if (raw.length <= maxLength) return raw;
+  const cut = raw.slice(0, maxLength);
+  const sentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  return `${(sentence > maxLength * .55 ? cut.slice(0, sentence + 1) : cut).trim()}…`;
+}
+
+function shortHistoryText(value, maxLength = 78) {
+  const raw = cleanHistoryText(value, 260).replace(/^\d{3,4}\s*[–—:-]\s*/, '');
+  if (raw.length <= maxLength) return raw;
+  const cut = raw.slice(0, maxLength);
+  const split = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf(','));
+  return `${(split > maxLength * .6 ? cut.slice(0, split) : cut).trim()}…`;
+}
+
+function cachedHistoryInfo(dateString) {
+  const value = historyCache?.[historyDayKey(dateString)];
+  if (!value || typeof value !== 'object') return { year:'', text:'', short:'', detail:'', pageTitle:'', source:'' };
+  return {
+    year: String(value.year ?? '').trim(),
+    text: cleanHistoryText(value.text, 1200),
+    short: cleanHistoryText(value.short, 120),
+    detail: cleanHistoryText(value.detail, 1800),
+    pageTitle: cleanHistoryText(value.pageTitle, 220),
+    source: cleanHistoryText(value.source, 100) || 'Wikipedia'
+  };
+}
+
+function cacheHistoryInfo(dateString, info) {
+  const key = historyDayKey(dateString);
+  if (!key || !info?.text) return;
+  historyCache[key] = {
+    year: String(info.year ?? '').trim(),
+    text: cleanHistoryText(info.text, 1200),
+    short: shortHistoryText(info.short || info.text),
+    detail: cleanHistoryText(info.detail, 1800),
+    pageTitle: cleanHistoryText(info.pageTitle, 220),
+    source: cleanHistoryText(info.source, 100) || 'Wikipedia'
+  };
+  try { localStorage.setItem(HISTORY_CACHE_STORAGE_KEY, JSON.stringify(historyCache)); } catch {}
+}
+
+function principalHistoryEvent(payload, fieldHint = '') {
+  const candidateLists = [payload?.selected, payload?.events, payload?.all].filter(Array.isArray);
+  const list = candidateLists.find((items) => items.length) || [];
+  const item = list[0];
+  if (!item) return null;
+  const text = cleanHistoryText(item?.text ?? item?.description ?? item?.title, 1200);
+  if (!text) return null;
+  const pages = Array.isArray(item?.pages) ? item.pages : [];
+  const firstPage = pages[0] || {};
+  const pageTitle = cleanHistoryText(firstPage?.normalizedtitle ?? firstPage?.title, 220);
+  const extract = cleanHistoryText(firstPage?.extract, 1500);
+  return {
+    year: item?.year ?? '', text, short: shortHistoryText(text),
+    detail: extract ? `${text}\n\n${extract}` : text,
+    pageTitle, source: 'Wikipedia italiana', fieldHint
+  };
+}
+
+function setHistoryLabel(root, dateString, state = 'cached', pageKind = currentPageKind) {
+  const button = root?.querySelector?.('.history-event');
+  const label = root?.querySelector?.('.history-event-label');
+  if (!button || !label) return;
+  if (root !== document || pageKind !== 'agenda') { button.hidden = true; return; }
+  const info = cachedHistoryInfo(dateString);
+  if (!info.text) { button.hidden = true; button.disabled = true; return; }
+  const prefix = info.year ? `${info.year} · ` : '';
+  label.textContent = `${prefix}${info.short || shortHistoryText(info.text)}`;
+  button.hidden = false;
+  button.disabled = false;
+  button.dataset.historyState = state;
+}
+
+function scheduleHistoryRefresh(delay = 1250) {
+  window.clearTimeout(historyRefreshTimer);
+  historyRefreshTimer = window.setTimeout(() => {
+    historyRefreshTimer = 0;
+    void refreshHistoryForCurrentDate();
+  }, delay);
+}
+
+async function fetchHistoryFeed(type, mm, dd, signal) {
+  const response = await fetch(`${WIKIPEDIA_ONTHISDAY_URL}/${type}/${mm}/${dd}`, {
+    method:'GET', mode:'cors', credentials:'omit', cache:'force-cache', signal,
+    headers:{ 'Accept':'application/json' }
+  });
+  if (!response.ok) throw new Error(`Wikipedia OnThisDay HTTP ${response.status}`);
+  return response.json();
+}
+
+async function refreshHistoryForCurrentDate() {
+  const dateString = currentDate;
+  setHistoryLabel(document, dateString, 'cached', currentPageKind);
+  if (currentPageKind !== 'agenda' || cachedHistoryInfo(dateString).text || !navigator.onLine) return;
+  historyFetchController?.abort();
+  const controller = new AbortController();
+  historyFetchController = controller;
+  const serial = ++historyRequestSerial;
+  const [, mm, dd] = dateString.split('-');
+  try {
+    let info = null;
+    try { info = principalHistoryEvent(await fetchHistoryFeed('selected', mm, dd, controller.signal), 'selected'); }
+    catch (selectedError) {
+      if (selectedError?.name === 'AbortError') throw selectedError;
+    }
+    if (!info) info = principalHistoryEvent(await fetchHistoryFeed('events', mm, dd, controller.signal), 'events');
+    if (info) cacheHistoryInfo(dateString, info);
+  } catch (err) {
+    if (err?.name !== 'AbortError') console.warn('Evento storico non disponibile', err);
+  } finally {
+    if (historyFetchController === controller) historyFetchController = null;
+  }
+  if (serial === historyRequestSerial && currentDate === dateString && currentPageKind === 'agenda') setHistoryLabel(document, dateString, 'ready', currentPageKind);
+}
+
+function closeHistoryDetails() {
+  historyDetailFetchController?.abort();
+  historyDetailFetchController = null;
+  if (historyDetailPanel) historyDetailPanel.hidden = true;
+}
+
+async function fetchHistoryPageSummary(pageTitle, signal) {
+  if (!pageTitle) return '';
+  const params = new URLSearchParams({
+    action:'query', format:'json', origin:'*', redirects:'1',
+    prop:'extracts', exintro:'1', explaintext:'1', titles:pageTitle
+  });
+  const response = await fetch(`${WIKIPEDIA_API_URL}?${params.toString()}`, {
+    method:'GET', mode:'cors', credentials:'omit', cache:'force-cache', signal
+  });
+  if (!response.ok) throw new Error(`Wikipedia HTTP ${response.status}`);
+  const payload = await response.json();
+  const page = Object.values(payload?.query?.pages || {}).find((item) => item && !item.missing);
+  return cleanHistoryText(page?.extract, 1500);
+}
+
+async function openHistoryDetails() {
+  if (currentPageKind !== 'agenda' || !historyDetailPanel) return;
+  const dateString = currentDate;
+  const info = cachedHistoryInfo(dateString);
+  if (!info.text) return;
+  historyDetailTitle.textContent = 'Evento nella storia';
+  historyDetailDate.textContent = saintDateLabel(dateString);
+  historyDetailName.textContent = `${info.year ? `${info.year} · ` : ''}${info.short || shortHistoryText(info.text, 100)}`;
+  historyDetailText.textContent = info.detail || info.text;
+  historyDetailSource.textContent = info.source ? `Fonte: ${info.source}` : '';
+  historyDetailPanel.hidden = false;
+  if (info.detail && info.detail.length > info.text.length + 80) return;
+  if (!navigator.onLine || !info.pageTitle) return;
+  historyDetailFetchController?.abort();
+  const controller = new AbortController();
+  historyDetailFetchController = controller;
+  try {
+    const summary = await fetchHistoryPageSummary(info.pageTitle, controller.signal);
+    if (!summary) return;
+    const detail = summary.includes(info.text) ? summary : `${info.text}\n\n${summary}`;
+    cacheHistoryInfo(dateString, { ...info, detail });
+    if (currentDate === dateString && !historyDetailPanel.hidden) historyDetailText.textContent = cleanHistoryText(detail, 1800);
+  } catch (err) {
+    if (err?.name !== 'AbortError') console.warn('Approfondimento evento storico non disponibile', err);
+  } finally {
+    if (historyDetailFetchController === controller) historyDetailFetchController = null;
+  }
+}
+
 function loadSaintCache() {
   try {
     const parsed = JSON.parse(localStorage.getItem(SAINT_CACHE_STORAGE_KEY) || '{}');
@@ -670,12 +1009,12 @@ function setSaintLabel(root, dateString, state = 'cached', pageKind = currentPag
   if (hiddenForNotes) return;
   const name = cachedSaintName(dateString);
   if (name) {
-    label.textContent = `Santo del giorno · ${name}`;
+    label.textContent = `✝ ${name}`;
     label.dataset.saintState = 'ready';
     label.disabled = false;
     return;
   }
-  label.textContent = state === 'offline' ? 'Santo del giorno · non disponibile offline' : 'Santo del giorno · …';
+  label.textContent = '✝ …';
   label.dataset.saintState = state;
   label.disabled = true;
 }
@@ -889,6 +1228,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   root.querySelector('.month-name').textContent = monthName;
   root.querySelector('.year-label').textContent = String(d.getFullYear());
   setSaintLabel(root, dateString, 'cached', pageKind);
+  setHistoryLabel(root, dateString, 'cached', pageKind);
+  setWeatherBadgeFor(root, dateString, pageKind);
   const kindLabel = root.querySelector('.page-kind-label');
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
@@ -1317,8 +1658,17 @@ function configurePageRoot(root, descriptor) {
 function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   configurePageRoot(paper, pageDescriptor());
-  if (currentPageKind === 'agenda') scheduleSaintRefresh();
-  else { saintFetchController?.abort(); saintBioFetchController?.abort(); }
+  if (currentPageKind === 'agenda') {
+    scheduleSaintRefresh();
+    scheduleHistoryRefresh();
+    scheduleWeatherRefresh();
+  } else {
+    saintFetchController?.abort(); saintBioFetchController?.abort();
+    historyFetchController?.abort(); historyDetailFetchController?.abort();
+    weatherFetchController?.abort();
+    setHistoryLabel(document, currentDate, 'hidden', currentPageKind);
+    setWeatherBadgeFor(document, currentDate, currentPageKind);
+  }
   if (baselineLabel) {
     if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
@@ -2335,6 +2685,45 @@ function setupStrokeStyle(stroke, targetCtx = ctx) {
   targetCtx.lineJoin = 'round';
 }
 
+// 0.1.51 — contrasto Ink adattivo al tema, applicato esclusivamente durante
+// il ridisegno degli stroke gia' memorizzati. Nessuna conversione dei dati e
+// nessun calcolo aggiuntivo nel percorso realtime pointermove/drawBatch.
+function rgbFromHexColor(value) {
+  const hex = String(value || '').trim().toLowerCase();
+  const match = /^#([0-9a-f]{6})$/.exec(hex);
+  if (!match) return null;
+  const n = Number.parseInt(match[1], 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function relativeInkLuminance(value) {
+  const rgb = rgbFromHexColor(value);
+  if (!rgb) return null;
+  const channel = (v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(rgb.r) + 0.7152 * channel(rgb.g) + 0.0722 * channel(rgb.b);
+}
+
+function storedInkDisplayColor(stroke, paperColor = pageStyle.color) {
+  const stored = stroke?.color ?? PEN_COLOR;
+  if ((stroke?.tool ?? 'pen') !== 'pen') return stored;
+  const luminance = relativeInkLuminance(stored);
+  if (luminance == null) return stored;
+  if (paperColor === 'black' && luminance < 0.48) return '#ffffff';
+  if (paperColor !== 'black' && luminance > 0.72) return '#111111';
+  return stored;
+}
+
+function setupStoredStrokeStyle(stroke, targetCtx = ctx, paperColor = pageStyle.color) {
+  setupStrokeStyle(stroke, targetCtx);
+  if ((stroke?.tool ?? 'pen') !== 'pen') return;
+  const displayColor = storedInkDisplayColor(stroke, paperColor);
+  targetCtx.strokeStyle = displayColor;
+  targetCtx.fillStyle = displayColor;
+}
+
 function toolStrokeStyle(tool = activeTool) {
   const style = toolStyles[tool] ?? toolStyles.pen;
   const resolved = { tool: tool === 'eraser' ? 'eraser' : tool === 'highlighter' ? 'highlighter' : 'pen', ...style };
@@ -3037,7 +3426,7 @@ function drawStoredStroke(stroke) {
   ctx.beginPath();
   ctx.rect(0, protectedTop, canvas.clientWidth, Math.max(0, canvas.clientHeight - protectedTop - FOOTER_PX));
   ctx.clip();
-  setupStrokeStyle(stroke);
+  setupStoredStrokeStyle(stroke, ctx, pageStyle.color);
   if (points.length === 1) {
     const p = cssPoint(points[0]);
     ctx.beginPath();
@@ -3271,6 +3660,7 @@ function newStrokeDiag(ev, reason) {
 function startStroke(ev, reason = 'pointerdown') {
   if (!ready || pageTurning || activeTool === 'image') return false;
   if (saintDetailPanel && !saintDetailPanel.hidden) return false;
+  if (historyDetailPanel && !historyDetailPanel.hidden) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -3288,6 +3678,9 @@ function startStroke(ev, reason = 'pointerdown') {
   // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
   saintFetchController?.abort();
   saintBioFetchController?.abort();
+  historyFetchController?.abort();
+  historyDetailFetchController?.abort();
+  weatherFetchController?.abort();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -3384,11 +3777,13 @@ function finalizeStroke(reason = 'pointerup') {
   lanTransport?.resumeAfterInk();
   cloudTransport?.resumeAfterInk();
   if (!cachedSaintName(currentDate)) scheduleSaintRefresh(700);
+  if (!cachedHistoryInfo(currentDate).text) scheduleHistoryRefresh(850);
+  if (agendaDateEligibleForWeather(currentDate)) scheduleWeatherRefresh(1000);
   if (pageChanged) scheduleSave();
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .image-layer, .image-inspector'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -3731,7 +4126,7 @@ function drawPreviewInk(preview, previewStrokes) {
     pctx.beginPath();
     pctx.rect(0, pTop, pr.width, Math.max(0, pr.height - pTop - FOOTER_PX));
     pctx.clip();
-    setupStrokeStyle(stroke, pctx);
+    setupStoredStrokeStyle(stroke, pctx, preview.dataset.paperColor || pageStyle.color);
     const css = (pt) => ({ x: pt.x * pr.width, y: pt.y * pr.height });
     if (points.length === 1) {
       const q = css(points[0]);
@@ -4429,7 +4824,7 @@ window.addEventListener('pointerup', routeGlobalPointerUp, { passive: false, cap
 window.addEventListener('pointercancel', routeGlobalPointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
-  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body')) return;
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .history-detail-body')) return;
   ev.preventDefault();
 }, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
@@ -4450,6 +4845,22 @@ closeSaintDetailButton?.addEventListener('pointerup', (ev) => {
 }, { passive:false });
 closeSaintDetailButton?.addEventListener('click', closeSaintDetails);
 saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDetailPanel) closeSaintDetails(); });
+
+function activateHistoryDetailsFromPen(ev) {
+  if (ev.pointerType !== 'pen' || historyEventButton?.disabled) return;
+  void openHistoryDetails();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+historyEventButton?.addEventListener('pointerup', activateHistoryDetailsFromPen, { passive:false });
+historyEventButton?.addEventListener('click', () => { if (!historyEventButton.disabled) void openHistoryDetails(); });
+closeHistoryDetailButton?.addEventListener('pointerup', (ev) => {
+  if (ev.pointerType !== 'pen') return;
+  closeHistoryDetails(); ev.preventDefault(); ev.stopPropagation();
+}, { passive:false });
+closeHistoryDetailButton?.addEventListener('click', closeHistoryDetails);
+historyDetailPanel?.addEventListener('click', (ev) => { if (ev.target === historyDetailPanel) closeHistoryDetails(); });
+
 
 paper?.addEventListener('dblclick', (ev) => {
   if (!(ev.target instanceof Element) || isUiControlTarget(ev.target)) return;
