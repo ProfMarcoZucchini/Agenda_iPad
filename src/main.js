@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.41';
+const APP_VERSION = '0.1.43';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -20,7 +20,7 @@ const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v1';
-const SHARED_WEEKLY_TIMETABLE_ROWS = 9;
+const SHARED_WEEKLY_TIMETABLE_ROWS = 11;
 const SHARED_WEEKLY_TIMETABLE_DAYS = 5;
 const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
 const WIKIPEDIA_API_URL = 'https://it.wikipedia.org/w/api.php';
@@ -74,6 +74,7 @@ const markLagButton = document.getElementById('markLagButton');
 const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
+const eraserToolButton = document.getElementById('eraserToolButton');
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
@@ -159,6 +160,13 @@ const pencilUiPointers = new Map();
 const recentPencilUiActivation = new WeakMap();
 const PENCIL_UI_TAP_MAX_DISTANCE = 28;
 const PENCIL_UI_TAP_MAX_DURATION_MS = 1400;
+// 0.1.43 — triplo tap Apple Pencil sulla Gomma = pulizia completa della pagina corrente.
+// Il gesto viene riconosciuto solo sulla toolbar, mai nel pointermove Ink.
+const ERASER_TRIPLE_TAP_WINDOW_MS = 1200;
+const ERASER_TRIPLE_TAP_MIN_INTERVAL_MS = 130;
+let eraserPenTapTimes = [];
+let eraserPenTapPageKey = '';
+let eraserClearBusy = false;
 
 let rect = null;
 let protectedTop = 0;
@@ -939,9 +947,7 @@ function buildDailyPlannerHtml(dateString) {
     .concat(Array.from({ length: 12 }, (_, i) => 7 + i)
       .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`))
     .join('');
-  return `<div class="planner-daily-date">${plannerDailyDateLabel(dateString)}</div>
-    <div class="planner-heading planner-daily-heading">Planning giornaliero</div>
-    <div class="planner-daily-grid">
+  return `<div class="planner-daily-grid">
       <section class="planner-timeline"><h3>Programma</h3><div class="planner-time-rows">${rows}</div><div class="planner-time-bottom-label"><span>19:00</span><i></i></div></section>
       <aside class="planner-daily-side">
         <section class="planner-box planner-priority"><h3>Priorità del giorno</h3><div>1.</div><div>2.</div><div>3.</div></section>
@@ -983,9 +989,12 @@ function miniMonthHtml(year, monthIndex) {
   const offset = (first.getDay() + 6) % 7;
   const days = new Date(year, monthIndex + 1, 0, 12).getDate();
   const monthName = new Intl.DateTimeFormat('it-IT', { month:'long' }).format(first).toUpperCase();
-  const blanks = Array.from({ length: offset }, () => '<i></i>').join('');
+  const trailing = Math.max(0, 42 - offset - days);
+  const leadingBlanks = Array.from({ length: offset }, () => '<i></i>').join('');
   const nums = Array.from({ length: days }, (_, i) => `<span>${i + 1}</span>`).join('');
-  return `<section class="planner-mini-month"><h3>${monthName}</h3><div class="planner-mini-week">L M M G V S D</div><div class="planner-mini-days">${blanks}${nums}</div></section>`;
+  const trailingBlanks = Array.from({ length: trailing }, () => '<i></i>').join('');
+  const weekdayLabels = ['L','M','M','G','V','S','D'].map((label) => `<span>${label}</span>`).join('');
+  return `<section class="planner-mini-month"><h3>${monthName}</h3><div class="planner-mini-week">${weekdayLabels}</div><div class="planner-mini-days">${leadingBlanks}${nums}${trailingBlanks}</div></section>`;
 }
 
 function buildYearlyPlannerHtml(dateString) {
@@ -1067,7 +1076,7 @@ function renderSharedWeeklyTimetable() {
     weeklyTimetableGrid.appendChild(head);
   }
   for (let row = 0; row < SHARED_WEEKLY_TIMETABLE_ROWS; row++) {
-    const compact = row === 3;
+    const compact = row === 3 || row === 7;
     for (let col = -1; col < SHARED_WEEKLY_TIMETABLE_DAYS; col++) {
       const cell = document.createElement('div');
       cell.className = `weekly-timetable-cell${col === -1 ? ' time' : ''}${compact ? ' break-row' : ''}`;
@@ -1105,7 +1114,17 @@ function updateSharedWeeklyTimetableFromInput(input) {
   queueSharedWeeklyTimetableSave();
 }
 
-function queueSharedWeeklyTimetableSave(delay = 550) {
+function updateVisibleSharedWeeklyTimetableCell(row, column, value) {
+  if (!weeklyTimetableGrid) return;
+  const selector = `input[data-timetable-row="${row}"][data-timetable-column="${String(column)}"]`;
+  const input = weeklyTimetableGrid.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) return;
+  const key = `${row}:${column}`;
+  if (document.activeElement === input || sharedWeeklyTimetableChangedCells.has(key)) return;
+  input.value = String(value ?? '');
+}
+
+function queueSharedWeeklyTimetableSave(delay = 220) {
   clearTimeout(sharedWeeklyTimetableSaveTimer);
   sharedWeeklyTimetableSaveTimer = window.setTimeout(() => {
     sharedWeeklyTimetableSaveTimer = 0;
@@ -1177,6 +1196,11 @@ async function openWeeklyTimetable() {
 
 function closeWeeklyTimetable() {
   if (!weeklyTimetablePanel) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLInputElement && active.closest('#weeklyTimetableGrid')) {
+    updateSharedWeeklyTimetableFromInput(active);
+    active.blur();
+  }
   weeklyTimetablePanel.hidden = true;
   clearTimeout(sharedWeeklyTimetableSaveTimer);
   sharedWeeklyTimetableSaveTimer = 0;
@@ -1694,6 +1718,12 @@ async function applyRemoteSharedWeeklyTimetableEvent(event) {
     await putRemoteEventResult(event, 'ignored-invalid', null, 'cella orario settimanale non valida');
     return { ignored: 1 };
   }
+  const dirtyKey = `${row}:${column}`;
+  if (sharedWeeklyTimetableChangedCells.has(dirtyKey)) {
+    await putRemoteEventResult(event, 'ignored-local-edit', null, 'cella in modifica locale: prevale la modifica locale non ancora confermata');
+    return { ignored: 1 };
+  }
+
   const history = await getSyncEventsByEntity(event.entityId);
   const comparable = [...history, event].filter((rowEvent) => rowEvent.operation === 'planner.timetable.cell.set');
   const winner = comparable.sort(compareHlcDeterministic).at(-1);
@@ -1703,7 +1733,7 @@ async function applyRemoteSharedWeeklyTimetableEvent(event) {
   }
 
   const record = await getRecord(SHARED_WEEKLY_TIMETABLE_KEY);
-  const timetable = normalizeSharedWeeklyTimetable(record?.timetable || sharedWeeklyTimetableCache);
+  const timetable = normalizeSharedWeeklyTimetable(sharedWeeklyTimetableCache || record?.timetable);
   const value = String(event.payload?.value ?? '');
   if (column === 'time') timetable.rows[row].time = value.slice(0, 80);
   else timetable.rows[row].days[Number(column)] = value.slice(0, 500);
@@ -1717,7 +1747,9 @@ async function applyRemoteSharedWeeklyTimetableEvent(event) {
   };
   sharedWeeklyTimetableCache = timetable;
   await putRemoteEventResult(event, 'applied', sharedRecord);
-  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) renderSharedWeeklyTimetable();
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) {
+    updateVisibleSharedWeeklyTimetableCell(row, column, value);
+  }
   return { applied: 1 };
 }
 
@@ -3359,7 +3391,7 @@ function startStroke(ev, reason = 'pointerdown') {
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
-  // 0.1.41: anche il recupero del santo è subordinato alla Pencil.
+  // 0.1.43: anche il recupero del santo è subordinato alla Pencil.
   // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
   saintFetchController?.abort();
   saintBioFetchController?.abort();
@@ -3724,10 +3756,17 @@ async function copyReport() {
   }
 }
 
-async function clearCurrentPage() {
-  if (drawing || !ready) return;
+async function clearCurrentPage(options = {}) {
+  const requireConfirmation = options?.requireConfirmation !== false;
+  const reason = String(options?.reason || 'manual');
+  if (drawing || !ready || eraserClearBusy) return false;
+  if (!strokes.length && !images.length) {
+    statusLabel.textContent = 'pagina già vuota';
+    return false;
+  }
   const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (sincronizzato con Agenda)' : ''}` : 'pagina Agenda';
-  if (!window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return;
+  if (requireConfirmation && !window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return false;
+  eraserClearBusy = true;
   cancelPendingSave();
   const clearedDescriptor = pageDescriptor();
   const removedStrokeIds = strokes.map((stroke) => stroke?.id).filter(Boolean);
@@ -3748,12 +3787,16 @@ async function clearCurrentPage() {
     const txMs = performance.now() - txStart;
     if (clearCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(clearCommit.eventIds, txMs);
     dirty = false;
-    statusLabel.textContent = 'pagina vuota';
+    statusLabel.textContent = reason === 'eraser-triple-tap' ? 'pagina cancellata · triplo tap Gomma' : 'pagina vuota';
+    return true;
   } catch (err) {
     if (clearCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
     dirty = true;
     statusLabel.textContent = 'errore cancellazione';
     console.warn(err);
+    return false;
+  } finally {
+    eraserClearBusy = false;
   }
 }
 
@@ -4321,12 +4364,33 @@ function activateUiFromDirectContact(button, ev, source = 'pointerdown') {
   ev?.stopPropagation?.();
 }
 
+function registerEraserTriplePenTap(button, ev) {
+  if (button !== eraserToolButton || ev?.pointerType !== 'pen') return false;
+  const now = performance.now();
+  const key = currentPageKey();
+  if (eraserPenTapPageKey !== key) {
+    eraserPenTapPageKey = key;
+    eraserPenTapTimes = [];
+  }
+  const last = eraserPenTapTimes.at(-1);
+  // Scarta eventuali pointerdown duplicati generati dalla compatibilità Safari.
+  if (Number.isFinite(last) && now - last < ERASER_TRIPLE_TAP_MIN_INTERVAL_MS) return false;
+  eraserPenTapTimes = eraserPenTapTimes.filter((at) => now - at <= ERASER_TRIPLE_TAP_WINDOW_MS);
+  eraserPenTapTimes.push(now);
+  if (eraserPenTapTimes.length < 3) return false;
+  eraserPenTapTimes = [];
+  eraserPenTapPageKey = '';
+  void clearCurrentPage({ requireConfirmation: false, reason: 'eraser-triple-tap' });
+  return true;
+}
+
 function bindDirectUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
 
   button.addEventListener('pointerdown', (ev) => {
     if (ev.pointerType === 'mouse') return;
     pencilUiPointers.set(ev.pointerId, { button, startedAt: performance.now() });
+    registerEraserTriplePenTap(button, ev);
     activateUiFromDirectContact(button, ev, `pointerdown-${ev.pointerType || 'unknown'}`);
   }, { passive: false });
 
@@ -4469,9 +4533,21 @@ saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDet
 weeklyTimetableGrid?.addEventListener('input', (ev) => {
   if (ev.target instanceof HTMLInputElement) updateSharedWeeklyTimetableFromInput(ev.target);
 });
-weeklyTimetableGrid?.addEventListener('change', (ev) => {
-  if (ev.target instanceof HTMLInputElement) updateSharedWeeklyTimetableFromInput(ev.target);
+weeklyTimetableGrid?.addEventListener('compositionend', (ev) => {
+  if (!(ev.target instanceof HTMLInputElement)) return;
+  updateSharedWeeklyTimetableFromInput(ev.target);
+  queueSharedWeeklyTimetableSave(0);
 });
+weeklyTimetableGrid?.addEventListener('change', (ev) => {
+  if (!(ev.target instanceof HTMLInputElement)) return;
+  updateSharedWeeklyTimetableFromInput(ev.target);
+  queueSharedWeeklyTimetableSave(0);
+});
+weeklyTimetableGrid?.addEventListener('blur', (ev) => {
+  if (!(ev.target instanceof HTMLInputElement)) return;
+  updateSharedWeeklyTimetableFromInput(ev.target);
+  queueSharedWeeklyTimetableSave(0);
+}, true);
 closeWeeklyTimetableButton?.addEventListener('click', closeWeeklyTimetable);
 weeklyTimetablePanel?.addEventListener('click', (ev) => { if (ev.target === weeklyTimetablePanel) closeWeeklyTimetable(); });
 paper?.addEventListener('dblclick', (ev) => {

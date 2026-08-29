@@ -7,10 +7,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="theme-color" content="#e9dfc8" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.41" />
-  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.41" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.43" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.43" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.41</title>
+  <title>Agenda iPad · 0.1.43</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -19,7 +19,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.41</div>
+        <div class="cover-version">v0.1.43</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -172,22 +172,19 @@
         <span class="baseline-label">AGENDA · PLANNER · INK STABILE</span>
         <span id="statusLabel" class="status-label">avvio</span>
         <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
-        <button id="versionButton" class="version-button copyright-version" type="button" title="Versione e diagnostica">© Marco Zucchini · v0.1.41</button>
+        <button id="versionButton" class="version-button copyright-version" type="button" title="Versione e diagnostica">© Marco Zucchini · v0.1.43</button>
+        <button id="settingsButton" class="settings-button settings-center-button footer-icon-button" type="button" aria-expanded="false" title="Impostazioni" aria-label="Impostazioni">
+          <svg class="gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </button>
         <div class="footer-actions" aria-label="Comandi rapidi">
           <button id="calendarButton" class="footer-icon-button calendar-footer-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario" aria-label="Calendario">
             <svg class="calendar-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
               <rect x="5.5" y="7.5" width="21" height="19" rx="3"></rect>
               <path d="M10 4.8v5.1M22 4.8v5.1M5.5 12.2h21"></path>
               <path d="M10.2 16h2.4M15 16h2.4M19.8 16h2.4M10.2 20.2h2.4M15 20.2h2.4M19.8 20.2h2.4"></path>
-            </svg>
-          </button>
-          <button id="settingsButton" class="settings-button backup-button footer-icon-button" type="button" aria-expanded="false" title="Backup e impostazioni" aria-label="Backup e impostazioni">
-            <svg class="backup-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-              <ellipse cx="13" cy="7" rx="7.2" ry="3.1"></ellipse>
-              <path d="M5.8 7v6.4c0 1.7 3.2 3.1 7.2 3.1 1.6 0 3-.2 4.2-.6"></path>
-              <path d="M5.8 13.2v6.2c0 1.7 3.2 3.1 7.2 3.1 1 0 2-.1 2.9-.3"></path>
-              <path class="backup-arrow" d="M19.1 12.5a7.3 7.3 0 1 1-1.5 11.1"></path>
-              <path class="backup-arrow-head" d="M18.8 8.9v5.2h5.2"></path>
             </svg>
           </button>
         </div>
@@ -198,7 +195,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.41</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.43</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -230,14 +227,14 @@
           <div class="settings-grid">
             <label class="setting-field"><span>Hub LAN</span><input id="lanHubUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://PC-AGENDA.local:8787"></label>
             <label class="setting-field"><span>Codice gruppo LAN</span><input id="lanSyncKey" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="codice mostrato dall’hub"></label>
-            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.41</option></select></label>
+            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.43</option></select></label>
           </div>
           <div class="backup-actions lan-sync-actions">
             <button id="lanTestButton" type="button">Test LAN</button>
             <button id="lanSyncNowButton" class="primary" type="button">Sincronizza adesso</button>
           </div>
           <div id="lanSyncStatus" class="backup-status">LAN non ancora verificata.</div>
-          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.41 è Agenda Cloud Sync Aruba.</p>
+          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.43 è Agenda Cloud Sync Aruba.</p>
           <p class="settings-note">Se Agenda è aperta da HTTPS, iPadOS/Safari richiede anche un hub LAN HTTPS con certificato attendibile.</p>
         </section>
 
@@ -324,20 +321,18 @@
       <header class="weekly-timetable-header">
         <div>
           <h2 id="weeklyTimetableTitle">Orario settimanale</h2>
-          <p>Tabella condivisa in tutta l’Agenda · Lunedì–Venerdì</p>
         </div>
         <button id="closeWeeklyTimetableButton" class="settings-close" type="button" aria-label="Chiudi orario settimanale">×</button>
       </header>
       <div class="weekly-timetable-body">
         <div id="weeklyTimetableGrid" class="weekly-timetable-grid" role="table" aria-label="Orario settimanale condiviso"></div>
-        <p class="weekly-timetable-note">Le modifiche vengono salvate come unico dato condiviso: ogni richiamo della tabella mostra lo stesso contenuto e la sincronizzazione lo propaga agli altri dispositivi.</p>
       </div>
     </div>
   </section>
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil + Sync Core 0.1.41</h2>
+      <h2>Diagnostica Pencil + Sync Core 0.1.43</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

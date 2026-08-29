@@ -1398,3 +1398,226 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .weekly-timetable-cell input { font-size:12px; padding:5px 6px; }
   .weekly-timetable-cell.break-row input { font-size:10.5px; }
 }
+
+
+/* 0.1.43 — Impostazioni al centro del footer con icona rotellina. */
+.settings-button.settings-center-button.footer-icon-button {
+  position:absolute;
+  left:50%;
+  right:auto;
+  top:50%;
+  transform:translate(-50%,-50%);
+  width:34px;
+  height:34px;
+  padding:5px;
+  z-index:4;
+}
+.settings-button.settings-center-button.footer-icon-button:active {
+  transform:translate(-50%,calc(-50% + 1px));
+}
+.gear-icon {
+  width:23px;
+  height:23px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+@media (max-width:760px) {
+  .settings-button.settings-center-button.footer-icon-button { width:32px; height:32px; }
+  .gear-icon { width:21px; height:21px; }
+}
+
+
+/* 0.1.43 — tabella oraria persistente/fullscreen e affinamento Planner. */
+
+/* Planner giornaliero: il titolo dinamico nell'intestazione è l'unico titolo visibile. */
+.planner-daily-date,
+.planner-daily-heading { display:none !important; }
+
+/* Planner annuale: ulteriore recupero del margine sinistro e distribuzione uniforme dei giorni. */
+.paper.planner-yearly .planner-layer { padding-left:18px; padding-right:18px; }
+.planner-mini-month {
+  display:flex;
+  flex-direction:column;
+  padding:5px 6px;
+}
+.planner-mini-month h3 {
+  flex:0 0 auto;
+  font-size:9.6px;
+  line-height:1.05;
+  padding-bottom:3px;
+}
+.planner-mini-week {
+  flex:0 0 auto;
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+  gap:1px;
+  margin-top:1px;
+  font-size:6.7px;
+  line-height:1;
+  letter-spacing:0;
+  text-align:center;
+}
+.planner-mini-week span {
+  display:grid;
+  place-items:center;
+  min-width:0;
+}
+.planner-mini-days {
+  flex:1 1 auto;
+  min-height:0;
+  display:grid;
+  grid-template-columns:repeat(7,1fr);
+  grid-template-rows:repeat(6,1fr);
+  gap:1px 2px;
+  margin-top:3px;
+  align-items:center;
+}
+.planner-mini-days span,
+.planner-mini-days i {
+  display:grid;
+  place-items:center;
+  min-height:0;
+  font-size:7.2px;
+  line-height:1;
+}
+
+/* Orario settimanale: riquadro quasi a pieno schermo, fondo nero e testo bianco. */
+.weekly-timetable-panel {
+  padding:3px;
+  background:rgba(0,0,0,.70);
+}
+.weekly-timetable-card {
+  width:99.5vw;
+  height:98vh;
+  max-height:98vh;
+  border-radius:12px;
+  background:#050505;
+  color:#fff;
+  border:1px solid rgba(255,255,255,.28);
+  box-shadow:0 18px 70px rgba(0,0,0,.55);
+}
+.weekly-timetable-header {
+  flex:0 0 54px;
+  min-height:54px;
+  padding:7px 12px 6px 15px;
+  background:#0b0b0b;
+  border-bottom:1px solid rgba(255,255,255,.24);
+}
+.weekly-timetable-header h2 {
+  color:#fff;
+  font-size:22px;
+}
+.weekly-timetable-header .settings-close {
+  color:#fff;
+  border-color:rgba(255,255,255,.32);
+  background:rgba(255,255,255,.08);
+}
+.weekly-timetable-body {
+  flex:1 1 auto;
+  min-height:0;
+  overflow:hidden;
+  padding:5px;
+  background:#050505;
+}
+.weekly-timetable-grid {
+  width:100%;
+  height:100%;
+  min-width:0;
+  min-height:0;
+  grid-template-columns:58px repeat(5,minmax(0,1fr));
+  grid-template-rows:
+    40px
+    repeat(3,minmax(0,1fr))
+    minmax(0,.5fr)
+    repeat(3,minmax(0,1fr))
+    minmax(0,.5fr)
+    repeat(3,minmax(0,1fr));
+  border:1px solid rgba(255,255,255,.55);
+  border-radius:7px;
+  background:#050505;
+}
+.weekly-timetable-head,
+.weekly-timetable-cell {
+  background:#050505;
+  border-right-color:rgba(255,255,255,.32);
+  border-bottom-color:rgba(255,255,255,.32);
+}
+.weekly-timetable-head {
+  color:#fff;
+  background:#101010;
+  font-size:13px;
+  font-weight:850;
+}
+.weekly-timetable-cell input {
+  background:#050505;
+  color:#fff;
+  -webkit-text-fill-color:#fff;
+  caret-color:#fff;
+  font-size:13.5px;
+  font-weight:650;
+  padding:4px 6px;
+}
+.weekly-timetable-cell.time input {
+  color:#fff;
+  -webkit-text-fill-color:#fff;
+  font-weight:850;
+}
+.weekly-timetable-cell.break-row,
+.weekly-timetable-cell.break-row input {
+  background:#151515;
+}
+.weekly-timetable-cell.break-row input {
+  font-size:11.5px;
+}
+.weekly-timetable-cell input:focus {
+  color:#fff;
+  -webkit-text-fill-color:#fff;
+  background:#171717;
+  box-shadow:inset 0 0 0 2px rgba(255,255,255,.55);
+}
+.weekly-timetable-cell input::selection {
+  background:rgba(255,255,255,.35);
+  color:#fff;
+}
+.weekly-timetable-note { display:none !important; }
+
+@media (max-width:760px) {
+  .paper.planner-yearly .planner-layer { padding-left:9px; padding-right:9px; }
+  .planner-mini-month { padding:3px 4px; }
+  .planner-mini-month h3 { font-size:8.3px; }
+  .planner-mini-week { font-size:6.1px; gap:0; }
+  .planner-mini-days { gap:0 1px; margin-top:2px; }
+  .planner-mini-days span,
+  .planner-mini-days i { font-size:6.6px; }
+
+  .weekly-timetable-panel { padding:2px; }
+  .weekly-timetable-card {
+    width:100vw;
+    height:99vh;
+    max-height:99vh;
+    border-radius:8px;
+  }
+  .weekly-timetable-header {
+    flex-basis:48px;
+    min-height:48px;
+    padding:5px 8px 4px 10px;
+  }
+  .weekly-timetable-header h2 { font-size:18px; }
+  .weekly-timetable-body { padding:3px; }
+  .weekly-timetable-grid {
+    grid-template-columns:50px repeat(5,minmax(0,1fr));
+    grid-template-rows:
+      34px
+      repeat(3,minmax(0,1fr))
+      minmax(0,.5fr)
+      repeat(3,minmax(0,1fr))
+      minmax(0,.5fr)
+      repeat(3,minmax(0,1fr));
+  }
+  .weekly-timetable-head { font-size:10px; padding:2px; }
+  .weekly-timetable-cell input { font-size:11px; padding:2px 3px; }
+  .weekly-timetable-cell.break-row input { font-size:9.5px; }
+}

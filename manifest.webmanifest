@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.41 - titoli Planner dinamici e geometrie Planner ottimizzate, Ink e Sync invariati",
+  "description": "Agenda iPad 0.1.43 - orario settimanale persistente a 11 righe, layout nero e affinamenti Planner, Ink e Sync core invariati",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
