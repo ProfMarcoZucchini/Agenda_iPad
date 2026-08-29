@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.38';
+const APP_VERSION = '0.1.39';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -20,6 +20,7 @@ const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
+const WIKIPEDIA_API_URL = 'https://it.wikipedia.org/w/api.php';
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
@@ -121,6 +122,14 @@ const cloudRecoverJoinCodeButton = document.getElementById('cloudRecoverJoinCode
 const cloudTestButton = document.getElementById('cloudTestButton');
 const cloudSyncNowButton = document.getElementById('cloudSyncNowButton');
 const cloudSyncStatus = document.getElementById('cloudSyncStatus');
+const saintNameButton = document.getElementById('saintNameButton');
+const saintDetailPanel = document.getElementById('saintDetailPanel');
+const saintDetailTitle = document.getElementById('saintDetailTitle');
+const saintDetailDate = document.getElementById('saintDetailDate');
+const saintDetailName = document.getElementById('saintDetailName');
+const saintDetailText = document.getElementById('saintDetailText');
+const saintDetailSource = document.getElementById('saintDetailSource');
+const closeSaintDetailButton = document.getElementById('closeSaintDetailButton');
 
 
 let db = null;
@@ -154,6 +163,7 @@ let idleHandle = 0;
 let dpr = 1;
 let storageBusy = false;
 let saintFetchController = null;
+let saintBioFetchController = null;
 let saintRefreshTimer = 0;
 let saintRequestSerial = 0;
 let saintCache = loadSaintCache();
@@ -571,38 +581,84 @@ function loadSaintCache() {
   }
 }
 
-function cachedSaintName(dateString) {
-  const value = saintCache?.[dateString];
-  return typeof value === 'string' ? value.trim() : '';
+function cleanSaintText(value, maxLength = 900) {
+  const raw = String(value ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  if (raw.length <= maxLength) return raw;
+  const cut = raw.slice(0, maxLength);
+  const sentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  return `${(sentence > maxLength * .55 ? cut.slice(0, sentence + 1) : cut).trim()}…`;
 }
 
-function cacheSaintName(dateString, name) {
-  const clean = String(name || '').replace(/\s+/g, ' ').trim();
-  if (!dateString || !clean) return;
+function cachedSaintInfo(dateString) {
+  const value = saintCache?.[dateString];
+  if (typeof value === 'string') return { name: value.trim(), summary: '', source: 'SantoDelGiorno.it' };
+  if (!value || typeof value !== 'object') return { name: '', summary: '', source: '' };
+  return {
+    name: cleanSaintText(value.name, 180),
+    summary: cleanSaintText(value.summary, 900),
+    source: cleanSaintText(value.source, 80) || 'SantoDelGiorno.it'
+  };
+}
+
+function cachedSaintName(dateString) {
+  return cachedSaintInfo(dateString).name;
+}
+
+function cacheSaintInfo(dateString, info) {
+  const previous = cachedSaintInfo(dateString);
+  const clean = {
+    name: cleanSaintText(info?.name || previous.name, 180),
+    summary: cleanSaintText(info?.summary || previous.summary, 900),
+    source: cleanSaintText(info?.source || previous.source, 80) || 'SantoDelGiorno.it'
+  };
+  if (!dateString || !clean.name) return;
   saintCache[dateString] = clean;
   try { localStorage.setItem(SAINT_CACHE_STORAGE_KEY, JSON.stringify(saintCache)); } catch {}
 }
 
-function principalSaintName(payload) {
+function principalSaintInfo(payload, preferredName = '') {
   const list = Array.isArray(payload) ? payload
     : Array.isArray(payload?.santi) ? payload.santi
     : Array.isArray(payload?.data) ? payload.data
     : [];
-  const primary = list.find((item) => String(item?.default ?? item?.principale ?? '') === '1') || list[0];
-  return String(primary?.nome ?? primary?.name ?? primary?.titolo ?? '').replace(/\s+/g, ' ').trim();
+  const normalizedPreferred = cleanSaintText(preferredName, 180).toLocaleLowerCase('it-IT');
+  const primary = (normalizedPreferred && list.find((item) => cleanSaintText(item?.nome ?? item?.name ?? item?.titolo, 180).toLocaleLowerCase('it-IT') === normalizedPreferred))
+    || list.find((item) => String(item?.default ?? item?.principale ?? '') === '1')
+    || list[0];
+  if (!primary) return { name: '', summary: '', source: '' };
+  const summaryCandidates = [
+    primary?.descrizione, primary?.description, primary?.riassunto, primary?.summary,
+    primary?.biografia, primary?.bio, primary?.agiografia, primary?.testo,
+    primary?.excerpt, primary?.introduzione, primary?.intro
+  ];
+  return {
+    name: cleanSaintText(primary?.nome ?? primary?.name ?? primary?.titolo, 180),
+    summary: cleanSaintText(summaryCandidates.find((value) => cleanSaintText(value, 900)), 900),
+    source: 'SantoDelGiorno.it'
+  };
 }
 
-function setSaintLabel(root, dateString, state = 'cached') {
+function principalSaintName(payload) {
+  return principalSaintInfo(payload).name;
+}
+
+function setSaintLabel(root, dateString, state = 'cached', pageKind = currentPageKind) {
   const label = root?.querySelector?.('.saint-name');
   if (!label) return;
+  const hiddenForNotes = pageKind === 'note';
+  label.hidden = hiddenForNotes;
+  if (hiddenForNotes) return;
   const name = cachedSaintName(dateString);
   if (name) {
     label.textContent = `Santo del giorno · ${name}`;
     label.dataset.saintState = 'ready';
+    label.disabled = false;
     return;
   }
   label.textContent = state === 'offline' ? 'Santo del giorno · non disponibile offline' : 'Santo del giorno · …';
   label.dataset.saintState = state;
+  label.disabled = true;
 }
 
 function scheduleSaintRefresh(delay = 80) {
@@ -669,6 +725,7 @@ async function refreshSaintForCurrentDate() {
   }
 
   saintFetchController?.abort();
+  saintBioFetchController?.abort();
   const controller = new AbortController();
   saintFetchController = controller;
   const serial = ++saintRequestSerial;
@@ -683,15 +740,17 @@ async function refreshSaintForCurrentDate() {
         signal: controller.signal
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      name = principalSaintName(await response.json());
+      const info = principalSaintInfo(await response.json());
+      name = info.name;
       if (!name) throw new Error('santo principale non presente nella risposta');
+      cacheSaintInfo(dateString, info);
     } catch (apiError) {
       if (apiError?.name === 'AbortError') throw apiError;
       // Fallback compatibile con Safari/iPadOS: il sito sorgente documenta anche
       // un widget <script>, che non dipende dalle regole CORS della fetch JSON.
       name = await fetchSaintViaWidgetScript(dateString, controller.signal);
     }
-    cacheSaintName(dateString, name);
+    if (!cachedSaintName(dateString)) cacheSaintInfo(dateString, { name, source: 'SantoDelGiorno.it' });
     if (serial === saintRequestSerial && currentDate === dateString) setSaintLabel(document, dateString);
   } catch (err) {
     if (err?.name === 'AbortError') return;
@@ -699,6 +758,82 @@ async function refreshSaintForCurrentDate() {
     if (serial === saintRequestSerial && currentDate === dateString) setSaintLabel(document, dateString, navigator.onLine ? 'unavailable' : 'offline');
   } finally {
     if (saintFetchController === controller) saintFetchController = null;
+  }
+}
+
+async function fetchSaintSummaryFromSource(dateString, name, signal) {
+  try {
+    const response = await fetch(`${SAINT_API_URL}?q=${encodeURIComponent(name)}`, {
+      method: 'GET', mode: 'cors', credentials: 'omit', cache: 'force-cache', signal
+    });
+    if (response.ok) {
+      const info = principalSaintInfo(await response.json(), name);
+      if (info.summary) return info;
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') throw err;
+  }
+
+  const params = new URLSearchParams({
+    action: 'query', format: 'json', origin: '*', redirects: '1',
+    prop: 'extracts', exintro: '1', explaintext: '1', titles: name
+  });
+  const response = await fetch(`${WIKIPEDIA_API_URL}?${params.toString()}`, {
+    method: 'GET', mode: 'cors', credentials: 'omit', cache: 'force-cache', signal
+  });
+  if (!response.ok) throw new Error(`Wikipedia HTTP ${response.status}`);
+  const payload = await response.json();
+  const page = Object.values(payload?.query?.pages || {}).find((item) => item && !item.missing);
+  const summary = cleanSaintText(page?.extract, 900);
+  return { name, summary, source: summary ? 'Wikipedia italiana' : '' };
+}
+
+function saintDateLabel(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  return new Intl.DateTimeFormat('it-IT', { weekday:'long', day:'numeric', month:'long', year:'numeric' }).format(d);
+}
+
+function closeSaintDetails() {
+  saintBioFetchController?.abort();
+  saintBioFetchController = null;
+  if (saintDetailPanel) saintDetailPanel.hidden = true;
+}
+
+async function openSaintDetails() {
+  if (currentPageKind === 'note' || isPlannerKind()) return;
+  const dateString = currentDate;
+  const initial = cachedSaintInfo(dateString);
+  if (!initial.name || !saintDetailPanel) return;
+  saintDetailTitle.textContent = 'Santo del giorno';
+  saintDetailDate.textContent = saintDateLabel(dateString);
+  saintDetailName.textContent = initial.name;
+  saintDetailText.textContent = initial.summary || 'Caricamento breve descrizione…';
+  saintDetailSource.textContent = initial.summary && initial.source ? `Fonte: ${initial.source}` : '';
+  saintDetailPanel.hidden = false;
+  if (initial.summary || !navigator.onLine) {
+    if (!initial.summary) saintDetailText.textContent = 'Breve descrizione non disponibile offline.';
+    return;
+  }
+
+  saintBioFetchController?.abort();
+  const controller = new AbortController();
+  saintBioFetchController = controller;
+  try {
+    const info = await fetchSaintSummaryFromSource(dateString, initial.name, controller.signal);
+    if (!info?.summary) throw new Error('descrizione non disponibile');
+    cacheSaintInfo(dateString, info);
+    if (currentDate === dateString && !saintDetailPanel.hidden) {
+      saintDetailText.textContent = info.summary;
+      saintDetailSource.textContent = `Fonte: ${info.source || 'SantoDelGiorno.it'}`;
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError') return;
+    if (currentDate === dateString && !saintDetailPanel.hidden) {
+      saintDetailText.textContent = 'Breve descrizione momentaneamente non disponibile.';
+      saintDetailSource.textContent = '';
+    }
+  } finally {
+    if (saintBioFetchController === controller) saintBioFetchController = null;
   }
 }
 
@@ -733,17 +868,34 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   root.querySelector('.day-name').textContent = dayName;
   root.querySelector('.month-name').textContent = monthName;
   root.querySelector('.year-label').textContent = String(d.getFullYear());
-  setSaintLabel(root, dateString);
+  setSaintLabel(root, dateString, 'cached', pageKind);
   const kindLabel = root.querySelector('.page-kind-label');
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
   if (kindLabel) {
-    if (pageKind === 'note') kindLabel.textContent = `Note del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
-    else if (isPlannerKind(pageKind)) kindLabel.textContent = 'Planner';
-    else kindLabel.textContent = '';
+    if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
+    else if (isPlannerKind(pageKind)) {
+      const mode = plannerModeFromKind(pageKind);
+      const plannerDate = new Date(`${dateString}T12:00:00`);
+      if (mode === 'monthly') kindLabel.textContent = `Planner mensile - ${new Intl.DateTimeFormat('it-IT', { month:'long', year:'numeric' }).format(plannerDate)}`;
+      else if (mode === 'yearly') kindLabel.textContent = `Planner annuale - ${plannerDate.getFullYear()}`;
+      else kindLabel.textContent = 'Planner';
+    } else kindLabel.textContent = '';
   }
   if (noteCounter) noteCounter.textContent = '';
   if (hours) hours.hidden = pageKind === 'note' || isPlannerKind(pageKind);
+  if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
+  else if (kindLabel) kindLabel.style.removeProperty('left');
+}
+
+function alignNoteTitleToPen(root = document) {
+  const pageRoot = root?.classList?.contains?.('paper') ? root : root?.querySelector?.('.paper');
+  const label = root?.querySelector?.('.page-kind-label');
+  const toolbar = root?.querySelector?.('.quick-toolbar');
+  const pen = root?.querySelector?.('[data-tool="pen"]');
+  if (!pageRoot || !label || !toolbar || !pen || !pageRoot.classList.contains('note-view')) return;
+  const x = Number(toolbar.offsetLeft || 0) + Number(pen.offsetLeft || 0);
+  if (x > 0) label.style.left = `${Math.round(x)}px`;
 }
 
 function plannerModeTitle(mode, dateString) {
@@ -760,12 +912,22 @@ function plannerModeTitle(mode, dateString) {
   return `Planning annuale · ${d.getFullYear()}`;
 }
 
+function plannerDailyDateLabel(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(d).toLocaleUpperCase('it-IT');
+  const month = new Intl.DateTimeFormat('it-IT', { month:'long' }).format(d);
+  return `${d.getDate()} ${weekday} · ${month} ${d.getFullYear()}`;
+}
+
 function buildDailyPlannerHtml(dateString) {
-  const hours = Array.from({ length: 13 }, (_, i) => 7 + i)
-    .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`).join('');
-  return `<div class="planner-heading planner-daily-heading">${plannerModeTitle('daily', dateString)}</div>
+  const rows = ['<div class="planner-time-row planner-time-row-blank"><span></span><i></i></div>']
+    .concat(Array.from({ length: 12 }, (_, i) => 7 + i)
+      .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`))
+    .join('');
+  return `<div class="planner-daily-date">${plannerDailyDateLabel(dateString)}</div>
+    <div class="planner-heading planner-daily-heading">Planning giornaliero</div>
     <div class="planner-daily-grid">
-      <section class="planner-timeline"><h3>Programma</h3><div class="planner-time-rows">${hours}</div></section>
+      <section class="planner-timeline"><h3>Programma</h3><div class="planner-time-rows">${rows}</div><div class="planner-time-bottom-label"><span>19:00</span><i></i></div></section>
       <aside class="planner-daily-side">
         <section class="planner-box planner-priority"><h3>Priorità del giorno</h3><div>1.</div><div>2.</div><div>3.</div></section>
         <section class="planner-box planner-todo"><h3>To-do</h3><div>□</div><div>□</div><div>□</div><div>□</div></section>
@@ -798,8 +960,7 @@ function buildMonthlyPlannerHtml(dateString) {
     const today = localISODate(d) === dateString ? ' reference' : '';
     return `<div class="planner-month-cell${outside}${today}"><span>${d.getDate()}</span></div>`;
   }).join('');
-  return `<div class="planner-heading">${plannerModeTitle('monthly', dateString)}</div>
-    <div class="planner-month-grid">${labels}${cells}</div>
+  return `<div class="planner-month-grid">${labels}${cells}</div>
     <div class="planner-month-bottom"><section class="planner-box"><h3>Obiettivi del mese</h3></section><section class="planner-box"><h3>Note / Riepilogo</h3></section></div>`;
 }
 
@@ -816,8 +977,7 @@ function miniMonthHtml(year, monthIndex) {
 function buildYearlyPlannerHtml(dateString) {
   const year = Number(dateString.slice(0,4));
   const months = Array.from({ length: 12 }, (_, i) => miniMonthHtml(year, i)).join('');
-  return `<div class="planner-heading">${plannerModeTitle('yearly', dateString)}</div>
-    <div class="planner-year-grid">${months}</div>
+  return `<div class="planner-year-grid">${months}</div>
     <div class="planner-year-bottom"><section class="planner-box"><h3>Obiettivi annuali</h3></section><section class="planner-box"><h3>Progetti principali</h3></section><section class="planner-box"><h3>Note strategiche</h3></section></div>`;
 }
 
@@ -986,6 +1146,7 @@ function configurePageRoot(root, descriptor) {
   const planner = isPlannerKind(descriptor.kind);
   const mode = planner ? plannerModeFromKind(descriptor.kind) : null;
   root.classList.toggle('planner-view', planner);
+  root.classList.toggle('note-view', descriptor.kind === 'note');
   for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
   const layer = root.querySelector('.planner-layer');
   if (layer) {
@@ -1008,7 +1169,8 @@ function configurePageRoot(root, descriptor) {
 function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   configurePageRoot(paper, pageDescriptor());
-  scheduleSaintRefresh();
+  if (currentPageKind === 'agenda') scheduleSaintRefresh();
+  else { saintFetchController?.abort(); saintBioFetchController?.abort(); }
   if (baselineLabel) {
     if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
@@ -2936,6 +3098,7 @@ function newStrokeDiag(ev, reason) {
 
 function startStroke(ev, reason = 'pointerdown') {
   if (!ready || pageTurning || activeTool === 'image') return false;
+  if (saintDetailPanel && !saintDetailPanel.hidden) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -2949,9 +3112,10 @@ function startStroke(ev, reason = 'pointerdown') {
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
-  // 0.1.38: anche il recupero del santo è subordinato alla Pencil.
+  // 0.1.39: anche il recupero del santo è subordinato alla Pencil.
   // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
   saintFetchController?.abort();
+  saintBioFetchController?.abort();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -4028,12 +4192,27 @@ window.addEventListener('pointerup', handlePointerUp, { passive: false, capture:
 window.addEventListener('pointercancel', handlePointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
-  if (ev.target instanceof Element && ev.target.closest('.settings-scroll')) return;
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body')) return;
   ev.preventDefault();
 }, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gesturechange', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gestureend', (ev) => ev.preventDefault(), { passive: false });
+
+function activateSaintDetailsFromPen(ev) {
+  if (ev.pointerType !== 'pen' || saintNameButton?.disabled) return;
+  void openSaintDetails();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+saintNameButton?.addEventListener('pointerup', activateSaintDetailsFromPen, { passive:false });
+saintNameButton?.addEventListener('click', () => { if (!saintNameButton.disabled) void openSaintDetails(); });
+closeSaintDetailButton?.addEventListener('pointerup', (ev) => {
+  if (ev.pointerType !== 'pen') return;
+  closeSaintDetails(); ev.preventDefault(); ev.stopPropagation();
+}, { passive:false });
+closeSaintDetailButton?.addEventListener('click', closeSaintDetails);
+saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDetailPanel) closeSaintDetails(); });
 
 versionButton.addEventListener('click', showReport);
 markLagButton.addEventListener('click', markLag);
@@ -4159,6 +4338,7 @@ window.addEventListener('resize', () => {
   pageSwipe = null;
   resizeCanvas();
   renderImages();
+  if (currentPageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(document));
 });
 
 window.addEventListener('blur', () => {

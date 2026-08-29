@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.38 - santo del giorno, Planning giornaliero riallineato, Cloud Aruba e Ink Apple Pencil invariato",
+  "description": "Agenda iPad 0.1.39 - rifiniture Planner, santo interattivo, Impostazioni allineate e Ink invariato",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

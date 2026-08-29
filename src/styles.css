@@ -20,7 +20,7 @@ button { font: inherit; }
 .day-text { display: flex; flex-direction: column; gap: 4px; }
 .day-name { font-size: clamp(18px,2.2vw,26px); letter-spacing: .085em; font-weight: 700; color: #3c342c; }
 .month-name { font-family: Georgia, "Times New Roman", serif; font-size: clamp(24px,3vw,36px); color: #6f5d49; }
-.saint-name { margin-top:2px; max-width:min(58vw,560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:rgba(82,66,48,.76); font-size:clamp(10px,1.25vw,14px); font-weight:650; letter-spacing:.015em; }
+.saint-name { appearance:none; -webkit-appearance:none; border:0; padding:0; background:transparent; text-align:left; cursor:pointer; pointer-events:auto; margin-top:2px; max-width:min(58vw,560px); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:rgba(82,66,48,.76); font-size:clamp(10px,1.25vw,14px); font-weight:650; letter-spacing:.015em; }
 .year-label { font-family: Georgia, "Times New Roman", serif; font-size: clamp(30px,4vw,46px); color: #514536; }
 .hours { position: absolute; left: 18px; top: calc(var(--header-h) + 18px); bottom: calc(var(--footer-h) + 11px); width: 46px; display: grid; grid-template-rows: repeat(13,1fr); align-items: start; color: rgba(78,66,51,.62); font-size: 11px; z-index: 1; pointer-events: none; }
 #inkCanvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; touch-action: none; cursor: crosshair; }
@@ -470,7 +470,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 .planner-box { border:1px solid var(--planner-border); border-radius:8px; background:rgba(255,255,255,.12); min-height:0; padding:8px; }
 .planner-box h3 { padding-bottom:6px; border-bottom:1px solid var(--planner-rule); }
 
-/* Giornaliero 0.1.38: la scala 07-19 coincide geometricamente con quella Agenda.
+/* Giornaliero 0.1.39: la scala 07-19 coincide geometricamente con quella Agenda.
    Il canvas resta immutato: si riallinea il modello Planning alle coordinate Ink. */
 .paper.planner-daily .planner-layer { padding:0; }
 .planner-daily-heading { position:absolute; left:72px; right:18px; top:1px; height:15px; margin:0; font-size:10px; }
@@ -1201,4 +1201,112 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .setting-field, .cloud-grid label { font-size:13px; }
   .setting-field input, .setting-field select, .setting-field textarea, .cloud-grid input, .cloud-grid textarea { font-size:16px; }
   .credential-actions { display:grid; grid-template-columns:1fr; }
+}
+
+
+/* 0.1.39 — rifiniture Planner, Impostazioni, santo interattivo e Note. */
+.saint-name:disabled { cursor:default; opacity:.72; }
+.saint-name:not(:disabled):active { opacity:.58; }
+.saint-name[hidden] { display:none !important; }
+
+/* Nota del giorno: la N parte sulla verticale del primo comando Penna. */
+.paper.note-view .page-kind-label {
+  left:calc(100% - 388px);
+  transform:none;
+  text-align:left;
+}
+
+/* Planner giornaliero: una riga vuota precede le 07:00; le 19:00 chiudono la scala in basso. */
+.planner-daily-date {
+  position:absolute; left:18px; top:3px; z-index:2;
+  font:700 8.5px/1.15 system-ui,-apple-system,"Segoe UI",sans-serif;
+  letter-spacing:.025em; color:rgba(63,52,41,.76); white-space:nowrap;
+}
+.planner-time-row-blank span { visibility:hidden; }
+.planner-time-bottom-label {
+  position:absolute; left:10px; right:10px; bottom:2px;
+  display:grid; grid-template-columns:42px 1fr; gap:7px; align-items:end;
+  pointer-events:none;
+}
+.planner-time-bottom-label span { font-size:8px; opacity:.68; line-height:1.1; }
+.planner-time-bottom-label i { display:block; border-top:1px solid var(--planner-rule); }
+
+/* Planner settimanale: margini laterali simmetrici e tabella più larga. */
+.paper.planner-weekly .planner-layer { padding-left:18px; padding-right:18px; }
+
+
+.paper.planner-monthly .page-kind-label,
+.paper.planner-yearly .page-kind-label { text-transform:none; letter-spacing:.01em; }
+
+/* Mensile e annuale: titolo spostato nell'intestazione, spazio restituito alle tabelle. */
+.paper.planner-monthly .planner-layer,
+.paper.planner-yearly .planner-layer { padding-top:8px; }
+.planner-month-grid { height:78%; }
+.planner-month-bottom { height:calc(22% - 9px); }
+.planner-year-grid { height:79%; }
+.planner-year-bottom { height:calc(21% - 8px); }
+
+/* Planner annuale leggibile anche su iPad compatti. */
+.planner-mini-month h3 { font-size:9px; font-weight:850; color:rgba(45,38,31,.94); opacity:1; }
+.planner-mini-week { font-size:6.4px; font-weight:800; color:rgba(48,41,33,.86); opacity:1; letter-spacing:.10em; }
+.planner-mini-days span, .planner-mini-days i { font-size:6.8px; font-weight:750; color:rgba(42,36,29,.92); opacity:1; }
+.paper[data-paper-color="black"] .planner-mini-month h3,
+.paper[data-paper-color="black"] .planner-mini-week,
+.paper[data-paper-color="black"] .planner-mini-days span { color:rgba(250,247,239,.94); }
+
+/* Impostazioni: etichette allineate e controlli omogenei in altezza. */
+.settings-card { --settings-control-height:48px; }
+.cloud-sync-section .settings-grid,
+.backup-auto-section .settings-grid { align-items:start; }
+.cloud-sync-section .setting-field,
+.backup-auto-section .setting-field { grid-template-rows:minmax(1.35em,auto) auto; align-content:start; }
+#cloudEndpoint,
+#cloudSyncMode,
+#backupFrequency,
+#backupCustomDays,
+#backupRetention {
+  height:var(--settings-control-height) !important;
+  min-height:var(--settings-control-height) !important;
+}
+
+/* Finestra biografia santo, coerente con Impostazioni. */
+.saint-detail-panel {
+  position:fixed; inset:0; z-index:125; display:grid; place-items:center; padding:16px;
+  background:rgba(25,22,18,.48); -webkit-backdrop-filter:blur(7px); backdrop-filter:blur(7px);
+  pointer-events:auto; touch-action:manipulation;
+}
+.saint-detail-panel[hidden] { display:none !important; }
+.saint-detail-card {
+  width:min(720px,94vw); max-height:min(620px,88vh); overflow:hidden;
+  border-radius:18px; background:#f7f1e4; color:#473d32;
+  box-shadow:0 18px 70px rgba(0,0,0,.30); border:1px solid rgba(80,65,45,.20);
+  display:flex; flex-direction:column;
+}
+.saint-detail-header {
+  min-height:76px; padding:14px 18px 12px 20px; display:flex; align-items:center;
+  justify-content:space-between; gap:12px; border-bottom:1px solid rgba(82,68,49,.15); background:#ede3cf;
+}
+.saint-detail-header h2 { margin:0; font:700 25px/1.1 Georgia,"Times New Roman",serif; }
+.saint-detail-header p { margin:5px 0 0; font-size:13px; opacity:.72; text-transform:capitalize; }
+.saint-detail-body { overflow:auto; -webkit-overflow-scrolling:touch; padding:22px 24px 26px; user-select:text; -webkit-user-select:text; }
+.saint-detail-body h3 { margin:0 0 14px; font:700 22px/1.25 Georgia,"Times New Roman",serif; }
+.saint-detail-body p { margin:0; font-size:16px; line-height:1.62; white-space:pre-wrap; }
+.saint-detail-body small { display:block; margin-top:18px; font-size:12px; opacity:.65; }
+
+@media (max-width:760px) {
+  .paper.note-view .page-kind-label { left:calc(100% - 263px); }
+  .planner-daily-date { left:9px; top:3px; font-size:7.2px; }
+  .planner-time-bottom-label { grid-template-columns:34px 1fr; gap:4px; }
+  .planner-time-bottom-label span { font-size:7px; }
+  .paper.planner-weekly .planner-layer { padding-left:9px; padding-right:9px; }
+  .planner-mini-month h3 { font-size:7.8px; }
+  .planner-mini-week { font-size:5.8px; letter-spacing:.07em; }
+  .planner-mini-days span, .planner-mini-days i { font-size:6.2px; font-weight:800; }
+  .saint-detail-panel { padding:7px; }
+  .saint-detail-card { width:99vw; max-height:94vh; border-radius:13px; }
+  .saint-detail-header { min-height:70px; padding:12px 14px; }
+  .saint-detail-header h2 { font-size:22px; }
+  .saint-detail-body { padding:18px 16px 22px; }
+  .saint-detail-body h3 { font-size:20px; }
+  .saint-detail-body p { font-size:15px; line-height:1.55; }
 }
