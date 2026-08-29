@@ -1621,3 +1621,27 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .weekly-timetable-cell input { font-size:11px; padding:2px 3px; }
   .weekly-timetable-cell.break-row input { font-size:9.5px; }
 }
+
+/* 0.1.44 — vero Ink persistente nella tabella orario settimanale. */
+.weekly-timetable-cell {
+  position:relative;
+  overflow:hidden;
+  touch-action:none;
+}
+.weekly-timetable-cell input {
+  position:absolute;
+  inset:0;
+  z-index:1;
+}
+.weekly-timetable-ink-canvas {
+  position:absolute;
+  inset:0;
+  z-index:2;
+  display:block;
+  width:100%;
+  height:100%;
+  pointer-events:none;
+  background:transparent;
+}
+/* La prima colonna resta volutamente vuota: nessun placeholder "orario"/"intervallo". */
+.weekly-timetable-cell.time input::placeholder { color:transparent !important; opacity:0 !important; }
