@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.52';
+const APP_VERSION = '0.1.53';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -21,6 +21,7 @@ const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v3';
+const WEEKLY_TIMETABLE_MAX_PAGES = 10;
 const SHARED_WEEKLY_TIMETABLE_ROWS = 11;
 const SHARED_WEEKLY_TIMETABLE_DAYS = 5;
 const WEEKLY_TIMETABLE_INK_COLOR = '#ffffff';
@@ -215,6 +216,7 @@ let historyDetailFetchController = null;
 let historyRefreshTimer = 0;
 let historyRequestSerial = 0;
 let weeklyTimetableReturnDescriptor = null;
+let currentTimetableIndex = 1;
 let pageDoubleTapLastTap = null;
 let ready = false;
 let rafPrev = performance.now();
@@ -1211,11 +1213,15 @@ function mondayOf(dateString) {
   return localISODate(d);
 }
 
-function plannerPeriodKey(dateString, mode) {
+function plannerPeriodKey(dateString, mode, timetableIndex = currentTimetableIndex) {
   if (mode === 'daily') return dateString; // stesso Ink della pagina Agenda
   if (mode === 'weekly') return `planner::week::${mondayOf(dateString)}`;
   if (mode === 'monthly') return `planner::month::${dateString.slice(0, 7)}`;
-  if (mode === 'timetable') return SHARED_WEEKLY_TIMETABLE_KEY;
+  if (mode === 'timetable') {
+    const index = Math.min(WEEKLY_TIMETABLE_MAX_PAGES, Math.max(1, Number(timetableIndex) || 1));
+    // La prima tabella conserva la chiave storica: nessun orario della 0.1.52 viene perso.
+    return index === 1 ? SHARED_WEEKLY_TIMETABLE_KEY : `${SHARED_WEEKLY_TIMETABLE_KEY}::${index}`;
+  }
   return `planner::year::${dateString.slice(0, 4)}`;
 }
 
@@ -1241,7 +1247,7 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
       if (mode === 'daily') {
         const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(plannerDate);
         const dayMonth = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long' }).format(plannerDate);
-        kindLabel.textContent = `Planner di ${weekday} ${dayMonth}`;
+        kindLabel.textContent = `Planner giornaliero - ${weekday} ${dayMonth}`;
       } else if (mode === 'weekly') kindLabel.textContent = plannerModeTitle('weekly', dateString);
       else if (mode === 'timetable') kindLabel.textContent = 'Orario settimanale';
       else if (mode === 'monthly') kindLabel.textContent = plannerModeTitle('monthly', dateString);
@@ -1266,7 +1272,11 @@ function alignNoteTitleToPen(root = document) {
 
 function plannerModeTitle(mode, dateString) {
   const d = new Date(`${dateString}T12:00:00`);
-  if (mode === 'daily') return `Planning giornaliero · ${new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long', year:'numeric' }).format(d)}`;
+  if (mode === 'daily') {
+    const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(d);
+    const dayMonth = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long' }).format(d);
+    return `Planner giornaliero - ${weekday} ${dayMonth}`;
+  }
   if (mode === 'weekly') {
     const monday = new Date(`${mondayOf(dateString)}T12:00:00`);
     const sunday = new Date(monday); sunday.setDate(sunday.getDate() + 6);
@@ -1348,21 +1358,25 @@ function buildYearlyPlannerHtml(dateString) {
     <div class="planner-year-bottom"><section class="planner-box"><h3>Obiettivi annuali</h3></section><section class="planner-box"><h3>Progetti principali</h3></section><section class="planner-box"><h3>Note strategiche</h3></section></div>`;
 }
 
-function buildSharedWeeklyTimetablePlannerHtml() {
+function buildSharedWeeklyTimetablePlannerHtml(timetableIndex = currentTimetableIndex) {
   const headers = ['ORARI','LUNEDÌ','MARTEDÌ','MERCOLEDÌ','GIOVEDÌ','VENERDÌ'];
   const heads = headers.map((label) => `<div class="planner-timetable-head">${label}</div>`).join('');
   const rows = Array.from({ length: SHARED_WEEKLY_TIMETABLE_ROWS }, (_, row) => {
     const compact = row === 3 || row === 7 ? ' break-row' : '';
     return Array.from({ length: 6 }, (_, col) => `<div class="planner-timetable-cell${compact}${col === 0 ? ' time-column' : ''}"></div>`).join('');
   }).join('');
-  return `<div class="planner-timetable-page"><div class="planner-timetable-grid">${heads}${rows}</div></div>`;
+  return `<div class="planner-timetable-page">
+    <div class="planner-timetable-title">Orario settimanale <span>${timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}</span></div>
+    <div class="planner-timetable-person"><strong>Nome e cognome</strong><div aria-hidden="true"></div></div>
+    <div class="planner-timetable-grid">${heads}${rows}</div>
+  </div>`;
 }
 
-function plannerHtml(mode, dateString) {
+function plannerHtml(mode, dateString, timetableIndex = currentTimetableIndex) {
   if (mode === 'weekly') return buildWeeklyPlannerHtml(dateString);
   if (mode === 'monthly') return buildMonthlyPlannerHtml(dateString);
   if (mode === 'yearly') return buildYearlyPlannerHtml(dateString);
-  if (mode === 'timetable') return buildSharedWeeklyTimetablePlannerHtml();
+  if (mode === 'timetable') return buildSharedWeeklyTimetablePlannerHtml(timetableIndex);
   return buildDailyPlannerHtml(dateString);
 }
 
@@ -1373,6 +1387,7 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   session.storageReads++;
   currentPageKind = target.kind;
   currentPlannerMode = target.plannerMode ?? plannerModeFromKind(target.kind) ?? currentPlannerMode;
+  currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(record?.strokes) ? record.strokes : [];
@@ -1406,7 +1421,7 @@ async function openWeeklyTimetable() {
     return;
   }
   weeklyTimetableReturnDescriptor = { ...oldDescriptor };
-  const target = pageDescriptor(currentDate, 'planner-timetable', 0, 0);
+  const target = pageDescriptor(currentDate, 'planner-timetable', 0, 0, 1);
   try {
     await loadDescriptorAsCurrentPage(target, { color:'black', template:'blank' }, true);
     statusLabel.textContent = strokes.length ? 'orario settimanale caricato' : 'orario settimanale';
@@ -1432,7 +1447,9 @@ async function closeWeeklyTimetable() {
     return;
   }
   const fallback = pageDescriptor(currentDate, 'planner-weekly', 0, 0);
-  const target = weeklyTimetableReturnDescriptor?.kind === 'planner-weekly' ? weeklyTimetableReturnDescriptor : fallback;
+  const target = isPlannerKind(weeklyTimetableReturnDescriptor?.kind) && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
+    ? weeklyTimetableReturnDescriptor
+    : fallback;
   weeklyTimetableReturnDescriptor = null;
   try {
     await loadDescriptorAsCurrentPage(target, null, true);
@@ -1641,7 +1658,7 @@ function configurePageRoot(root, descriptor) {
   if (layer) {
     layer.hidden = !planner;
     layer.setAttribute('aria-hidden', planner ? 'false' : 'true');
-    layer.innerHTML = planner ? plannerHtml(mode, descriptor.date) : '';
+    layer.innerHTML = planner ? plannerHtml(mode, descriptor.date, descriptor.timetableIndex) : '';
   }
   const modeBar = root.querySelector('.planner-mode-bar');
   if (modeBar) modeBar.hidden = !planner || mode === 'timetable';
@@ -1684,27 +1701,30 @@ function noteKey(dateString, noteIndex) {
   return `${dateString}::note::${String(noteIndex).padStart(4, '0')}`;
 }
 
-function pageKey(dateString, pageKind = 'agenda', noteIndex = 0) {
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex) {
   if (pageKind === 'note') return noteKey(dateString, noteIndex);
-  if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind));
+  if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind), timetableIndex);
   return dateString;
 }
 
-function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal) {
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex) {
   const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
   return {
     date: dateString,
     kind: pageKind,
     plannerMode,
+    timetableIndex: pageKind === 'planner-timetable'
+      ? Math.min(WEEKLY_TIMETABLE_MAX_PAGES, Math.max(1, Number(timetableIndex) || 1))
+      : 0,
     noteIndex: pageKind === 'note' ? noteIndex : 0,
     noteTotal: pageKind === 'note' ? noteTotal : 0,
-    key: pageKey(dateString, pageKind, noteIndex),
+    key: pageKey(dateString, pageKind, noteIndex, timetableIndex),
     createNote: false
   };
 }
 
 function currentPageKey() {
-  return pageKey(currentDate, currentPageKind, currentNoteIndex);
+  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex);
 }
 
 function addDays(dateString, delta) {
@@ -2020,7 +2040,7 @@ async function applyRemoteStrokeEvent(event) {
   page.version = APP_VERSION;
   page.modifiedAt = new Date().toISOString();
   await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'add/delete concorrenti: stroke preservato' : null);
-  if (pageKeyValue === SHARED_WEEKLY_TIMETABLE_KEY && currentPageKind === 'planner-timetable' && currentPageKey() === pageKeyValue && !drawing) {
+  if (currentPageKind === 'planner-timetable' && currentPageKey() === pageKeyValue && !drawing) {
     strokes = pageStrokes;
     renderAll();
   }
@@ -4241,6 +4261,11 @@ function resetTurnStyles() {
 }
 
 function horizontalTarget(direction) {
+  if (currentPageKind === 'planner-timetable') {
+    const nextIndex = currentTimetableIndex + direction;
+    if (nextIndex < 1 || nextIndex > WEEKLY_TIMETABLE_MAX_PAGES) return null;
+    return pageDescriptor(currentDate, 'planner-timetable', 0, 0, nextIndex);
+  }
   if (isPlannerKind()) return null;
   const targetDate = addDays(currentDate, direction);
   if (!dateInRange(targetDate)) return null;
@@ -4250,14 +4275,17 @@ function horizontalTarget(direction) {
 function verticalTarget(direction) {
   const count = notesCountCache.get(currentDate) ?? currentNoteTotal ?? 0;
 
-  // 0.1.50 — Orario settimanale richiamato SOLO con swipe verso il basso
-  // dal Planning settimanale. Lo swipe inverso torna al Planning settimanale.
+  // 0.1.53 — Orario settimanale raggiungibile con swipe verso il basso
+  // da qualsiasi modalità di Planning. Lo swipe inverso torna esattamente alla modalità di partenza.
   // direction -1 = swipe verso il basso; direction +1 = swipe verso l'alto.
-  if (currentPageKind === 'planner-weekly' && direction < 0) {
-    return pageDescriptor(currentDate, 'planner-timetable', 0, 0);
+  if (isPlannerKind() && currentPageKind !== 'planner-timetable' && direction < 0) {
+    weeklyTimetableReturnDescriptor = pageDescriptor();
+    return pageDescriptor(currentDate, 'planner-timetable', 0, 0, 1);
   }
   if (currentPageKind === 'planner-timetable' && direction > 0) {
-    return pageDescriptor(currentDate, 'planner-weekly', 0, 0);
+    return isPlannerKind(weeklyTimetableReturnDescriptor?.kind) && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
+      ? { ...weeklyTimetableReturnDescriptor }
+      : pageDescriptor(currentDate, 'planner-weekly', 0, 0);
   }
 
   // Gli altri Planner: swipe dal basso verso l'alto (direction +1) torna all'Agenda.
@@ -4384,7 +4412,9 @@ function movePageSwipe(ev) {
       if (pageSwipe?.target?.key === target.key) pageSwipe.targetPage = targetPage;
       return targetPage;
     });
-    if (axis === 'x') statusLabel.textContent = direction === 1 ? 'giorno successivo' : 'giorno precedente';
+    if (axis === 'x') statusLabel.textContent = currentPageKind === 'planner-timetable'
+      ? `Orario settimanale ${target.timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}`
+      : (direction === 1 ? 'giorno successivo' : 'giorno precedente');
     else if (target.kind === 'agenda') statusLabel.textContent = 'torna ad Agenda';
     else if (target.kind === 'planner-daily') statusLabel.textContent = 'apri Planner giornaliero';
     else if (target.kind === 'planner-timetable') statusLabel.textContent = 'apri Orario settimanale';
@@ -4523,6 +4553,7 @@ async function commitPageTurn() {
   if (target.kind === 'agenda') calendarViewDate = target.date;
   currentPageKind = target.kind;
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
+  currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
