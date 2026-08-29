@@ -1694,3 +1694,16 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
     height:calc(100% - 34px);
   }
 }
+
+
+/* 0.1.47 — Planner giornaliero: margine sinistro dimezzato e riquadro orari leggermente più alto. */
+.planner-daily-grid { left:26px; top:10px; }
+
+/* Orario settimanale: una sola superficie Ink; acquisizione globale come nell'Ink principale. */
+.weekly-timetable-surface { touch-action:none; }
+.weekly-timetable-grid { pointer-events:none; }
+.weekly-timetable-ink-canvas { pointer-events:auto; touch-action:none; }
+
+@media (max-width:760px) {
+  .planner-daily-grid { left:19px; top:10px; }
+}

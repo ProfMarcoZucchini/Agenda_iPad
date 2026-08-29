@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.46';
+const APP_VERSION = '0.1.47';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -1189,6 +1189,14 @@ function drawWeeklyTimetableInkSegment(pointer, point) {
   targetCtx.restore();
 }
 
+function eventInsideWeeklyTimetableInkArea(ev) {
+  if (weeklyTimetablePanel?.hidden || !(weeklyTimetableInkCanvas instanceof HTMLCanvasElement)) return false;
+  const bounds = weeklyTimetableInkCanvas.getBoundingClientRect();
+  if (bounds.width < 1 || bounds.height < 1) return false;
+  return ev.clientX >= bounds.left && ev.clientX <= bounds.right
+    && ev.clientY >= bounds.top && ev.clientY <= bounds.bottom;
+}
+
 function beginWeeklyTimetableInk(ev) {
   if (weeklyTimetablePanel?.hidden || weeklyTimetableInkPointer) return;
   const isPen = ev.pointerType === 'pen';
@@ -1836,7 +1844,7 @@ function maximalEntityEvents(events) {
 
 async function applyRemoteSharedWeeklyTimetableEvent(event) {
   // Compatibilità 0.1.41–0.1.45: i vecchi eventi cella appartengono alla tecnologia dismessa.
-  await putRemoteEventResult(event, 'ignored-legacy', null, 'orario v1 dismesso: la 0.1.46 usa normali stroke del Planning');
+  await putRemoteEventResult(event, 'ignored-legacy', null, 'orario v1 dismesso: la 0.1.47 usa normali stroke del Planning');
   return { ignored: 1 };
 }
 
@@ -4597,15 +4605,41 @@ miniCalendar?.addEventListener('click', (ev) => {
 stylePanel?.addEventListener('pointerdown', handleStylePanelDirectPointer, { passive: false, capture: true });
 stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { passive: false, capture: true });
 
+// 0.1.47 — router globale condiviso: il motore Ink Agenda resta byte-per-byte invariato.
+// Quando l'orario è aperto, gli stessi Pointer Events catturati su window vengono deviati
+// alla superficie Ink unica della tabella. Safari/iPadOS non deve colpire direttamente il canvas.
+function routeGlobalPointerDown(ev) {
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) {
+    if (eventInsideWeeklyTimetableInkArea(ev)) beginWeeklyTimetableInk(ev);
+    return;
+  }
+  handlePointerDown(ev);
+}
+function routeGlobalPointerMove(ev) {
+  if (weeklyTimetableInkPointer) { moveWeeklyTimetableInk(ev); return; }
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return;
+  handlePointerMove(ev);
+}
+function routeGlobalPointerUp(ev) {
+  if (weeklyTimetableInkPointer) { finishWeeklyTimetableInk(ev); return; }
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return;
+  handlePointerUp(ev);
+}
+function routeGlobalPointerCancel(ev) {
+  if (weeklyTimetableInkPointer) { finishWeeklyTimetableInk(ev); return; }
+  if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) return;
+  handlePointerCancel(ev);
+}
+
 paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
 paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });
 paper.addEventListener('touchend', (ev) => handlePaperTouchEnd(ev, false), { passive: false, capture: true });
 paper.addEventListener('touchcancel', (ev) => handlePaperTouchEnd(ev, true), { passive: false, capture: true });
 
-window.addEventListener('pointerdown', handlePointerDown, { passive: false, capture: true });
-window.addEventListener('pointermove', handlePointerMove, { passive: false, capture: true });
-window.addEventListener('pointerup', handlePointerUp, { passive: false, capture: true });
-window.addEventListener('pointercancel', handlePointerCancel, { passive: false, capture: true });
+window.addEventListener('pointerdown', routeGlobalPointerDown, { passive: false, capture: true });
+window.addEventListener('pointermove', routeGlobalPointerMove, { passive: false, capture: true });
+window.addEventListener('pointerup', routeGlobalPointerUp, { passive: false, capture: true });
+window.addEventListener('pointercancel', routeGlobalPointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
   if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .weekly-timetable-body')) return;
@@ -4630,10 +4664,6 @@ closeSaintDetailButton?.addEventListener('pointerup', (ev) => {
 closeSaintDetailButton?.addEventListener('click', closeSaintDetails);
 saintDetailPanel?.addEventListener('click', (ev) => { if (ev.target === saintDetailPanel) closeSaintDetails(); });
 
-weeklyTimetableInkCanvas?.addEventListener('pointerdown', beginWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableInkCanvas?.addEventListener('pointermove', moveWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableInkCanvas?.addEventListener('pointerup', finishWeeklyTimetableInk, { passive:false, capture:true });
-weeklyTimetableInkCanvas?.addEventListener('pointercancel', finishWeeklyTimetableInk, { passive:false, capture:true });
 closeWeeklyTimetableButton?.addEventListener('click', closeWeeklyTimetable);
 weeklyTimetablePanel?.addEventListener('click', (ev) => { if (ev.target === weeklyTimetablePanel) closeWeeklyTimetable(); });
 window.addEventListener('resize', () => { if (weeklyTimetablePanel && !weeklyTimetablePanel.hidden) scheduleWeeklyTimetableInkResize(); });
