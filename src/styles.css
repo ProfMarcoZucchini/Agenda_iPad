@@ -113,6 +113,16 @@ button { font: inherit; }
   -webkit-tap-highlight-color: transparent;
 }
 .tool-button span { font-size: 9px; letter-spacing: .01em; }
+.app-tool-icon {
+  width:27px;
+  height:27px;
+  flex:0 0 auto;
+  overflow:visible;
+  shape-rendering:geometricPrecision;
+}
+.app-tool-icon path,
+.app-tool-icon rect,
+.app-tool-icon circle { vector-effect:non-scaling-stroke; }
 .tool-button.active {
   border-color: rgba(75,61,43,.42);
   background: rgba(255,255,255,.68);
@@ -128,6 +138,7 @@ button { font: inherit; }
 @media (max-width: 760px) {
   .quick-toolbar { top: 7px; right: 7px; gap: 2px; padding: 3px; }
   .tool-button { min-width: 34px; width: 34px; height: 32px; padding: 2px; font-size: 15px; }
+  .app-tool-icon { width:25px; height:25px; }
   .tool-button span { display: none; }
   .page-header { padding-right: 160px; }
   .page-meta { margin-right: 138px; }
@@ -845,13 +856,10 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   box-shadow:inset 0 0 0 1px rgba(92,77,54,.15);
 }
 .calendar-icon {
-  width:22px;
-  height:22px;
-  fill:none;
-  stroke:currentColor;
-  stroke-width:1.8;
-  stroke-linecap:round;
-  stroke-linejoin:round;
+  width:25px;
+  height:25px;
+  overflow:visible;
+  shape-rendering:geometricPrecision;
 }
 .paper[data-paper-color="black"] .footer-icon-button {
   border-color:rgba(255,255,255,.20);
@@ -1416,17 +1424,14 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   transform:translate(-50%,calc(-50% + 1px));
 }
 .gear-icon {
-  width:23px;
-  height:23px;
-  fill:none;
-  stroke:currentColor;
-  stroke-width:1.8;
-  stroke-linecap:round;
-  stroke-linejoin:round;
+  width:26px;
+  height:26px;
+  overflow:visible;
+  shape-rendering:geometricPrecision;
 }
 @media (max-width:760px) {
   .settings-button.settings-center-button.footer-icon-button { width:32px; height:32px; }
-  .gear-icon { width:21px; height:21px; }
+  .gear-icon { width:24px; height:24px; }
 }
 
 
@@ -1708,7 +1713,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .planner-daily-grid { left:19px; top:10px; }
 }
 
-/* 0.1.55 — Il titolare è la prima riga della stessa griglia dell'Orario. */
+/* 0.1.56 — Titolare più alto e secondo intervallo anticipato di una riga. */
 .paper.planner-timetable { background:#050505 !important; }
 .paper.planner-timetable .page-header {
   height:54px; padding:0; border-bottom:0; background:#050505;
@@ -1743,7 +1748,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .planner-timetable-grid {
   width:100%; height:100%; display:grid;
   grid-template-columns:minmax(64px,.52fr) repeat(5,minmax(0,1fr));
-  grid-template-rows:52px 38px repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr));
+  grid-template-rows:60px 38px repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(2,minmax(0,1fr)) minmax(0,.5fr) repeat(4,minmax(0,1fr));
   border:1.5px solid rgba(255,255,255,.62); border-radius:7px; overflow:hidden; background:#050505;
 }
 .planner-timetable-head,
@@ -1765,7 +1770,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .planner-timetable-title { font-size:15px; gap:6px; }
   .planner-timetable-title span { font-size:8.5px; }
   .planner-timetable-owner-row { padding:0 6px; gap:7px; font-size:8.5px; }
-  .planner-timetable-grid { grid-template-columns:minmax(46px,.45fr) repeat(5,minmax(0,1fr)); grid-template-rows:43px 29px repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(3,minmax(0,1fr)); }
+  .planner-timetable-grid { grid-template-columns:minmax(46px,.45fr) repeat(5,minmax(0,1fr)); grid-template-rows:50px 29px repeat(3,minmax(0,1fr)) minmax(0,.5fr) repeat(2,minmax(0,1fr)) minmax(0,.5fr) repeat(4,minmax(0,1fr)); }
   .planner-timetable-head { font-size:9.2px; }
 }
 

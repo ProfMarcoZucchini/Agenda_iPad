@@ -7,10 +7,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="theme-color" content="#e9dfc8" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.55" />
-  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.55" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.57" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.57" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.55</title>
+  <title>Agenda iPad · 0.1.57</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
@@ -19,7 +19,7 @@
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
         <div class="cover-owner">di Marco Zucchini</div>
         <div class="cover-year">2026</div>
-        <div class="cover-version">v0.1.55</div>
+        <div class="cover-version">v0.1.57</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -74,13 +74,13 @@
       </nav>
 
       <nav class="quick-toolbar" aria-label="Strumenti rapidi di scrittura">
-        <button id="penToolButton" class="tool-button active" type="button" data-tool="pen" aria-pressed="true" title="Penna">✎<span>Penna</span></button>
-        <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore">▰<span>Evid.</span></button>
-        <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><span class="eraser-symbol" aria-hidden="true">▱</span><span>Gomma</span></button>
-        <button id="imageToolButton" class="tool-button image-tool-button" type="button" data-tool="image" aria-pressed="false" title="Immagini">▧<span>Img.</span></button>
-        <button id="undoButton" class="tool-button undo-button" type="button" title="Annulla ultima modifica">↶<span>Undo</span></button>
-        <button id="redoButton" class="tool-button redo-button" type="button" title="Ripristina ultima modifica annullata">↷<span>Redo</span></button>
-        <button id="styleButton" class="tool-button style-button" type="button" aria-expanded="false" title="Stile strumento e pagina">●<span>Stile</span></button>
+        <button id="penToolButton" class="tool-button active" type="button" data-tool="pen" aria-pressed="true" title="Penna"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M5.2 25.9l1.4-5.4L21 6.1l4.9 4.9-14.4 14.4z" fill="#f6c64e" stroke="#664a2f"/><path d="M21 6.1l2.1-2.1a2 2 0 0 1 2.8 0l2.1 2.1a2 2 0 0 1 0 2.8L25.9 11z" fill="#62a8dd" stroke="#315f86"/><path d="M5.2 25.9l1.4-5.4 4.9 4.9z" fill="#e8b77b" stroke="#664a2f"/><path d="M5.2 25.9l2.1-.6-1.5-1.5z" fill="#35312c"/></svg><span>Penna</span></button>
+        <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 22.5L18.8 6.2l6.8 4.9-11.8 16.3z" fill="#f5d84f" stroke="#725d28"/><path d="M18.8 6.2l2.5-3.4 6.8 4.9-2.5 3.4z" fill="#70c28b" stroke="#397754"/><path d="M7 22.5l6.8 4.9-5.5 1.2-3.5-2.5z" fill="#f3a65a" stroke="#8a5423"/><path d="M5 29h13" stroke="#f0d84f" stroke-width="2.8" stroke-linecap="round" opacity=".75"/></svg><span>Evid.</span></button>
+        <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M5.1 21.5L16.7 7.2a3 3 0 0 1 4.2-.4l5 4.1a3 3 0 0 1 .4 4.2L15.9 27.8H9.6l-4.1-3.4a2.1 2.1 0 0 1-.4-2.9z" fill="#ef91b2" stroke="#7b4156"/><path d="M10.3 15.1l8.9 7.2-4.3 5.3H9.6l-4.4-3.5a2 2 0 0 1-.3-2.8z" fill="#79b9e4" stroke="#3d6e91"/><path d="M15.9 27.8h10" stroke="#6f6256" stroke-width="1.5" stroke-linecap="round"/></svg><span>Gomma</span></button>
+        <button id="imageToolButton" class="tool-button image-tool-button" type="button" data-tool="image" aria-pressed="false" title="Immagini"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="5" width="24" height="22" rx="3" fill="#8bc8ec" stroke="#356d96"/><circle cx="21.8" cy="11.3" r="3" fill="#f6cc4b" stroke="#94721c"/><path d="M6.5 24l6.3-7 4.2 4.2 3.1-3.2 5.4 6z" fill="#63b27c" stroke="#34724a" stroke-linejoin="round"/><path d="M12.8 17l1.6 1.6-2.9 3.2-2.1-.1z" fill="#f4f0dc" opacity=".9"/></svg><span>Img.</span></button>
+        <button id="undoButton" class="tool-button undo-button" type="button" title="Annulla ultima modifica"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="#d9edf9"/><path d="M13 10L7 15l6 5" fill="#76b9e6" stroke="#356d96" stroke-width="2" stroke-linejoin="round"/><path d="M8 15h10.5a6 6 0 0 1 5.5 8.4" fill="none" stroke="#356d96" stroke-width="2.5" stroke-linecap="round"/></svg><span>Undo</span></button>
+        <button id="redoButton" class="tool-button redo-button" type="button" title="Ripristina ultima modifica annullata"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="#eadff5"/><path d="M19 10l6 5-6 5" fill="#b28bd3" stroke="#704a92" stroke-width="2" stroke-linejoin="round"/><path d="M24 15H13.5A6 6 0 0 0 8 23.4" fill="none" stroke="#704a92" stroke-width="2.5" stroke-linecap="round"/></svg><span>Redo</span></button>
+        <button id="styleButton" class="tool-button style-button" type="button" aria-expanded="false" title="Stile strumento e pagina"><svg class="app-tool-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4C8.8 4 3 9.1 3 15.5S8.3 27 14.6 27h2.1a2.6 2.6 0 0 0 1.8-4.5 2 2 0 0 1 1.4-3.4H23c3.3 0 6-2.7 6-6C29 8 23.2 4 16 4z" fill="#e7b96d" stroke="#795d2f"/><circle cx="10" cy="12" r="2.1" fill="#ef6f76"/><circle cx="15.5" cy="8.8" r="2.1" fill="#f1d24f"/><circle cx="21.4" cy="10.7" r="2.1" fill="#67b883"/><circle cx="9.5" cy="18" r="2.1" fill="#69aee0"/><circle cx="15.5" cy="16" r="2.6" fill="#f5ecd9" stroke="#8a7045"/></svg><span>Stile</span></button>
       </nav>
 
       <section id="stylePanel" class="style-panel" hidden aria-label="Stile strumento e pagina">
@@ -194,20 +194,21 @@
         <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
         <div class="copyright-block" aria-label="Autore e versione">
           <button id="authorCreditsButton" class="author-credits-button" type="button" title="Informazioni e crediti">© Marco Zucchini</button>
-          <button id="versionButton" class="version-button footer-version-button" type="button" title="Versione e diagnostica">V.0.1.55</button>
+          <button id="versionButton" class="version-button footer-version-button" type="button" title="Versione e diagnostica">V.0.1.57</button>
         </div>
         <button id="settingsButton" class="settings-button settings-center-button footer-icon-button" type="button" aria-expanded="false" title="Impostazioni" aria-label="Impostazioni">
-          <svg class="gear-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
+          <svg class="gear-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+            <path d="M13 3h6l.8 3.2a11 11 0 0 1 2.1 1.2L25 6.5l3 5.2-2.4 2.3a11 11 0 0 1 0 2.5l2.4 2.3-3 5.2-3.1-.9a11 11 0 0 1-2.1 1.2L19 27.5h-6l-.8-3.2a11 11 0 0 1-2.1-1.2L7 24l-3-5.2 2.4-2.3a11 11 0 0 1 0-2.5L4 11.7l3-5.2 3.1.9a11 11 0 0 1 2.1-1.2z" fill="#72b6d9" stroke="#315f7d" stroke-width="1.4" stroke-linejoin="round"/>
+            <circle cx="16" cy="15.3" r="5.1" fill="#f3a65a" stroke="#8a5423" stroke-width="1.4"/><circle cx="16" cy="15.3" r="2.1" fill="#f7e2bf"/>
           </svg>
         </button>
         <div class="footer-actions" aria-label="Comandi rapidi">
           <button id="calendarButton" class="footer-icon-button calendar-footer-button" type="button" aria-pressed="false" title="Mostra o nascondi calendario" aria-label="Calendario">
             <svg class="calendar-icon" viewBox="0 0 32 32" aria-hidden="true" focusable="false">
-              <rect x="5.5" y="7.5" width="21" height="19" rx="3"></rect>
-              <path d="M10 4.8v5.1M22 4.8v5.1M5.5 12.2h21"></path>
-              <path d="M10.2 16h2.4M15 16h2.4M19.8 16h2.4M10.2 20.2h2.4M15 20.2h2.4M19.8 20.2h2.4"></path>
+              <rect x="4.5" y="6.5" width="23" height="21" rx="3.5" fill="#eef7fb" stroke="#356d96" stroke-width="1.5"/>
+              <path d="M4.5 12.5h23V10a3.5 3.5 0 0 0-3.5-3.5H8A3.5 3.5 0 0 0 4.5 10z" fill="#69aee0" stroke="#356d96" stroke-width="1.5"/>
+              <path d="M10 4.3v5M22 4.3v5" stroke="#ef6f76" stroke-width="2.8" stroke-linecap="round"/>
+              <circle cx="10" cy="17" r="1.5" fill="#f3a65a"/><circle cx="16" cy="17" r="1.5" fill="#67b883"/><circle cx="22" cy="17" r="1.5" fill="#b28bd3"/><circle cx="10" cy="22.5" r="1.5" fill="#69aee0"/><circle cx="16" cy="22.5" r="1.5" fill="#ef6f76"/><circle cx="22" cy="22.5" r="1.5" fill="#f1d24f"/>
             </svg>
           </button>
         </div>
@@ -218,7 +219,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.55</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.57</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <div class="settings-scroll">
@@ -250,14 +251,14 @@
           <div class="settings-grid">
             <label class="setting-field"><span>Hub LAN</span><input id="lanHubUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://PC-AGENDA.local:8787"></label>
             <label class="setting-field"><span>Codice gruppo LAN</span><input id="lanSyncKey" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="codice mostrato dall’hub"></label>
-            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.55</option></select></label>
+            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.57</option></select></label>
           </div>
           <div class="backup-actions lan-sync-actions">
             <button id="lanTestButton" type="button">Test LAN</button>
             <button id="lanSyncNowButton" class="primary" type="button">Sincronizza adesso</button>
           </div>
           <div id="lanSyncStatus" class="backup-status">LAN non ancora verificata.</div>
-          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.55 è Agenda Cloud Sync Aruba.</p>
+          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.57 è Agenda Cloud Sync Aruba.</p>
           <p class="settings-note">Se Agenda è aperta da HTTPS, iPadOS/Safari richiede anche un hub LAN HTTPS con certificato attendibile.</p>
         </section>
 
@@ -356,7 +357,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil + Sync Core 0.1.55</h2>
+      <h2>Diagnostica Pencil + Sync Core 0.1.57</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>
