@@ -9,6 +9,15 @@ const BACKUP_FORMAT = 'agenda-ipad-backup';
 const BACKUP_FORMAT_VERSION = 1;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const NON_PORTABLE_PREFERENCE_KEYS = new Set([
+  'agenda-ipad-cloud-sync-config-v1',
+  'agenda-ipad-lan-sync-config-v1',
+  'agenda-ipad-sync-restore-guard-v1'
+]);
+
+function isPortablePreferenceKey(key) {
+  return Boolean(key) && key.startsWith('agenda-ipad-') && !key.includes('backup') && !NON_PORTABLE_PREFERENCE_KEYS.has(key);
+}
 
 const DEFAULT_CONFIG = Object.freeze({
   frequency: 'daily',
@@ -132,8 +141,7 @@ function collectPortablePreferences() {
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (!key || !key.startsWith('agenda-ipad-')) continue;
-      if (key.includes('backup')) continue;
+      if (!isPortablePreferenceKey(key)) continue;
       out[key] = localStorage.getItem(key);
     }
   } catch {}
@@ -143,7 +151,7 @@ function collectPortablePreferences() {
 function restorePortablePreferences(preferences) {
   if (!preferences || typeof preferences !== 'object') return;
   for (const [key, value] of Object.entries(preferences)) {
-    if (!key.startsWith('agenda-ipad-') || key.includes('backup')) continue;
+    if (!isPortablePreferenceKey(key)) continue;
     try { localStorage.setItem(key, String(value)); } catch {}
   }
 }
@@ -544,7 +552,8 @@ async function downloadOrShare(archive) {
 export function initBackupFoundation(options) {
   const {
     appVersion, mainDbName, mainStore, flushCurrent = async () => {}, setAppStatus = () => {},
-    isRealtimeBusy = () => false, afterRestoreApplied = async () => {}
+    isRealtimeBusy = () => false, beforeRestoreApplied = async () => {}, afterRestoreApplied = async () => {},
+    beforeGlobalRestoreApplied = async () => {}, afterGlobalRestoreApplied = async () => {}
   } = options;
 
   const settingsButton = document.getElementById('settingsButton');
@@ -580,6 +589,8 @@ export function initBackupFoundation(options) {
   const verifyButton = document.getElementById('verifyBackupButton');
   const restoreButton = document.getElementById('restoreBackupButton');
   const restoreInput = document.getElementById('restoreBackupInput');
+  const restoreGroupButton = document.getElementById('restoreGroupBackupButton');
+  const restoreGroupInput = document.getElementById('restoreGroupBackupInput');
   const status = document.getElementById('backupStatus');
   const history = document.getElementById('backupHistory');
 
@@ -830,26 +841,50 @@ export function initBackupFoundation(options) {
     await downloadOrShare(archive);
   }
 
-  async function restoreFromFile(file) {
+  async function restoreFromFile(file, mode = 'local') {
     if (!file) return;
-    setStatus('Verifica backup da ripristinare…');
+    const globalRestore = mode === 'group';
+    setStatus(globalRestore ? 'Verifica backup per ripristino globale…' : 'Verifica backup da ripristinare…');
     try {
       const parsed = await verifyBackupBlob(file);
       const records = parsed.pages?.records;
       if (!Array.isArray(records)) throw new Error('Archivio senza records pagina');
-      const ok = window.confirm(`Ripristinare ${records.length} record da ${file.name}?\n\nVerrà creato prima un backup di sicurezza dello stato corrente.`);
-      if (!ok) return;
-      const safety = await createBackup('pre-restore', { safety: true });
+      if (globalRestore) {
+        const warning = window.confirm(
+          `ATTENZIONE: RIPRISTINO DI TUTTO IL GRUPPO\n\n` +
+          `Il backup ${file.name} diventerà lo stato autorevole per TUTTI i dispositivi sincronizzati.\n` +
+          `Le modifiche successive al backup verranno escluse dalla nuova generazione del gruppo.\n\n` +
+          `Verrà creato prima un backup di sicurezza dello stato corrente.\n\nContinuare?`
+        );
+        if (!warning) return;
+        const typed = window.prompt('Conferma operazione distruttiva: scrivi esattamente RIPRISTINA GRUPPO');
+        if (String(typed || '').trim() !== 'RIPRISTINA GRUPPO') {
+          setStatus('Ripristino globale annullato: conferma testuale non valida.');
+          return;
+        }
+      } else {
+        const ok = window.confirm(`Ripristinare ${records.length} record da ${file.name}?\n\nVerrà creato prima un backup di sicurezza dello stato corrente.`);
+        if (!ok) return;
+      }
+      const safety = await createBackup(globalRestore ? 'pre-group-restore' : 'pre-restore', { safety: true });
       if (!safety) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
+      const details = { fileName: file.name, manifest: parsed.manifest, recordCount: records.length, restoreMode: globalRestore ? 'group' : 'local' };
+      if (globalRestore) await beforeGlobalRestoreApplied(details);
+      else await beforeRestoreApplied(details);
       await flushCurrent();
       await replaceMainRecords(mainDbName, mainStore, records);
-      await afterRestoreApplied();
+      // Le credenziali e il gruppo Sync appartengono al dispositivo corrente, non allo snapshot.
+      // I backup 0.1.58 e precedenti possono contenerli: vengono deliberatamente ignorati.
       restorePortablePreferences(parsed.preferences?.values || {});
-      setStatus('Ripristino completato. Riavvio Agenda iPad…');
+      if (globalRestore) await afterGlobalRestoreApplied(details);
+      else await afterRestoreApplied(details);
+      setStatus(globalRestore
+        ? 'Backup applicato localmente. Pubblicazione protetta come nuovo stato del gruppo al riavvio…'
+        : 'Ripristino completato. Riallineamento Sync protetto al riavvio…');
       setTimeout(() => location.reload(), 700);
     } catch (err) {
-      console.error('Ripristino', err);
-      setStatus(`Ripristino non riuscito: ${err.message || err}`);
+      console.error(globalRestore ? 'Ripristino globale' : 'Ripristino', err);
+      setStatus(`${globalRestore ? 'Ripristino globale' : 'Ripristino'} non riuscito: ${err.message || err}`);
     }
   }
 
@@ -931,7 +966,9 @@ export function initBackupFoundation(options) {
   bindAction(backupNow, async () => { await saveConfig(); await createBackup('manual'); });
   bindAction(verifyButton, verifyLatest);
   bindAction(restoreButton, () => restoreInput.click());
-  restoreInput?.addEventListener('change', () => { const file = restoreInput.files?.[0]; restoreInput.value = ''; restoreFromFile(file); });
+  restoreInput?.addEventListener('change', () => { const file = restoreInput.files?.[0]; restoreInput.value = ''; restoreFromFile(file, 'local'); });
+  bindAction(restoreGroupButton, () => restoreGroupInput.click());
+  restoreGroupInput?.addEventListener('change', () => { const file = restoreGroupInput.files?.[0]; restoreGroupInput.value = ''; restoreFromFile(file, 'group'); });
 
   async function handleHistoryAction(ev) {
     const button = ev.target instanceof Element ? ev.target.closest('button') : null;

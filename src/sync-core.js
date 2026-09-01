@@ -278,6 +278,29 @@ export function initSyncFoundation(options = {}) {
     });
   }
 
+
+  function recordPageSnapshot(descriptor, record) {
+    if (!record || typeof record !== 'object') return null;
+    const safeRecord = globalThis.structuredClone ? globalThis.structuredClone(record) : JSON.parse(JSON.stringify(record));
+    // Lo snapshot porta struttura, stile e immagini; i tratti Ink vengono pubblicati
+    // come eventi stroke.add separati per non creare payload monolitici.
+    safeRecord.strokes = [];
+    if (Array.isArray(safeRecord.images)) {
+      safeRecord.images = safeRecord.images.map((image) => {
+        if (!image || typeof image !== 'object') return image;
+        const { src: _src, ...metadata } = image;
+        return metadata;
+      });
+    }
+    return queueEvent({
+      entityId: `snapshot:${String(descriptor?.key || record.date || 'unknown')}`,
+      entityType: 'agenda-page-snapshot',
+      operation: 'page.snapshot.set',
+      descriptor,
+      payload: { record: safeRecord, authoritative: true }
+    });
+  }
+
   function recordPageProperty(descriptor, field, value, scope = 'current') {
     return queueEvent({
       entityId: scope === 'all' ? 'agenda:page-style-default' : pageEntityId(descriptor),
@@ -342,6 +365,7 @@ export function initSyncFoundation(options = {}) {
     recordPageCleared,
     recordImageMetadata,
     recordImageDeleted,
+    recordPageSnapshot,
     recordPageProperty,
     queueEvent,
     observeRemoteHlc,

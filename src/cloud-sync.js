@@ -54,10 +54,13 @@ export function initCloudSyncTransport(options = {}) {
   const applyRemoteEvents = typeof options.applyRemoteEvents === 'function' ? options.applyRemoteEvents : async () => ({ applied: 0, deferred: 0, ignored: 0, conflicts: 0 });
   const isRealtimeBusy = typeof options.isRealtimeBusy === 'function' ? options.isRealtimeBusy : () => false;
   const onStats = typeof options.onStats === 'function' ? options.onStats : () => {};
+  const getGroupEpoch = typeof options.getGroupEpoch === 'function' ? options.getGroupEpoch : async () => '';
+  const setGroupEpoch = typeof options.setGroupEpoch === 'function' ? options.setGroupEpoch : async () => {};
+  const onGroupEpochMismatch = typeof options.onGroupEpochMismatch === 'function' ? options.onGroupEpochMismatch : async () => {};
 
   const stats = {
     transportVersion: TRANSPORT_VERSION,
-    state: 'idle', endpoint: '', groupId: '', cloudId: '',
+    state: 'idle', endpoint: '', groupId: '', cloudId: '', groupEpoch: '', restoreState: 'ready',
     lastTestAt: '', lastSyncAt: '', lastAutoReason: '', lastError: '',
     pushed: 0, pushDuplicates: 0, pulled: 0, applied: 0, deferred: 0, ignored: 0, conflicts: 0,
     syncRuns: 0, autoRuns: 0, inkInterruptions: 0, networkRequests: 0, maxRequestMs: 0,
@@ -71,6 +74,8 @@ export function initCloudSyncTransport(options = {}) {
   let suspendedForInk = false;
   let autoTimer = 0;
   let autoQueuedReason = '';
+  let activeRestoreId = '';
+  let activeRestoreEpoch = '';
 
   const emit = () => { try { onStats({ ...stats }); } catch {} };
 
@@ -102,6 +107,12 @@ export function initCloudSyncTransport(options = {}) {
       if (requireCredentials) {
         headers['X-Agenda-Group-ID'] = cfg.groupId;
         headers['X-Agenda-Auth-Key'] = cfg.authKey;
+        if (!init.skipEpoch) {
+          const epoch = String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch() || '').trim();
+          if (epoch) headers['X-Agenda-Group-Epoch'] = epoch;
+        }
+        const restoreId = String(init.restoreId || activeRestoreId || '').trim();
+        if (restoreId) headers['X-Agenda-Restore-ID'] = restoreId;
       }
       if (init.json !== undefined) headers['Content-Type'] = 'application/json';
       const response = await fetch(apiUrl(cfg.endpoint, file, init.query || ''), {
@@ -149,12 +160,30 @@ export function initCloudSyncTransport(options = {}) {
     return { ...credentials, joinCode: encodeCloudJoinCode(credentials) };
   }
 
+  async function readGroupStatus() {
+    const group = await request('group_status.php', { method: 'GET', skipEpoch: true }, 10000, true);
+    const epoch = String(group?.groupEpoch || 'legacy-1');
+    stats.groupEpoch = epoch;
+    stats.restoreState = String(group?.restoreState || 'ready');
+    emit();
+    return { ...group, groupEpoch: epoch, restoreState: stats.restoreState };
+  }
+
+  async function reconcileEpochBeforeSync(group) {
+    const remoteEpoch = String(group?.groupEpoch || 'legacy-1');
+    const localEpoch = String(await getGroupEpoch() || '');
+    if (!localEpoch) { await setGroupEpoch(remoteEpoch); return false; }
+    if (localEpoch === remoteEpoch) return false;
+    await onGroupEpochMismatch({ transport: 'cloud', localEpoch, remoteEpoch, restoreState: String(group?.restoreState || 'ready') });
+    return true;
+  }
+
   async function testConnection() {
     if (running) throw new Error('Sincronizzazione già in corso.');
     running = true; suspendedForInk = false; stats.state = 'testing'; stats.lastError = ''; emit();
     try {
       const health = await healthCheck();
-      const group = await request('group_status.php', { method: 'GET' }, 10000, true);
+      const group = await readGroupStatus();
       stats.lastTestAt = new Date().toISOString(); stats.state = 'idle'; stats.lastError = ''; emit();
       return { ...health, group };
     } catch (err) {
@@ -167,6 +196,13 @@ export function initCloudSyncTransport(options = {}) {
   function blobHashesFromEvents(events) {
     const hashes = new Set();
     for (const event of events || []) {
+      if (event?.entityType === 'agenda-page-snapshot' && Array.isArray(event?.payload?.record?.images)) {
+        for (const image of event.payload.record.images) {
+          const hash = String(image?.blobHash || '').toLowerCase();
+          if (/^sha256:[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
+        }
+        continue;
+      }
       if (event?.entityType !== 'image-object') continue;
       const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
       if (/^sha256:[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
@@ -199,6 +235,14 @@ export function initCloudSyncTransport(options = {}) {
     const hashes = blobHashesFromEvents(events);
     const mimeByHash = new Map();
     for (const event of events || []) {
+      if (event?.entityType === 'agenda-page-snapshot' && Array.isArray(event?.payload?.record?.images)) {
+        for (const image of event.payload.record.images) {
+          const hash = String(image?.blobHash || '').toLowerCase();
+          const mime = String(image?.mimeType || '');
+          if (hash && mime) mimeByHash.set(hash, mime);
+        }
+        continue;
+      }
       const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
       const mime = String(event?.payload?.image?.mimeType || '');
       if (hash && mime) mimeByHash.set(hash, mime);
@@ -301,7 +345,9 @@ export function initCloudSyncTransport(options = {}) {
       await flushLocal();
       if (isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
       await healthCheck();
-      await request('group_status.php', { method: 'GET' }, 10000, true);
+      const group = await readGroupStatus();
+      if (group.restoreState === 'pending') throw new Error('Il gruppo è in fase di ripristino globale su un altro dispositivo.');
+      if (await reconcileEpochBeforeSync(group)) return { epochMismatch: true, pushed: 0, pulled: 0, groupId: cfg.groupId };
       const pushed = await pushPending(cfg.encryptionKey);
       const pulled = await pullRemote(cfg.encryptionKey);
       stats.lastSyncAt = new Date().toISOString(); stats.state = 'idle'; stats.lastError = ''; emit();
@@ -313,6 +359,74 @@ export function initCloudSyncTransport(options = {}) {
       if (auto) return { error: stats.lastError, pushed: 0, pulled: 0 };
       throw err;
     } finally { running = false; activeController = null; }
+  }
+
+  async function recoverPullOnly() {
+    if (running) throw new Error('Sincronizzazione già in corso.');
+    const cfg = config(true);
+    if (isRealtimeBusy()) throw new Error('Termina prima la scrittura o l’operazione corrente.');
+    running = true; suspendedForInk = false; stats.state = 'recovering'; stats.lastError = ''; stats.syncRuns++; emit();
+    try {
+      await healthCheck();
+      const group = await readGroupStatus();
+      if (group.restoreState === 'pending' && !activeRestoreId) throw new Error('Il gruppo è ancora in fase di ripristino globale.');
+      await setGroupEpoch(group.groupEpoch);
+      await setPullCursor(0);
+      const pulled = await pullRemote(cfg.encryptionKey);
+      stats.lastSyncAt = new Date().toISOString(); stats.state = 'idle'; stats.lastError = ''; emit();
+      return { pushed: 0, pulled, groupId: cfg.groupId, recovery: true };
+    } catch (err) {
+      if (err?.name === 'AbortError') { stats.state = 'ink-paused'; stats.lastError = 'Riallineamento Cloud interrotto: priorità Ink.'; }
+      else { stats.state = 'error'; stats.lastError = String(err?.message || err); }
+      emit();
+      throw err;
+    } finally { running = false; activeController = null; }
+  }
+
+  async function beginOrResumeGlobalRestore(restoreId) {
+    const cfg = config(true);
+    const rid = String(restoreId || '').trim();
+    if (!rid) throw new Error('Identificatore ripristino globale mancante.');
+    await healthCheck();
+    let group = await readGroupStatus();
+    if (group.restoreState === 'pending') {
+      if (String(group.restoreId || '') !== rid) throw new Error('Il gruppo è già in ripristino globale da un altro dispositivo.');
+      activeRestoreId = rid;
+      activeRestoreEpoch = String(group.groupEpoch || '');
+      await setGroupEpoch(activeRestoreEpoch);
+      return group;
+    }
+    const currentEpoch = String(group.groupEpoch || 'legacy-1');
+    const reset = await request('group_reset.php', {
+      method: 'POST', skipEpoch: true, json: { protocolVersion, confirm: 'RESTORE_GROUP', restoreId: rid, expectedEpoch: currentEpoch, replicaId: String(getReplicaId() || '') }
+    }, 30000, true);
+    if (!reset?.ok || !reset?.groupEpoch || reset?.restoreState !== 'pending') throw new Error('Reset generazione Cloud non confermato.');
+    activeRestoreId = rid;
+    activeRestoreEpoch = String(reset.groupEpoch);
+    stats.groupEpoch = activeRestoreEpoch; stats.restoreState = 'pending'; emit();
+    await setGroupEpoch(activeRestoreEpoch);
+    return reset;
+  }
+
+  async function publishAndCommitGlobalRestore(restoreId) {
+    if (running) throw new Error('Sincronizzazione già in corso.');
+    const cfg = config(true);
+    const rid = String(restoreId || '').trim();
+    running = true; suspendedForInk = false; stats.state = 'restoring-group'; stats.lastError = ''; emit();
+    try {
+      const group = await beginOrResumeGlobalRestore(rid);
+      activeRestoreId = rid; activeRestoreEpoch = String(group.groupEpoch || activeRestoreEpoch || '');
+      const pushed = await pushPending(cfg.encryptionKey);
+      const commit = await request('group_restore_commit.php', {
+        method: 'POST', json: { protocolVersion, restoreId: rid, groupEpoch: activeRestoreEpoch, replicaId: String(getReplicaId() || '') }
+      }, 30000, true);
+      if (!commit?.ok || commit?.restoreState !== 'ready') throw new Error('Commit ripristino globale Cloud non confermato.');
+      stats.restoreState = 'ready'; stats.lastSyncAt = new Date().toISOString(); stats.state = 'idle'; emit();
+      return { pushed, pulled: 0, groupId: cfg.groupId, groupEpoch: activeRestoreEpoch, globalRestore: true, cursor: Number(commit.cursor) || 0 };
+    } catch (err) {
+      stats.state = err?.name === 'AbortError' ? 'ink-paused' : 'error';
+      stats.lastError = String(err?.message || err); emit(); throw err;
+    } finally { running = false; activeRestoreId = ''; activeRestoreEpoch = ''; }
   }
 
   function scheduleAuto(reason = 'change', delayMs = 5000) {
@@ -347,7 +461,7 @@ export function initCloudSyncTransport(options = {}) {
 
   emit();
   return {
-    createGroup, testConnection, syncNow, scheduleAuto, suspendForInk, resumeAfterInk,
+    createGroup, testConnection, syncNow, recoverPullOnly, publishAndCommitGlobalRestore, scheduleAuto, suspendForInk, resumeAfterInk,
     getDiagnostics: () => ({ ...stats }), normalizeEndpoint
   };
 }

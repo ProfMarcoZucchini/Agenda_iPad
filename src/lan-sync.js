@@ -44,12 +44,17 @@ export function initLanSyncTransport(options = {}) {
   const applyRemoteEvents = typeof options.applyRemoteEvents === 'function' ? options.applyRemoteEvents : async () => ({ applied: 0, deferred: 0, ignored: 0, conflicts: 0 });
   const isRealtimeBusy = typeof options.isRealtimeBusy === 'function' ? options.isRealtimeBusy : () => false;
   const onStats = typeof options.onStats === 'function' ? options.onStats : () => {};
+  const getGroupEpoch = typeof options.getGroupEpoch === 'function' ? options.getGroupEpoch : async () => '';
+  const setGroupEpoch = typeof options.setGroupEpoch === 'function' ? options.setGroupEpoch : async () => {};
+  const onGroupEpochMismatch = typeof options.onGroupEpochMismatch === 'function' ? options.onGroupEpochMismatch : async () => {};
 
   const stats = {
     transportVersion: TRANSPORT_VERSION,
     state: 'idle',
     endpoint: '',
     hubId: '',
+    groupEpoch: '',
+    restoreState: 'ready',
     lastTestAt: '',
     lastSyncAt: '',
     lastError: '',
@@ -73,6 +78,8 @@ export function initLanSyncTransport(options = {}) {
   let activeController = null;
   let running = false;
   let suspendedForInk = false;
+  let activeRestoreId = '';
+  let activeRestoreEpoch = '';
 
   const emit = () => {
     try { onStats({ ...stats }); } catch {}
@@ -108,6 +115,10 @@ export function initLanSyncTransport(options = {}) {
         headers: {
           'Accept': 'application/json',
           'X-Agenda-Sync-Key': syncKey,
+          ...((!init.skipEpoch && String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch() || '').trim())
+            ? { 'X-Agenda-Group-Epoch': String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch()).trim() } : {}),
+          ...((String(init.restoreId || activeRestoreId || '').trim())
+            ? { 'X-Agenda-Restore-ID': String(init.restoreId || activeRestoreId).trim() } : {}),
           ...(init.body ? { 'Content-Type': 'application/json' } : {}),
           ...(init.headers || {})
         }
@@ -134,6 +145,8 @@ export function initLanSyncTransport(options = {}) {
   async function healthCheck() {
     const health = await request('/health', { method: 'GET' }, 8000);
     assertProtocol(health);
+    stats.groupEpoch = String(health?.groupEpoch || 'legacy-1');
+    stats.restoreState = String(health?.restoreState || 'ready');
     stats.lastTestAt = new Date().toISOString();
     stats.lastError = '';
     emit();
@@ -165,6 +178,13 @@ export function initLanSyncTransport(options = {}) {
   function blobHashesFromEvents(events) {
     const hashes = new Set();
     for (const event of events || []) {
+      if (event?.entityType === 'agenda-page-snapshot' && Array.isArray(event?.payload?.record?.images)) {
+        for (const image of event.payload.record.images) {
+          const hash = String(image?.blobHash || '').toLowerCase();
+          if (/^sha256:[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
+        }
+        continue;
+      }
       if (event?.entityType !== 'image-object') continue;
       const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
       if (/^sha256:[0-9a-f]{64}$/.test(hash)) hashes.add(hash);
@@ -209,7 +229,11 @@ export function initLanSyncTransport(options = {}) {
     try {
       const response = await fetch(endpointUrl(endpoint, path), {
         method: 'GET', cache: 'no-store', signal: controller.signal,
-        headers: { 'X-Agenda-Sync-Key': syncKey }
+        headers: {
+          'X-Agenda-Sync-Key': syncKey,
+          ...((String(activeRestoreEpoch || await getGroupEpoch() || '').trim()) ? { 'X-Agenda-Group-Epoch': String(activeRestoreEpoch || await getGroupEpoch()).trim() } : {}),
+          ...((String(activeRestoreId || '').trim()) ? { 'X-Agenda-Restore-ID': String(activeRestoreId).trim() } : {})
+        }
       });
       if (!response.ok) {
         let detail = '';
@@ -233,6 +257,14 @@ export function initLanSyncTransport(options = {}) {
     const hashes = blobHashesFromEvents(events);
     const mimeByHash = new Map();
     for (const event of events || []) {
+      if (event?.entityType === 'agenda-page-snapshot' && Array.isArray(event?.payload?.record?.images)) {
+        for (const image of event.payload.record.images) {
+          const hash = String(image?.blobHash || '').toLowerCase();
+          const mime = String(image?.mimeType || '');
+          if (hash && mime) mimeByHash.set(hash, mime);
+        }
+        continue;
+      }
       const hash = String(event?.payload?.blobHash || event?.payload?.image?.blobHash || '').toLowerCase();
       const mime = String(event?.payload?.image?.mimeType || '');
       if (hash && mime) mimeByHash.set(hash, mime);
@@ -313,6 +345,15 @@ export function initLanSyncTransport(options = {}) {
     return pulled;
   }
 
+  async function reconcileEpochBeforeSync(health, hubId) {
+    const remoteEpoch = String(health?.groupEpoch || 'legacy-1');
+    const localEpoch = String(await getGroupEpoch(hubId) || '');
+    if (!localEpoch) { await setGroupEpoch(hubId, remoteEpoch); return false; }
+    if (localEpoch === remoteEpoch) return false;
+    await onGroupEpochMismatch({ transport: 'lan', hubId, localEpoch, remoteEpoch, restoreState: String(health?.restoreState || 'ready') });
+    return true;
+  }
+
   async function syncNow() {
     if (running) throw new Error('Sincronizzazione già in corso.');
     if (isRealtimeBusy()) throw new Error('Termina prima la scrittura o l’operazione corrente.');
@@ -327,6 +368,8 @@ export function initLanSyncTransport(options = {}) {
       if (isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
       const health = await healthCheck();
       const hubId = assertProtocol(health);
+      if (String(health?.restoreState || 'ready') === 'pending') throw new Error('Il gruppo LAN è in fase di ripristino globale su un altro dispositivo.');
+      if (await reconcileEpochBeforeSync(health, hubId)) return { epochMismatch: true, pushed: 0, pulled: 0, hubId };
       const pushed = await pushPending();
       const pulled = await pullRemote(hubId);
       stats.lastSyncAt = new Date().toISOString();
@@ -350,6 +393,70 @@ export function initLanSyncTransport(options = {}) {
     }
   }
 
+  async function recoverPullOnly() {
+    if (running) throw new Error('Sincronizzazione già in corso.');
+    if (isRealtimeBusy()) throw new Error('Termina prima la scrittura o l’operazione corrente.');
+    running = true; suspendedForInk = false; stats.state = 'recovering'; stats.lastError = ''; stats.syncRuns++; emit();
+    try {
+      const health = await healthCheck();
+      const hubId = assertProtocol(health);
+      if (String(health?.restoreState || 'ready') === 'pending' && !activeRestoreId) throw new Error('Il gruppo LAN è ancora in fase di ripristino globale.');
+      await setGroupEpoch(hubId, String(health?.groupEpoch || 'legacy-1'));
+      await setPullCursor(hubId, 0);
+      const pulled = await pullRemote(hubId);
+      stats.lastSyncAt = new Date().toISOString(); stats.state = 'idle'; stats.lastError = ''; emit();
+      return { pushed: 0, pulled, hubId, recovery: true };
+    } catch (err) {
+      if (err?.name === 'AbortError') { stats.state = 'ink-paused'; stats.lastError = 'Riallineamento LAN interrotto: priorità Ink.'; }
+      else { stats.state = 'error'; stats.lastError = String(err?.message || err); }
+      emit();
+      throw err;
+    } finally {
+      running = false; activeController = null;
+    }
+  }
+
+  async function beginOrResumeGlobalRestore(restoreId) {
+    const rid = String(restoreId || '').trim();
+    if (!rid) throw new Error('Identificatore ripristino globale mancante.');
+    const health = await healthCheck();
+    const hubId = assertProtocol(health);
+    if (String(health?.restoreState || 'ready') === 'pending') {
+      if (String(health?.restoreId || '') !== rid) throw new Error('Il gruppo LAN è già in ripristino globale da un altro dispositivo.');
+      activeRestoreId = rid; activeRestoreEpoch = String(health?.groupEpoch || '');
+      await setGroupEpoch(hubId, activeRestoreEpoch);
+      return { ...health, hubId };
+    }
+    const currentEpoch = String(health?.groupEpoch || 'legacy-1');
+    const reset = await request('/group/reset', {
+      method: 'POST', skipEpoch: true, body: JSON.stringify({ protocolVersion, confirm: 'RESTORE_GROUP', restoreId: rid, expectedEpoch: currentEpoch, replicaId: String(getReplicaId() || '') })
+    }, 30000);
+    if (!reset?.groupEpoch || reset?.restoreState !== 'pending') throw new Error('Reset generazione LAN non confermato.');
+    activeRestoreId = rid; activeRestoreEpoch = String(reset.groupEpoch);
+    stats.groupEpoch = activeRestoreEpoch; stats.restoreState = 'pending'; emit();
+    await setGroupEpoch(hubId, activeRestoreEpoch);
+    return { ...reset, hubId };
+  }
+
+  async function publishAndCommitGlobalRestore(restoreId) {
+    if (running) throw new Error('Sincronizzazione già in corso.');
+    if (isRealtimeBusy()) throw new Error('Termina prima la scrittura o l’operazione corrente.');
+    running = true; suspendedForInk = false; stats.state = 'restoring-group'; stats.lastError = ''; emit();
+    try {
+      const group = await beginOrResumeGlobalRestore(restoreId);
+      activeRestoreId = String(restoreId || ''); activeRestoreEpoch = String(group.groupEpoch || activeRestoreEpoch || '');
+      const pushed = await pushPending();
+      const commit = await request('/group/restore-commit', {
+        method: 'POST', body: JSON.stringify({ protocolVersion, restoreId: activeRestoreId, groupEpoch: activeRestoreEpoch, replicaId: String(getReplicaId() || '') })
+      }, 30000);
+      if (!commit?.ok || commit?.restoreState !== 'ready') throw new Error('Commit ripristino globale LAN non confermato.');
+      stats.restoreState = 'ready'; stats.lastSyncAt = new Date().toISOString(); stats.state = 'idle'; emit();
+      return { pushed, pulled: 0, hubId: group.hubId, groupEpoch: activeRestoreEpoch, globalRestore: true, cursor: Number(commit.latestCursor) || 0 };
+    } catch (err) {
+      stats.state = err?.name === 'AbortError' ? 'ink-paused' : 'error'; stats.lastError = String(err?.message || err); emit(); throw err;
+    } finally { running = false; activeController = null; activeRestoreId = ''; activeRestoreEpoch = ''; }
+  }
+
   function suspendForInk() {
     suspendedForInk = true;
     if (running) {
@@ -371,6 +478,8 @@ export function initLanSyncTransport(options = {}) {
   return {
     testConnection,
     syncNow,
+    recoverPullOnly,
+    publishAndCommitGlobalRestore,
     suspendForInk,
     resumeAfterInk,
     getDiagnostics: () => ({ ...stats }),

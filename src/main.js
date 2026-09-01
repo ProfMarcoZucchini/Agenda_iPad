@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.58';
+const APP_VERSION = '0.1.60';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -18,6 +18,7 @@ const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
 const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
+const SYNC_RESTORE_GUARD_STORAGE_KEY = 'agenda-ipad-sync-restore-guard-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v3';
@@ -246,6 +247,9 @@ let lanStats = null;
 let cloudTransport = null;
 let cloudStats = null;
 let cloudHeartbeatTimer = 0;
+let syncRestoreGuard = loadSyncRestoreGuard();
+let syncRecoveryRebuildActive = false;
+const syncRecoveryRebuiltPages = new Set();
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
 let calendarVisiblePreference = false;
@@ -476,6 +480,7 @@ async function applyGlobalPageStyleField(field, value) {
 }
 
 async function setPageColor(color) {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_COLORS.includes(color)) return;
   pageStyle = { ...pageStyle, color };
   applyPageStyle();
@@ -525,6 +530,7 @@ async function setPageColor(color) {
 }
 
 async function setPageTemplate(template) {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
   pageStyle = { ...pageStyle, template };
   applyPageStyle();
@@ -1940,8 +1946,18 @@ function getLanPullCursor(hubId) {
   return getSyncMeta(LAN_STATE_KEY).then((row) => row?.hubId === hubId ? (Number(row.cursor) || 0) : 0);
 }
 
-function setLanPullCursor(hubId, cursor) {
-  return putSyncMeta({ key: LAN_STATE_KEY, hubId: String(hubId || ''), cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+async function setLanPullCursor(hubId, cursor) {
+  const old = await getSyncMeta(LAN_STATE_KEY).catch(() => null);
+  return putSyncMeta({ ...old, key: LAN_STATE_KEY, hubId: String(hubId || ''), cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+}
+
+function getLanGroupEpoch(hubId) {
+  return getSyncMeta(LAN_STATE_KEY).then((row) => row?.hubId === hubId ? String(row?.groupEpoch || '') : '');
+}
+
+async function setLanGroupEpoch(hubId, epoch) {
+  const old = await getSyncMeta(LAN_STATE_KEY).catch(() => null);
+  return putSyncMeta({ ...old, key: LAN_STATE_KEY, hubId: String(hubId || old?.hubId || ''), groupEpoch: String(epoch || ''), cursor: Math.max(0, Number(old?.cursor) || 0), modifiedAt: new Date().toISOString() });
 }
 
 function compareHlcDeterministic(a, b) {
@@ -1974,6 +1990,71 @@ function buildEmptyPageRecord(descriptor) {
     pageStyle: d.kind === 'planner-timetable' ? { color:'black', template:'blank' } : { ...DEFAULT_PAGE_STYLE },
     modifiedAt: new Date().toISOString()
   };
+}
+
+function descriptorFromStoredRecord(record) {
+  const key = String(record?.date || '');
+  const kind = String(record?.kind || '');
+  const referenceDate = String(record?.referenceDate || (key.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || currentDate));
+  let pageKind = 'agenda';
+  if (kind === 'day-note-ink') pageKind = 'note';
+  else if (kind === 'planner-week-ink') pageKind = 'planner-weekly';
+  else if (kind === 'planner-month-ink') pageKind = 'planner-monthly';
+  else if (kind === 'planner-year-ink') pageKind = 'planner-yearly';
+  else if (kind === 'planner-timetable-ink') pageKind = 'planner-timetable';
+  const timetableMatch = key.match(/::shared-weekly-timetable-v3(?:::(\d+))?$/);
+  const timetableIndex = pageKind === 'planner-timetable' ? Math.max(1, Number(timetableMatch?.[1]) || 1) : 0;
+  return {
+    key, date: referenceDate, kind: pageKind,
+    plannerMode: pageKind.startsWith('planner-') ? plannerModeFromKind(pageKind) : null,
+    timetableIndex,
+    noteIndex: pageKind === 'note' ? Math.max(1, Number(record?.noteIndex) || Number(key.match(/::note::(\d+)$/)?.[1]) || 1) : 0,
+    noteTotal: 0, createNote: false
+  };
+}
+
+async function ensureSnapshotRecordImageBlobs(record) {
+  if (!Array.isArray(record?.images) || !record.images.length) return record;
+  let changed = false;
+  const next = { ...record, images: record.images.map(cloneImageObject) };
+  for (const image of next.images) {
+    if (!image?.src) continue;
+    let row = null;
+    if (isSha256Hash(image.blobHash)) row = await getSyncBlob(image.blobHash).catch(() => null);
+    if (!row?.blob) {
+      const blob = await dataUrlToBlob(image.src);
+      row = await registerBlob(blob, image.mimeType || blob.type || 'image/webp');
+    }
+    if (row?.hash && image.blobHash !== row.hash) { image.blobHash = row.hash; changed = true; }
+    const size = Number(row?.size) || row?.blob?.size || 0;
+    if (size && Number(image.blobSize) !== size) { image.blobSize = size; changed = true; }
+  }
+  if (changed) {
+    next.version = APP_VERSION; next.modifiedAt = new Date().toISOString();
+    await putRecord(next);
+  }
+  return next;
+}
+
+async function queueAuthoritativeGroupSnapshot() {
+  const records = await readAllMainRecords();
+  let queued = 0;
+  for (const original of records) {
+    const record = await ensureSnapshotRecordImageBlobs(original);
+    const descriptor = descriptorFromStoredRecord(record);
+    syncFoundation?.recordPageSnapshot(descriptor, record);
+    for (const stroke of Array.isArray(record?.strokes) ? record.strokes : []) {
+      if (stroke?.id) syncFoundation?.recordStrokeAdded(descriptor, stroke);
+    }
+    const commit = syncFoundation?.prepareAtomicCommit(descriptor.key) || { events: [], eventIds: [], stateRow: null };
+    if (commit.events.length) {
+      await putRecordWithSync(record, commit);
+      syncFoundation?.markAtomicCommitSucceeded(commit.eventIds, 0);
+      queued += commit.events.length;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return { records: records.length, events: queued };
 }
 
 function putRemoteEventResult(event, status, pageRecord = null, detail = null) {
@@ -2264,17 +2345,51 @@ async function applyRemoteImageEvent(event) {
   return conflict ? { applied: 1, conflicts: 1 } : { applied: 1 };
 }
 
+async function applyRemotePageSnapshotEvent(event) {
+  const raw = event?.payload?.record;
+  if (!raw || typeof raw !== 'object' || !raw.date) {
+    await putRemoteEventResult(event, 'ignored-invalid', null, 'snapshot pagina non valido');
+    return { ignored: 1 };
+  }
+  const record = globalThis.structuredClone ? globalThis.structuredClone(raw) : JSON.parse(JSON.stringify(raw));
+  if (Array.isArray(record.images)) {
+    const hydrated = [];
+    for (const image of record.images) {
+      if (!image || typeof image !== 'object') continue;
+      const next = { ...image };
+      if (isSha256Hash(next.blobHash)) {
+        const row = await getSyncBlob(next.blobHash);
+        if (!row?.blob) {
+          await putRemoteEventResult(event, 'deferred-media', null, `blob ${next.blobHash} non disponibile localmente`);
+          return { deferred: 1 };
+        }
+        next.src = await dataUrlFromBlob(row.blob);
+        next.mimeType = next.mimeType || row.mimeType || row.blob.type || 'image/webp';
+        next.blobSize = Number(next.blobSize) || Number(row.size) || row.blob.size || 0;
+      }
+      hydrated.push(next);
+    }
+    record.images = hydrated;
+  }
+  record.version = APP_VERSION;
+  record.modifiedAt = record.modifiedAt || new Date().toISOString();
+  await putRemoteEventResult(event, 'applied', record, 'snapshot autorevole della generazione gruppo');
+  return { applied: 1 };
+}
+
 async function applyRemoteSyncEvents(events) {
   const totals = { applied: 0, deferred: 0, ignored: 0, conflicts: 0 };
   await openDb();
   for (const event of events || []) {
     if (drawing || pageTurning || imageBusy || imageGesture) throw new DOMException('Ink priority', 'AbortError');
     if (!event?.eventId || Number(event.protocolVersion) !== 1) { totals.ignored++; continue; }
+    await prepareRestoreRecoveryPage(event);
     const duplicate = await getSyncEvent(event.eventId);
     if (duplicate) { totals.ignored++; continue; }
     syncFoundation?.observeRemoteEvent(event);
     let result;
-    if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') result = await applyRemoteStrokeEvent(event);
+    if (event.operation === 'page.snapshot.set') result = await applyRemotePageSnapshotEvent(event);
+    else if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') result = await applyRemoteStrokeEvent(event);
     else if (event.operation === 'planner.timetable.cell.set') result = await applyRemoteSharedWeeklyTimetableEvent(event);
     else if (event.operation === 'planner.timetable.ink.stroke.add') result = await applyRemoteSharedWeeklyTimetableInkStrokeEvent(event);
     else if (event.operation === 'page.clear') result = await applyRemotePageClear(event);
@@ -2291,6 +2406,257 @@ async function applyRemoteSyncEvents(events) {
   return totals;
 }
 
+
+
+function loadSyncRestoreGuard() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SYNC_RESTORE_GUARD_STORAGE_KEY) || 'null');
+    return parsed && parsed.pending ? parsed : null;
+  } catch { return null; }
+}
+
+function updateSyncRestoreConfigLock() {
+  const locked = isSyncRestorePending();
+  if (cloudEndpointInput) cloudEndpointInput.readOnly = locked;
+  if (cloudJoinCodeInput) cloudJoinCodeInput.readOnly = locked;
+  if (cloudSyncModeSelect) cloudSyncModeSelect.disabled = locked;
+  if (cloudCreateGroupButton) cloudCreateGroupButton.disabled = locked;
+  if (cloudRecoverJoinCodeButton) cloudRecoverJoinCodeButton.disabled = locked;
+  if (lanHubUrlInput) lanHubUrlInput.readOnly = locked;
+  if (lanSyncKeyInput) lanSyncKeyInput.readOnly = locked;
+}
+
+function saveSyncRestoreGuard(value) {
+  syncRestoreGuard = value && value.pending ? { ...value, pending: true } : null;
+  try {
+    if (syncRestoreGuard) localStorage.setItem(SYNC_RESTORE_GUARD_STORAGE_KEY, JSON.stringify(syncRestoreGuard));
+    else localStorage.removeItem(SYNC_RESTORE_GUARD_STORAGE_KEY);
+  } catch {}
+  updateSyncRestoreConfigLock();
+  return syncRestoreGuard;
+}
+
+function isSyncRestorePending() {
+  return Boolean(syncRestoreGuard?.pending);
+}
+
+function denyMutationDuringSyncRecovery() {
+  if (!isSyncRestorePending()) return false;
+  statusLabel.textContent = 'ripristino protetto · sola lettura finché Sync non è riallineata';
+  return true;
+}
+
+function beginSyncRestoreGuard(details = {}) {
+  const cloud = loadCloudConfig();
+  const lan = loadLanConfig();
+  const cloudConfigured = Boolean(String(cloud.joinCode || '').trim());
+  const lanConfigured = Boolean(String(lan.endpoint || '').trim() && String(lan.syncKey || '').trim());
+  // Se entrambi sono configurati, rispetta Cloud quando è attivo; se Cloud è
+  // esplicitamente disattivato preferisce LAN. Se resta soltanto un gruppo Cloud
+  // disattivato, lo usa comunque come fonte autorevole prima di sbloccare il restore.
+  const transport = cloudConfigured && cloud.mode !== 'off' ? 'cloud'
+    : (lanConfigured ? 'lan' : (cloudConfigured ? 'cloud' : 'none'));
+  return saveSyncRestoreGuard({
+    pending: true,
+    mode: 'local-restore',
+    phase: 'restore-applied',
+    transport,
+    createdAt: new Date().toISOString(),
+    backupFileName: String(details.fileName || ''),
+    backupCreatedAt: String(details.manifest?.createdAt || ''),
+    recordCount: Number(details.recordCount) || 0
+  });
+}
+
+function beginGlobalGroupRestoreGuard(details = {}) {
+  const cloud = loadCloudConfig();
+  const lan = loadLanConfig();
+  const cloudConfigured = Boolean(String(cloud.joinCode || '').trim());
+  const lanConfigured = Boolean(String(lan.endpoint || '').trim() && String(lan.syncKey || '').trim());
+  const cloudActive = cloudConfigured && cloud.mode !== 'off';
+  if (cloudActive && lanConfigured) {
+    throw new Error('Ripristino globale bloccato per sicurezza: risultano configurati sia Cloud sia LAN. Per imporre un backup al gruppo deve esserci un solo canale Sync autorevole; disattiva Cloud oppure rimuovi temporaneamente endpoint/chiave LAN, poi ripeti.');
+  }
+  const transport = cloudActive ? 'cloud'
+    : (lanConfigured ? 'lan' : (cloudConfigured ? 'cloud' : 'none'));
+  if (transport === 'none') throw new Error('Per ripristinare tutto il gruppo deve essere configurata almeno una sincronizzazione Cloud o LAN.');
+  const restoreId = `restore-${(globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '')}`;
+  return saveSyncRestoreGuard({
+    pending: true,
+    mode: 'global-authoritative',
+    phase: 'global-restore-applied',
+    transport, restoreId,
+    createdAt: new Date().toISOString(),
+    backupFileName: String(details.fileName || ''),
+    backupCreatedAt: String(details.manifest?.createdAt || ''),
+    recordCount: Number(details.recordCount) || 0
+  });
+}
+
+function beginRemoteGroupEpochGuard(details = {}) {
+  return saveSyncRestoreGuard({
+    pending: true,
+    mode: 'group-authoritative',
+    phase: 'epoch-mismatch',
+    transport: String(details.transport || 'none'),
+    remoteEpoch: String(details.remoteEpoch || ''),
+    hubId: String(details.hubId || ''),
+    clearAllPagesBeforeReconcile: true,
+    createdAt: new Date().toISOString()
+  });
+}
+
+function updateSyncRestoreGuard(patch = {}) {
+  if (!isSyncRestorePending()) return null;
+  return saveSyncRestoreGuard({ ...syncRestoreGuard, ...patch, pending: true, modifiedAt: new Date().toISOString() });
+}
+
+function clearSyncRestoreGuard() {
+  saveSyncRestoreGuard(null);
+}
+
+function recoveryEventTouchesPage(event) {
+  if (!event || !event.descriptor?.key) return false;
+  if (event.operation === 'stroke.add' || event.operation === 'stroke.delete') return true;
+  if (event.operation === 'page.clear' || event.operation === 'page.property.set' || event.operation === 'page.snapshot.set') return true;
+  return event.entityType === 'image-object';
+}
+
+async function prepareRestoreRecoveryPage(event) {
+  if (!syncRecoveryRebuildActive || !recoveryEventTouchesPage(event)) return;
+  const key = String(event.descriptor?.key || '');
+  if (!key || syncRecoveryRebuiltPages.has(key)) return;
+  await deleteRecord(key);
+  syncRecoveryRebuiltPages.add(key);
+}
+
+async function rebuildNotesMetadataFromPages() {
+  await openDb();
+  const records = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  const counts = new Map();
+  const metaKeys = [];
+  for (const row of records) {
+    const key = String(row?.date || '');
+    if (row?.kind === 'day-notes-meta' || key.endsWith(NOTES_META_SUFFIX)) {
+      metaKeys.push(key);
+      continue;
+    }
+    const match = key.match(/^(\d{4}-\d{2}-\d{2})::note::(\d{4})$/);
+    if (!match) continue;
+    const day = String(row?.referenceDate || match[1]);
+    const index = Math.max(1, Number(row?.noteIndex) || Number(match[2]) || 1);
+    counts.set(day, Math.max(counts.get(day) || 0, index));
+  }
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const store = tx.objectStore(STORE);
+    for (const key of metaKeys) store.delete(key);
+    for (const [day, count] of counts) {
+      store.put({
+        date: notesMetaKey(day), kind: 'day-notes-meta', referenceDate: day, count,
+        version: APP_VERSION, modifiedAt: new Date().toISOString()
+      });
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Ricostruzione indice Note annullata'));
+  });
+  notesCountCache.clear();
+  for (const [day, count] of counts) notesCountCache.set(day, count);
+}
+
+async function runPendingGlobalGroupRestore() {
+  if (!isSyncRestorePending() || syncRestoreGuard.mode !== 'global-authoritative') return { skipped: 'not-global' };
+  const transport = String(syncRestoreGuard.transport || 'none');
+  const restoreId = String(syncRestoreGuard.restoreId || '');
+  if (!restoreId || transport === 'none') throw new Error('Sessione di ripristino globale non valida.');
+  updateSyncRestoreGuard({ phase: 'global-publishing', attemptAt: new Date().toISOString() });
+  try {
+    const snapshot = await queueAuthoritativeGroupSnapshot();
+    let result;
+    if (transport === 'cloud') {
+      if (!cloudTransport) throw new Error('Cloud Sync non inizializzato.');
+      result = await cloudTransport.publishAndCommitGlobalRestore(restoreId);
+    } else if (transport === 'lan') {
+      if (!lanTransport) throw new Error('Sync LAN non inizializzato.');
+      result = await lanTransport.publishAndCommitGlobalRestore(restoreId);
+    } else throw new Error('Trasporto ripristino globale non riconosciuto.');
+    clearSyncRestoreGuard();
+    await loadInitialPage();
+    statusLabel.textContent = `ripristino globale completato · ${snapshot.records} record pubblicati`;
+    return { ...result, snapshotRecords: snapshot.records, snapshotEvents: snapshot.events };
+  } catch (err) {
+    updateSyncRestoreGuard({ phase: 'global-publish-failed', lastError: String(err?.message || err) });
+    statusLabel.textContent = 'ripristino globale sospeso · sola lettura';
+    console.warn('Ripristino globale gruppo non riuscito', err);
+    return { error: String(err?.message || err), pushed: 0, pulled: 0, globalRestore: true };
+  }
+}
+
+async function handleRemoteGroupEpochMismatch(details = {}) {
+  if (isSyncRestorePending()) return;
+  beginRemoteGroupEpochGuard(details);
+  lanTransport?.suspendForInk();
+  cloudTransport?.suspendForInk();
+  await resetSyncStores();
+  location.reload();
+}
+
+async function runPendingRestoreReconciliation() {
+  if (!isSyncRestorePending()) return { skipped: 'none' };
+  if (syncRestoreGuard.mode === 'global-authoritative') return runPendingGlobalGroupRestore();
+  const recoveryMode = String(syncRestoreGuard.mode || 'local-restore');
+  const transport = String(syncRestoreGuard.transport || 'none');
+  if (transport === 'none') {
+    clearSyncRestoreGuard();
+    return { skipped: 'no-sync-group' };
+  }
+  updateSyncRestoreGuard({ phase: 'reconciling', attemptAt: new Date().toISOString() });
+  if (syncRestoreGuard.clearAllPagesBeforeReconcile) await clearAllMainRecords();
+  syncRecoveryRebuildActive = true;
+  syncRecoveryRebuiltPages.clear();
+  try {
+    let result;
+    if (transport === 'cloud') {
+      if (!cloudTransport) throw new Error('Cloud Sync non inizializzato.');
+      result = await cloudTransport.recoverPullOnly();
+    } else if (transport === 'lan') {
+      if (!lanTransport) throw new Error('Sync LAN non inizializzato.');
+      result = await lanTransport.recoverPullOnly();
+    } else {
+      throw new Error('Trasporto di riallineamento non riconosciuto.');
+    }
+    await rebuildNotesMetadataFromPages();
+    clearSyncRestoreGuard();
+    syncRecoveryRebuildActive = false;
+    syncRecoveryRebuiltPages.clear();
+    await loadInitialPage();
+    statusLabel.textContent = recoveryMode === 'group-authoritative'
+      ? `gruppo riallineato · ricevuti ${Number(result?.pulled) || 0}`
+      : `ripristino riallineato · ricevuti ${Number(result?.pulled) || 0}`;
+    return result;
+  } catch (err) {
+    syncRecoveryRebuildActive = false;
+    syncRecoveryRebuiltPages.clear();
+    updateSyncRestoreGuard({ phase: 'reconcile-failed', lastError: String(err?.message || err) });
+    statusLabel.textContent = 'ripristino locale · Sync sospesa';
+    console.warn('Riallineamento post-ripristino non riuscito', err);
+    return { error: String(err?.message || err), pulled: 0, pushed: 0 };
+  }
+}
+
+async function retryPendingRestoreReconciliation() {
+  if (!isSyncRestorePending()) return false;
+  updateSyncRestoreGuard({ phase: 'restore-applied', lastError: '', retryAt: new Date().toISOString() });
+  await resetSyncStores();
+  location.reload();
+  return true;
+}
 
 function loadCloudConfig() {
   try {
@@ -2485,14 +2851,26 @@ function getCloudPullCursor() {
   return getSyncMeta(CLOUD_STATE_KEY).then((row) => Math.max(0, Number(row?.cursor) || 0));
 }
 
-function setCloudPullCursor(cursor) {
-  return putSyncMeta({ key: CLOUD_STATE_KEY, cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+async function setCloudPullCursor(cursor) {
+  const old = await getSyncMeta(CLOUD_STATE_KEY).catch(() => null);
+  return putSyncMeta({ ...old, key: CLOUD_STATE_KEY, cursor: Math.max(0, Number(cursor) || 0), modifiedAt: new Date().toISOString() });
+}
+
+function getCloudGroupEpoch() {
+  return getSyncMeta(CLOUD_STATE_KEY).then((row) => String(row?.groupEpoch || ''));
+}
+
+async function setCloudGroupEpoch(epoch) {
+  const old = await getSyncMeta(CLOUD_STATE_KEY).catch(() => null);
+  return putSyncMeta({ ...old, key: CLOUD_STATE_KEY, groupEpoch: String(epoch || ''), cursor: Math.max(0, Number(old?.cursor) || 0), modifiedAt: new Date().toISOString() });
 }
 
 function updateCloudStatus(message = '') {
+  updateSyncRestoreConfigLock();
   if (!cloudSyncStatus) return;
   if (message) { cloudSyncStatus.textContent = message; return; }
   const lines = [
+    ...(isSyncRestorePending() ? ['⚠ Ripristino backup: invio Sync bloccato fino al riallineamento protetto.'] : []),
     `Stato: ${cloudStats?.state || 'idle'} · modalità ${cloudSyncModeSelect?.value || 'manual'}`,
     `Gruppo: ${cloudStats?.groupId || 'non configurato'}`,
     `Push/Pull: ${cloudStats?.pushed || 0}/${cloudStats?.pulled || 0} · applicati ${cloudStats?.applied || 0}`,
@@ -2508,6 +2886,7 @@ function updateCloudStatus(message = '') {
 
 async function handleCloudCreateGroup() {
   if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  if (isSyncRestorePending()) return updateCloudStatus('Prima completa il riallineamento protetto del backup; non cambio gruppo durante un ripristino.');
   const existing = String(cloudJoinCodeInput?.value || '').trim();
   if (existing) {
     const proceed = globalThis.confirm('Esiste già un Codice gruppo Cloud su questo dispositivo. Creando un nuovo gruppo il codice locale verrà sostituito. Hai già copiato e conservato il vecchio codice?');
@@ -2535,6 +2914,12 @@ async function handleCloudTest() {
 
 async function handleCloudSyncNow() {
   if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  if (isSyncRestorePending()) {
+    saveCloudConfig();
+    updateCloudStatus('Riprovo il riallineamento protetto del backup con il gruppo Cloud…');
+    await retryPendingRestoreReconciliation();
+    return;
+  }
   saveCloudConfig(); updateCloudStatus('Sincronizzazione Cloud…');
   try {
     const result = await cloudTransport.syncNow({ auto: false, reason: 'manual' });
@@ -2547,7 +2932,8 @@ async function handleCloudSyncNow() {
 }
 
 function scheduleCloudAuto(reason = 'change', delayMs = 5000) {
-  cloudTransport?.scheduleAuto(reason, delayMs);
+  if (isSyncRestorePending()) return false;
+  return cloudTransport?.scheduleAuto(reason, delayMs) || false;
 }
 
 function startCloudHeartbeat() {
@@ -2571,10 +2957,12 @@ function saveLanConfig() {
 }
 
 function updateLanStatus(message = '') {
+  updateSyncRestoreConfigLock();
   if (!lanSyncStatus) return;
   if (message) { lanSyncStatus.textContent = message; return; }
   const state = lanStats?.state || 'idle';
   const lines = [
+    ...(isSyncRestorePending() ? ['⚠ Ripristino backup: invio Sync bloccato fino al riallineamento protetto.'] : []),
     `Stato: ${state}`,
     `Hub: ${lanStats?.hubId || 'non verificato'}`,
     `Push/Pull: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0} · applicati ${lanStats?.applied || 0}`,
@@ -2601,6 +2989,12 @@ async function handleLanTest() {
 
 async function handleLanSyncNow() {
   if (!lanTransport) return updateLanStatus('Trasporto LAN non inizializzato.');
+  if (isSyncRestorePending()) {
+    saveLanConfig();
+    updateLanStatus('Riprovo il riallineamento protetto del backup con il gruppo LAN…');
+    await retryPendingRestoreReconciliation();
+    return;
+  }
   saveLanConfig();
   updateLanStatus('Sincronizzazione LAN manuale…');
   try {
@@ -2612,6 +3006,28 @@ async function handleLanSyncNow() {
     if (err?.name === 'AbortError') updateLanStatus('Sync interrotta: la scrittura Ink ha priorità. Ripremere “Sincronizza adesso” quando si è terminato di scrivere.');
     else updateLanStatus(`Sync LAN non riuscita: ${err?.message || err}`);
   }
+}
+
+async function readAllMainRecords() {
+  await openDb();
+  return await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function clearAllMainRecords() {
+  await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Pulizia pagine per cambio generazione annullata'));
+  });
+  notesCountCache.clear();
 }
 
 function resetSyncStores() {
@@ -2901,6 +3317,7 @@ function initialImageGeometry(pixelWidth, pixelHeight) {
 }
 
 async function importImageFile(file) {
+  if (denyMutationDuringSyncRecovery()) return;
   if (!file || !file.type?.startsWith('image/') || drawing || pageTurning || imageBusy) return;
   imageBusy = true;
   statusLabel.textContent = 'preparo immagine';
@@ -2940,6 +3357,7 @@ function constrainImage(image) {
 }
 
 function beginImageGesture(ev) {
+  if (denyMutationDuringSyncRecovery()) return;
   if (activeTool !== 'image' || drawing || pageTurning || !imageLayer) return;
   const item = ev.target instanceof Element ? ev.target.closest('.image-object') : null;
   if (!item || !imageLayer.contains(item)) {
@@ -3013,6 +3431,7 @@ function endImageGesture(ev, cancelled = false) {
 }
 
 function rotateSelectedImage(delta) {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning) return;
   const image = selectedImage();
   if (!image) return;
@@ -3028,6 +3447,7 @@ function rotateSelectedImage(delta) {
 }
 
 function deleteSelectedImage() {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning) return;
   const index = images.findIndex((image) => image.id === selectedImageId);
   if (index < 0) return;
@@ -3220,6 +3640,7 @@ function applyCropGeometry(image, rect, layerRect) {
 }
 
 async function applyImageCrop() {
+  if (denyMutationDuringSyncRecovery()) return;
   if (!imageCropEditor || imageBusy || drawing || pageTurning) return;
   const image = images.find((candidate) => candidate.id === imageCropEditor.imageId);
   if (!image) { closeImageCropEditor('immagine non disponibile'); return; }
@@ -3338,6 +3759,7 @@ function rememberUndo(action) {
 }
 
 function undoLastModification() {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !undoHistory.length) return;
   const action = undoHistory.pop();
   if (action?.type === 'add-stroke' && action.stroke?.id) {
@@ -3392,6 +3814,7 @@ function undoLastModification() {
 }
 
 function redoLastModification() {
+  if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !redoHistory.length) return;
   const action = redoHistory.pop();
   if (action?.type === 'add-stroke' && action.stroke?.id) {
@@ -4074,6 +4497,7 @@ async function copyReport() {
 }
 
 async function clearCurrentPage(options = {}) {
+  if (denyMutationDuringSyncRecovery()) return false;
   const requireConfirmation = options?.requireConfirmation !== false;
   const reason = String(options?.reason || 'manual');
   if (drawing || !ready || eraserClearBusy) return false;
@@ -4317,6 +4741,7 @@ function verticalTarget(direction) {
   // Agenda/Note: swipe verso l'alto apre o avanza nelle Note del giorno.
   const nextIndex = currentPageKind === 'agenda' ? 1 : currentNoteIndex + 1;
   const createNote = nextIndex > count;
+  if (createNote && isSyncRestorePending()) return null;
   const total = createNote ? nextIndex : Math.max(count, currentNoteTotal);
   const target = pageDescriptor(currentDate, 'note', nextIndex, total);
   target.createNote = createNote;
@@ -4852,8 +5277,21 @@ stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { pass
 // 0.1.47 — router globale condiviso: il motore Ink Agenda resta byte-per-byte invariato.
 // 0.1.50 — Orario settimanale = normale pagina Planner.
 // Nessun router Ink dedicato: tutti i Pointer Events passano dagli stessi handler core dell'Agenda.
-function routeGlobalPointerDown(ev) { handlePointerDown(ev); }
-function routeGlobalPointerMove(ev) { handlePointerMove(ev); }
+function routeGlobalPointerDown(ev) {
+  if (isSyncRestorePending() && !isUiControlTarget(ev.target) && ev.pointerType !== 'touch') {
+    denyMutationDuringSyncRecovery();
+    ev.preventDefault();
+    return;
+  }
+  handlePointerDown(ev);
+}
+function routeGlobalPointerMove(ev) {
+  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing) {
+    ev.preventDefault();
+    return;
+  }
+  handlePointerMove(ev);
+}
 function routeGlobalPointerUp(ev) { handlePointerUp(ev); }
 function routeGlobalPointerCancel(ev) { handlePointerCancel(ev); }
 
@@ -5240,6 +5678,9 @@ async function bootAgenda() {
       markEventsSent: markCloudEventsSent,
       getPullCursor: getCloudPullCursor,
       setPullCursor: setCloudPullCursor,
+      getGroupEpoch: getCloudGroupEpoch,
+      setGroupEpoch: setCloudGroupEpoch,
+      onGroupEpochMismatch: handleRemoteGroupEpochMismatch,
       hasLocalBlob: hasSyncBlob,
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
@@ -5255,8 +5696,6 @@ async function bootAgenda() {
     cloudJoinCodeInput?.addEventListener('input', () => saveCloudConfig());
     cloudJoinCodeInput?.addEventListener('dblclick', () => selectTextControl(cloudJoinCodeInput));
     cloudSyncModeSelect?.addEventListener('change', () => { saveCloudConfig(); updateCloudStatus(); scheduleCloudAuto('mode-change', 1200); });
-    startCloudHeartbeat();
-    scheduleCloudAuto('startup', 1800);
   }
   if (!lanTransport && syncFoundation) {
     const config = loadLanConfig();
@@ -5271,6 +5710,9 @@ async function bootAgenda() {
       markEventsSent: markSyncEventsSent,
       getPullCursor: getLanPullCursor,
       setPullCursor: setLanPullCursor,
+      getGroupEpoch: getLanGroupEpoch,
+      setGroupEpoch: setLanGroupEpoch,
+      onGroupEpochMismatch: handleRemoteGroupEpochMismatch,
       hasLocalBlob: hasSyncBlob,
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
@@ -5283,6 +5725,20 @@ async function bootAgenda() {
     lanHubUrlInput?.addEventListener('change', saveLanConfig);
     lanSyncKeyInput?.addEventListener('change', saveLanConfig);
   }
+  if (isSyncRestorePending()) {
+    const pendingMode = String(syncRestoreGuard?.mode || 'local-restore');
+    const result = await runPendingRestoreReconciliation();
+    if (result?.error) {
+      const title = pendingMode === 'global-authoritative'
+        ? 'Ripristino globale non completato'
+        : pendingMode === 'group-authoritative' ? 'Riallineamento alla nuova generazione non completato' : 'Ripristino locale completato, ma riallineamento Sync non riuscito';
+      const text = `${title}.\nInvio bloccato e Agenda in sola lettura per sicurezza. Premi “Sincronizza adesso” per riprovare.\n${result.error}`;
+      updateCloudStatus(text);
+      updateLanStatus(text);
+    }
+  }
+  startCloudHeartbeat();
+  scheduleCloudAuto('startup', 1800);
   ready = true;
   if (!backupFoundation) {
     backupFoundation = initBackupFoundation({
@@ -5292,11 +5748,29 @@ async function bootAgenda() {
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
       isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
-      afterRestoreApplied: async () => {
-        // Il backup è uno snapshot, non una sequenza Sync: eliminiamo l'outbox
-        // precedente per evitare che eventi riferiti allo stato pre-restore vengano
-        // trasmessi in futuro. Al reload verrà creata una nuova identità replica.
+      beforeRestoreApplied: async (details) => {
+        // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
+        // cambiare gruppo né propagare automaticamente uno snapshot storico.
+        beginSyncRestoreGuard(details);
+        lanTransport?.suspendForInk();
+        cloudTransport?.suspendForInk();
+      },
+      afterRestoreApplied: async (details) => {
+        // Lo snapshot ripristinato non genera eventi. Azzeriamo identità, cursori, outbox e blob Sync;
+        // al riavvio una nuova replica eseguirà prima un pull-only completo del gruppo.
         await resetSyncStores();
+        updateSyncRestoreGuard({ phase: 'restore-applied', restoredAt: new Date().toISOString(), ...details });
+      },
+      beforeGlobalRestoreApplied: async (details) => {
+        // Operazione distruttiva esplicita: il backup locale diventerà una nuova generazione
+        // autorevole del gruppo, ma soltanto dopo pubblicazione e commit remoto completi.
+        beginGlobalGroupRestoreGuard(details);
+        lanTransport?.suspendForInk();
+        cloudTransport?.suspendForInk();
+      },
+      afterGlobalRestoreApplied: async (details) => {
+        await resetSyncStores();
+        updateSyncRestoreGuard({ phase: 'global-restore-applied', restoredAt: new Date().toISOString(), ...details });
       }
     });
   }
