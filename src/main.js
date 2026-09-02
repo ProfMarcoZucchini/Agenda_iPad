@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.64';
+const APP_VERSION = '0.1.65';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -142,6 +142,13 @@ const cloudSyncStatus = document.getElementById('cloudSyncStatus');
 const saintNameButton = document.getElementById('saintNameButton');
 const weatherBadge = document.getElementById('weatherBadge');
 const weatherIcon = document.getElementById('weatherIcon');
+const weatherDetailPanel = document.getElementById('weatherDetailPanel');
+const weatherDetailTitle = document.getElementById('weatherDetailTitle');
+const weatherDetailDate = document.getElementById('weatherDetailDate');
+const weatherDetailStatus = document.getElementById('weatherDetailStatus');
+const weatherTimeBands = document.getElementById('weatherTimeBands');
+const weatherWeek = document.getElementById('weatherWeek');
+const closeWeatherDetailButton = document.getElementById('closeWeatherDetailButton');
 const historyEventButton = document.getElementById('historyEventButton');
 const historyEventLabel = historyEventButton?.querySelector('.history-event-label');
 const saintDetailPanel = document.getElementById('saintDetailPanel');
@@ -213,6 +220,8 @@ let weatherLocationLastFailureAt = 0;
 let weatherLocationPromise = null;
 let weatherFetchController = null;
 let weatherRefreshTimer = 0;
+let weatherDetailFetchController = null;
+let weatherDetailCache = { locationKey:'', fetchedAt:0, payload:null };
 let historyFetchController = null;
 let historyDetailFetchController = null;
 let historyRefreshTimer = 0;
@@ -647,13 +656,23 @@ function agendaDateEligibleForWeather(dateString) {
 
 function weatherVisualForCode(code) {
   const n = Number(code);
-  if (n === 0) return { asset:'sun.svg', label:'Sole' };
-  if (n === 1 || n === 2) return { asset:'sun-cloud.svg', label:'Sole con nuvole' };
-  if (n === 3) return { asset:'cloud.svg', label:'Nuvoloso' };
-  if (n === 45 || n === 48) return { asset:'fog.svg', label:'Foschia o nebbia' };
-  if ([71,73,75,77,85,86].includes(n)) return { asset:'snow.svg', label:'Neve' };
-  if ([51,53,55,56,57,61,63,65,66,67,80,81,82,95,96,99].includes(n)) return { asset:'rain.svg', label:'Pioggia' };
-  return { asset:'cloud.svg', label:'Nuvoloso' };
+  if (n === 0) return { asset:'sun.svg', label:'Sereno' };
+  if (n === 1) return { asset:'sun.svg', label:'Prevalentemente sereno' };
+  if (n === 2) return { asset:'sun-cloud.svg', label:'Parzialmente nuvoloso' };
+  if (n === 3) return { asset:'cloud.svg', label:'Coperto' };
+  if (n === 45) return { asset:'fog.svg', label:'Nebbia' };
+  if (n === 48) return { asset:'fog.svg', label:'Nebbia con brina' };
+  if ([51,53,55].includes(n)) return { asset:'rain.svg', label:n === 51 ? 'Pioviggine debole' : n === 53 ? 'Pioviggine moderata' : 'Pioviggine intensa' };
+  if ([56,57].includes(n)) return { asset:'rain.svg', label:'Pioviggine gelata' };
+  if ([61,63,65].includes(n)) return { asset:'rain.svg', label:n === 61 ? 'Pioggia debole' : n === 63 ? 'Pioggia moderata' : 'Pioggia intensa' };
+  if ([66,67].includes(n)) return { asset:'rain.svg', label:'Pioggia gelata' };
+  if ([71,73,75].includes(n)) return { asset:'snow.svg', label:n === 71 ? 'Neve debole' : n === 73 ? 'Neve moderata' : 'Neve intensa' };
+  if (n === 77) return { asset:'snow.svg', label:'Granelli di neve' };
+  if ([80,81,82].includes(n)) return { asset:'rain.svg', label:n === 80 ? 'Rovesci deboli' : n === 81 ? 'Rovesci moderati' : 'Rovesci forti' };
+  if ([85,86].includes(n)) return { asset:'snow.svg', label:'Rovesci di neve' };
+  if (n === 95) return { asset:'rain.svg', label:'Temporale' };
+  if ([96,99].includes(n)) return { asset:'rain.svg', label:'Temporale con grandine' };
+  return { asset:'cloud.svg', label:'Variabile' };
 }
 
 function setWeatherBadgeFor(root, dateString, pageKind = currentPageKind) {
@@ -667,8 +686,202 @@ function setWeatherBadgeFor(root, dateString, pageKind = currentPageKind) {
   const visual = weatherVisualForCode(forecast.code);
   img.src = `./assets/weather/${visual.asset}`;
   img.alt = `Previsione: ${visual.label}`;
-  badge.title = visual.label;
-  badge.setAttribute('aria-label', `Previsione meteo locale: ${visual.label}`);
+  badge.title = `${visual.label} · tocca per i dettagli`;
+  badge.setAttribute('aria-label', `Previsione meteo locale: ${visual.label}. Tocca per i dettagli`);
+}
+
+function closeWeatherDetails() {
+  weatherDetailFetchController?.abort();
+  weatherDetailFetchController = null;
+  if (weatherDetailPanel) weatherDetailPanel.hidden = true;
+}
+
+function weatherRepresentativeCode(codes) {
+  const valid = codes.map(Number).filter(Number.isFinite);
+  if (!valid.length) return 3;
+  const counts = new Map();
+  for (const code of valid) counts.set(code, (counts.get(code) || 0) + 1);
+  const severity = (code) => {
+    if ([95,96,99].includes(code)) return 9;
+    if ([65,67,82,86].includes(code)) return 8;
+    if ([63,66,75,81,85].includes(code)) return 7;
+    if ([61,71,73,80].includes(code)) return 6;
+    if ([51,53,55,56,57,77].includes(code)) return 5;
+    if ([45,48].includes(code)) return 4;
+    if (code === 3) return 3;
+    if (code === 2) return 2;
+    if (code === 1) return 1;
+    return 0;
+  };
+  return [...counts.entries()].sort((a,b) => b[1] - a[1] || severity(b[0]) - severity(a[0]))[0][0];
+}
+
+function finiteValues(values) { return values.map(Number).filter(Number.isFinite); }
+function roundedWeatherValue(value) { return Number.isFinite(Number(value)) ? Math.round(Number(value)) : null; }
+function weatherTempRange(values) {
+  const nums = finiteValues(values);
+  if (!nums.length) return '—';
+  const lo = Math.round(Math.min(...nums));
+  const hi = Math.round(Math.max(...nums));
+  return lo === hi ? `${lo}°C` : `${lo}–${hi}°C`;
+}
+function weatherMaxLabel(values, suffix) {
+  const nums = finiteValues(values);
+  if (!nums.length) return '—';
+  return `${Math.round(Math.max(...nums))}${suffix}`;
+}
+
+function weatherBandRows(payload, dateString) {
+  const times = Array.isArray(payload?.hourly?.time) ? payload.hourly.time : [];
+  const codes = Array.isArray(payload?.hourly?.weather_code) ? payload.hourly.weather_code : [];
+  const temps = Array.isArray(payload?.hourly?.temperature_2m) ? payload.hourly.temperature_2m : [];
+  const rain = Array.isArray(payload?.hourly?.precipitation_probability) ? payload.hourly.precipitation_probability : [];
+  const wind = Array.isArray(payload?.hourly?.wind_speed_10m) ? payload.hourly.wind_speed_10m : [];
+  const bands = [
+    { title:'Notte', hours:'00–05', from:0, to:5 },
+    { title:'Mattina', hours:'06–11', from:6, to:11 },
+    { title:'Pomeriggio', hours:'12–17', from:12, to:17 },
+    { title:'Sera', hours:'18–23', from:18, to:23 }
+  ];
+  return bands.map((band) => {
+    const indices = [];
+    for (let i=0; i<times.length; i++) {
+      if (typeof times[i] !== 'string' || !times[i].startsWith(`${dateString}T`)) continue;
+      const hour = Number(times[i].slice(11,13));
+      if (Number.isFinite(hour) && hour >= band.from && hour <= band.to) indices.push(i);
+    }
+    return {
+      ...band,
+      code: weatherRepresentativeCode(indices.map(i => codes[i])),
+      temp: weatherTempRange(indices.map(i => temps[i])),
+      rain: weatherMaxLabel(indices.map(i => rain[i]), '%'),
+      wind: weatherMaxLabel(indices.map(i => wind[i]), ' km/h'),
+      available: indices.length > 0
+    };
+  });
+}
+
+function weatherWeekRows(payload, dateString) {
+  const daily = payload?.daily || {};
+  const times = Array.isArray(daily.time) ? daily.time : [];
+  const codes = Array.isArray(daily.weather_code) ? daily.weather_code : [];
+  const mins = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
+  const maxs = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
+  const rain = Array.isArray(daily.precipitation_probability_max) ? daily.precipitation_probability_max : [];
+  const wind = Array.isArray(daily.wind_speed_10m_max) ? daily.wind_speed_10m_max : [];
+  const rows = [];
+  for (let i=0; i<times.length && rows.length<7; i++) {
+    if (typeof times[i] !== 'string' || times[i] < dateString) continue;
+    rows.push({ date:times[i], code:Number(codes[i]), min:roundedWeatherValue(mins[i]), max:roundedWeatherValue(maxs[i]), rain:roundedWeatherValue(rain[i]), wind:roundedWeatherValue(wind[i]) });
+  }
+  return rows;
+}
+
+function weatherDayLabel(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  const text = new Intl.DateTimeFormat('it-IT', { weekday:'short', day:'numeric', month:'short' }).format(d).replace(/\.$/, '');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function weatherImg(code, className='weather-detail-icon') {
+  const visual = weatherVisualForCode(code);
+  const img = document.createElement('img');
+  img.className = className;
+  img.src = `./assets/weather/${visual.asset}`;
+  img.alt = visual.label;
+  img.draggable = false;
+  return img;
+}
+
+function renderWeatherDetails(payload, dateString) {
+  if (!weatherTimeBands || !weatherWeek || !weatherDetailStatus) return;
+  weatherTimeBands.replaceChildren();
+  weatherWeek.replaceChildren();
+  const bands = weatherBandRows(payload, dateString);
+  for (const band of bands) {
+    const card = document.createElement('article');
+    card.className = 'weather-band-card';
+    card.append(weatherImg(band.code));
+    const text = document.createElement('div');
+    text.className = 'weather-band-copy';
+    const head = document.createElement('div'); head.className='weather-band-head';
+    const title = document.createElement('strong'); title.textContent = band.title;
+    const hours = document.createElement('span'); hours.textContent = band.hours;
+    head.append(title, hours);
+    const desc = document.createElement('div'); desc.className='weather-band-desc'; desc.textContent = band.available ? weatherVisualForCode(band.code).label : 'Dati non disponibili';
+    const metrics = document.createElement('div'); metrics.className='weather-band-metrics';
+    metrics.textContent = band.available ? `${band.temp}  ·  pioggia ${band.rain}  ·  vento ${band.wind}` : '—';
+    text.append(head, desc, metrics); card.append(text); weatherTimeBands.append(card);
+  }
+  const weekRows = weatherWeekRows(payload, dateString);
+  for (const row of weekRows) {
+    const card = document.createElement('article'); card.className='weather-day-card';
+    const day = document.createElement('div'); day.className='weather-day-name'; day.textContent=weatherDayLabel(row.date);
+    card.append(day, weatherImg(row.code, 'weather-week-icon'));
+    const copy = document.createElement('div'); copy.className='weather-day-copy';
+    const visual=weatherVisualForCode(row.code);
+    const desc=document.createElement('strong'); desc.textContent=visual.label;
+    const temp=document.createElement('span'); temp.textContent = row.min === null || row.max === null ? '—' : `${row.min}° / ${row.max}°`;
+    const metrics=document.createElement('small'); metrics.textContent=`Pioggia ${row.rain ?? '—'}% · vento ${row.wind ?? '—'} km/h`;
+    copy.append(desc,temp,metrics); card.append(copy); weatherWeek.append(card);
+  }
+  weatherDetailStatus.textContent = weekRows.length ? 'Previsione aggiornata per la posizione attuale.' : 'Previsione disponibile solo parzialmente.';
+  weatherDetailStatus.classList.remove('error');
+}
+
+async function fetchWeatherDetailPayload(coords, signal) {
+  const cacheFresh = weatherDetailCache.payload && weatherDetailCache.locationKey === weatherLocationKey && Date.now() - weatherDetailCache.fetchedAt < 15 * 60 * 1000;
+  if (cacheFresh) return weatherDetailCache.payload;
+  const params = new URLSearchParams({
+    latitude:String(coords.lat), longitude:String(coords.lon), timezone:'auto', forecast_days:'16',
+    hourly:'weather_code,temperature_2m,precipitation_probability,wind_speed_10m',
+    daily:'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max'
+  });
+  const response = await fetch(`${OPEN_METEO_FORECAST_URL}?${params.toString()}`, { method:'GET', mode:'cors', credentials:'omit', cache:'no-store', signal });
+  if (!response.ok) throw new Error(`Meteo HTTP ${response.status}`);
+  const payload = await response.json();
+  weatherDetailCache = { locationKey:weatherLocationKey, fetchedAt:Date.now(), payload };
+  return payload;
+}
+
+async function openWeatherDetails() {
+  if (currentPageKind !== 'agenda' || !weatherDetailPanel) return;
+  const dateString = currentDate;
+  weatherDetailTitle.textContent = 'Previsioni meteo';
+  weatherDetailDate.textContent = saintDateLabel(dateString);
+  weatherDetailStatus.textContent = 'Caricamento previsioni dettagliate…';
+  weatherDetailStatus.classList.remove('error');
+  weatherTimeBands?.replaceChildren();
+  weatherWeek?.replaceChildren();
+  weatherDetailPanel.hidden = false;
+  if (!agendaDateEligibleForWeather(dateString)) {
+    weatherDetailStatus.textContent = 'Le previsioni dettagliate sono disponibili per oggi e per i prossimi 15 giorni.';
+    weatherDetailStatus.classList.add('error');
+    return;
+  }
+  const coords = await getDeviceWeatherPosition();
+  if (!coords || weatherDetailPanel.hidden || currentDate !== dateString) {
+    if (!weatherDetailPanel.hidden && currentDate === dateString) {
+      weatherDetailStatus.textContent = weatherLocationState === 'denied' ? 'Per il meteo dettagliato abilita la posizione per Agenda iPad.' : 'Posizione non disponibile in questo momento.';
+      weatherDetailStatus.classList.add('error');
+    }
+    return;
+  }
+  weatherDetailFetchController?.abort();
+  const controller = new AbortController();
+  weatherDetailFetchController = controller;
+  try {
+    const payload = await fetchWeatherDetailPayload(coords, controller.signal);
+    if (weatherDetailPanel.hidden || currentDate !== dateString) return;
+    renderWeatherDetails(payload, dateString);
+  } catch (err) {
+    if (err?.name !== 'AbortError' && !weatherDetailPanel.hidden && currentDate === dateString) {
+      weatherDetailStatus.textContent = navigator.onLine ? 'Previsioni dettagliate momentaneamente non disponibili.' : 'Previsioni dettagliate non disponibili offline.';
+      weatherDetailStatus.classList.add('error');
+    }
+  } finally {
+    if (weatherDetailFetchController === controller) weatherDetailFetchController = null;
+  }
 }
 
 function scheduleWeatherRefresh(delay = 800) {
@@ -1699,6 +1912,8 @@ function updateHeader() {
     saintFetchController?.abort(); saintBioFetchController?.abort();
     historyFetchController?.abort(); historyDetailFetchController?.abort();
     weatherFetchController?.abort();
+    weatherDetailFetchController?.abort();
+    if (weatherDetailPanel) weatherDetailPanel.hidden = true;
     setHistoryLabel(document, currentDate, 'hidden', currentPageKind);
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
@@ -4158,6 +4373,7 @@ function startStroke(ev, reason = 'pointerdown') {
   if (!ready || pageTurning || activeTool === 'image') return false;
   if (saintDetailPanel && !saintDetailPanel.hidden) return false;
   if (historyDetailPanel && !historyDetailPanel.hidden) return false;
+  if (weatherDetailPanel && !weatherDetailPanel.hidden) return false;
   if (ev.pointerType === 'touch') return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0 && reason === 'pointerdown') return false;
   if (!pointInsideWritableArea(ev)) return false;
@@ -4178,6 +4394,7 @@ function startStroke(ev, reason = 'pointerdown') {
   historyFetchController?.abort();
   historyDetailFetchController?.abort();
   weatherFetchController?.abort();
+  weatherDetailFetchController?.abort();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -5362,6 +5579,21 @@ document.addEventListener('touchmove', (ev) => {
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gesturechange', (ev) => ev.preventDefault(), { passive: false });
 document.addEventListener('gestureend', (ev) => ev.preventDefault(), { passive: false });
+
+function activateWeatherDetailsFromPen(ev) {
+  if (ev.pointerType !== 'pen' || weatherBadge?.hidden) return;
+  void openWeatherDetails();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+weatherBadge?.addEventListener('pointerup', activateWeatherDetailsFromPen, { passive:false });
+weatherBadge?.addEventListener('click', () => { if (!weatherBadge.hidden) void openWeatherDetails(); });
+closeWeatherDetailButton?.addEventListener('pointerup', (ev) => {
+  if (ev.pointerType !== 'pen') return;
+  closeWeatherDetails(); ev.preventDefault(); ev.stopPropagation();
+}, { passive:false });
+closeWeatherDetailButton?.addEventListener('click', closeWeatherDetails);
+weatherDetailPanel?.addEventListener('click', (ev) => { if (ev.target === weatherDetailPanel) closeWeatherDetails(); });
 
 function activateSaintDetailsFromPen(ev) {
   if (ev.pointerType !== 'pen' || saintNameButton?.disabled) return;
