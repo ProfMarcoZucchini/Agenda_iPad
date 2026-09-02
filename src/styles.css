@@ -2082,3 +2082,6 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .page-header { padding-right: 270px; }
   .page-meta { margin-right: 246px; }
 }
+
+/* 0.1.64 — Pagine Agenda: una riga libera prima delle 07:00; scala 07:00–18:00. */
+.hours .hours-spacer { visibility: hidden; }
