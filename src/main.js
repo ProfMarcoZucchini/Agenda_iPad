@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.61';
+const APP_VERSION = '0.1.63';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -49,6 +49,7 @@ const ALLOWED_STYLE_VALUES = Object.freeze({
 });
 const UNDO_LIMIT = 10;
 const REDO_LIMIT = 10;
+const CROSS_PLATFORM_TEXT_FONT_PX = 38;
 
 const DEFAULT_PAGE_STYLE = Object.freeze({ color: 'yellow', template: 'ruled' });
 const ALLOWED_PAGE_COLORS = Object.freeze(['yellow', 'white', 'black']);
@@ -2130,7 +2131,9 @@ async function applyRemoteStrokeEvent(event) {
   page.version = APP_VERSION;
   page.modifiedAt = new Date().toISOString();
   await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'add/delete concorrenti: stroke preservato' : null);
-  if (currentPageKind === 'planner-timetable' && currentPageKey() === pageKeyValue && !drawing) {
+  if (currentPageKey() === pageKeyValue && !drawing && !pageTurning && !dirty) {
+    // Il pull remoto avviene fuori dal percorso realtime. Se la pagina corrente non ha
+    // modifiche locali pendenti, aggiorniamo subito la vista anche per testo Windows.
     strokes = pageStrokes;
     renderAll();
   }
@@ -3871,13 +3874,55 @@ function cssPoint(point) {
   return { x: point.x * canvas.clientWidth, y: point.y * canvas.clientHeight };
 }
 
+function isCrossPlatformTextItem(item) {
+  return item?.kind === 'text' || item?.tool === 'keyboard-text';
+}
+
+function safeCanvasFontFamily(value) {
+  const raw = String(value || '').trim();
+  if (!raw || !/^[A-Za-z0-9 _.-]{1,80}$/.test(raw)) return '';
+  return raw.replace(/"/g, '');
+}
+
+function drawCrossPlatformText(item, targetCtx, width, height, paperColor = pageStyle.color) {
+  const x = Math.max(0, Math.min(width, Number(item?.x ?? 0) * width));
+  const y = Math.max(0, Math.min(height, Number(item?.y ?? 0) * height));
+  const normalizedSize = Number(item?.fontSizeNorm);
+  const fontPx = Math.max(18, Math.min(72, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
+  const lineHeight = fontPx * 1.05;
+  const requestedFont = safeCanvasFontFamily(item?.fontFamily);
+  const fontStack = [
+    requestedFont ? `"${requestedFont}"` : '',
+    '"Snell Roundhand"',
+    '"Apple Chancery"',
+    '"Segoe Script"',
+    '"Segoe Print"',
+    'cursive'
+  ].filter(Boolean).join(', ');
+  targetCtx.save();
+  targetCtx.globalCompositeOperation = 'source-over';
+  targetCtx.globalAlpha = 1;
+  targetCtx.fillStyle = storedInkDisplayColor({ tool: 'pen', color: item?.color ?? PEN_COLOR }, paperColor);
+  targetCtx.textBaseline = 'top';
+  targetCtx.font = `${fontPx}px ${fontStack}`;
+  String(item?.text ?? '').split(/\r?\n/).forEach((line, index) => {
+    targetCtx.fillText(line, x, y + index * lineHeight);
+  });
+  targetCtx.restore();
+}
+
 function drawStoredStroke(stroke) {
-  const points = stroke?.points ?? [];
-  if (!points.length) return;
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, protectedTop, canvas.clientWidth, Math.max(0, canvas.clientHeight - protectedTop - FOOTER_PX));
   ctx.clip();
+  if (isCrossPlatformTextItem(stroke)) {
+    drawCrossPlatformText(stroke, ctx, canvas.clientWidth, canvas.clientHeight, pageStyle.color);
+    ctx.restore();
+    return;
+  }
+  const points = stroke?.points ?? [];
+  if (!points.length) { ctx.restore(); return; }
   setupStoredStrokeStyle(stroke, ctx, pageStyle.color);
   if (points.length === 1) {
     const p = cssPoint(points[0]);
@@ -4573,12 +4618,17 @@ function drawPreviewInk(preview, previewStrokes) {
   const pTop = Math.max(0, hr.bottom - pr.top);
   pctx.setTransform(pdpr, 0, 0, pdpr, 0, 0);
   for (const stroke of previewStrokes) {
-    const points = stroke?.points ?? [];
-    if (!points.length) continue;
     pctx.save();
     pctx.beginPath();
     pctx.rect(0, pTop, pr.width, Math.max(0, pr.height - pTop - FOOTER_PX));
     pctx.clip();
+    if (isCrossPlatformTextItem(stroke)) {
+      drawCrossPlatformText(stroke, pctx, pr.width, pr.height, preview.dataset.paperColor || pageStyle.color);
+      pctx.restore();
+      continue;
+    }
+    const points = stroke?.points ?? [];
+    if (!points.length) { pctx.restore(); continue; }
     setupStoredStrokeStyle(stroke, pctx, preview.dataset.paperColor || pageStyle.color);
     const css = (pt) => ({ x: pt.x * pr.width, y: pt.y * pr.height });
     if (points.length === 1) {

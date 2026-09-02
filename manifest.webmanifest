@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.61 - icone colorate ripristinate, Ink nativo e Backup/Sync protetti",
+  "description": "Agenda iPad 0.1.63 - testo Windows visibile su iPad, Ink nativo e Backup/Sync protetti",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1946,3 +1946,139 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .app-icon-tile { width:26px; height:26px; flex-basis:26px; }
   .app-tool-icon { width:21px; height:21px; }
 }
+
+
+/* 0.1.63 — TRUE ICON SET RESTORE
+   Riferimento grafico: icone illustrate multicolore, testo affiancato, pulsante attivo chiaro.
+   Solo UI: nessuna logica nel percorso realtime Ink. */
+.quick-toolbar {
+  top: 7px;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 16px;
+  background: rgba(249,242,225,.94);
+  border-color: rgba(92,77,54,.18);
+  box-shadow: 0 3px 10px rgba(55,43,29,.10);
+}
+.tool-button {
+  min-width: 58px;
+  width: auto;
+  height: 42px;
+  padding: 3px 7px;
+  flex-direction: row;
+  gap: 5px;
+  border-radius: 10px;
+  color: #54483a;
+  background: transparent;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+.tool-button span {
+  display: inline !important;
+  font-size: 10.2px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+.tool-button.active {
+  background: rgba(255,255,255,.77);
+  border-color: rgba(91,76,58,.34);
+  box-shadow: 0 2px 0 rgba(85,70,52,.13), inset 0 0 0 1px rgba(255,255,255,.62);
+}
+.tool-button[data-tool="highlighter"].active,
+.tool-button[data-tool="eraser"].active,
+.image-tool-button.active {
+  background: rgba(255,255,255,.77);
+  border-color: rgba(91,76,58,.34);
+}
+.app-icon-tile {
+  width: 31px;
+  height: 31px;
+  flex: 0 0 31px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border-radius: 0;
+  color: inherit;
+}
+.app-tool-icon.true-color-icon {
+  width: 31px;
+  height: 31px;
+  overflow: visible;
+  fill: initial;
+  stroke: initial;
+  stroke-width: initial;
+  filter: drop-shadow(0 1px 0 rgba(255,255,255,.65));
+}
+.app-tool-icon.true-color-icon path,
+.app-tool-icon.true-color-icon rect,
+.app-tool-icon.true-color-icon circle,
+.app-tool-icon.true-color-icon polygon,
+.app-tool-icon.true-color-icon g {
+  vector-effect: non-scaling-stroke;
+}
+.tool-button:disabled .true-color-icon,
+.tool-button.history-unavailable .true-color-icon {
+  opacity: .48;
+  filter: saturate(.55) drop-shadow(0 1px 0 rgba(255,255,255,.45));
+}
+.style-button::after {
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid rgba(255,255,255,.95);
+  box-shadow: 0 0 0 1px rgba(65,55,44,.45);
+}
+/* La toolbar ora occupa più spazio orizzontale: preserva il titolo della pagina. */
+.page-header { padding-right: 500px; }
+.page-meta { margin-right: 452px; }
+
+/* Footer illustrato nello stesso linguaggio della toolbar. */
+.footer-icon-button,
+.settings-button.settings-center-button.footer-icon-button {
+  background: rgba(255,255,255,.43);
+  border-color: rgba(92,77,54,.22);
+  color: inherit;
+  box-shadow: 0 1px 3px rgba(55,43,29,.09);
+}
+.true-footer-icon { width: 29px; height: 29px; overflow: visible; }
+.gear-icon.true-footer-icon,
+.calendar-icon.true-footer-icon {
+  fill: initial;
+  stroke: initial;
+  stroke-width: initial;
+}
+.paper[data-paper-color="black"] .quick-toolbar {
+  background: rgba(246,238,219,.94);
+  border-color: rgba(255,255,255,.20);
+}
+.paper[data-paper-color="black"] .tool-button { color:#54483a; }
+.paper[data-paper-color="black"] .tool-button.active {
+  background: rgba(255,255,255,.78);
+  border-color: rgba(91,76,58,.34);
+}
+.paper[data-paper-color="black"] .footer-icon-button,
+.paper[data-paper-color="black"] .settings-button.settings-center-button.footer-icon-button {
+  background: rgba(246,238,219,.92);
+  border-color: rgba(255,255,255,.20);
+  color: inherit;
+}
+@media (max-width: 900px) {
+  .quick-toolbar { gap: 3px; padding: 4px; }
+  .tool-button { min-width: 42px; height: 38px; padding: 2px 4px; gap: 2px; }
+  .tool-button span { font-size: 8.4px; }
+  .app-icon-tile { width: 27px; height: 27px; flex-basis: 27px; }
+  .app-tool-icon.true-color-icon { width: 27px; height: 27px; }
+  .page-header { padding-right: 410px; }
+  .page-meta { margin-right: 360px; }
+}
+@media (max-width: 760px) {
+  .quick-toolbar { top: 5px; gap: 2px; padding: 3px; }
+  .tool-button { min-width: 34px; width: 34px; height: 34px; padding: 2px; }
+  .tool-button span { display:none !important; }
+  .app-icon-tile { width: 27px; height: 27px; flex-basis: 27px; }
+  .app-tool-icon.true-color-icon { width: 27px; height: 27px; }
+  .page-header { padding-right: 270px; }
+  .page-meta { margin-right: 246px; }
+}
