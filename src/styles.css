@@ -1852,7 +1852,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .history-event-symbol { font-size:9px; }
 }
 
-/* 0.1.58 — set approvato: tessera colorata, pittogramma lineare e punto di accento. */
+/* 0.1.61 — ritorno alla resa 0.1.57: pittogrammi vettoriali colorati, senza tessere scure. */
 .quick-toolbar { top:4px; }
 .tool-button {
   min-width:45px;
@@ -1862,88 +1862,87 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   gap:1px;
 }
 .tool-button span { font-size:8.2px; line-height:1; }
+
+/* Il contenitore resta solo per geometria/accessibilità: niente riquadro scuro e niente pallino decorativo. */
 .app-icon-tile {
-  --icon-tile-bg:#253a5d;
-  --icon-glyph:#75baff;
-  --icon-dot:#f6d04d;
+  --icon-glyph:#2879c8;
   position:relative;
   width:25px;
   height:25px;
   flex:0 0 25px;
   display:grid;
   place-items:center;
-  border-radius:7px;
-  background:var(--icon-tile-bg);
+  border-radius:0;
+  background:transparent;
   color:var(--icon-glyph);
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.07),0 1px 2px rgba(24,25,29,.16);
+  box-shadow:none;
   font-style:normal;
 }
 .app-icon-tile::after,
-.footer-icon-button::after {
-  content:"";
-  position:absolute;
-  right:1px;
-  bottom:1px;
-  width:5px;
-  height:5px;
-  border-radius:50%;
-  background:var(--icon-dot,#f6d04d);
-  border:1px solid rgba(255,255,255,.82);
-  box-shadow:0 0 0 1px rgba(25,30,39,.18);
-  pointer-events:none;
-}
+.footer-icon-button::after { content:none !important; display:none !important; }
 .app-tool-icon {
-  width:19px;
-  height:19px;
+  width:21px;
+  height:21px;
   fill:none;
   stroke:currentColor;
-  stroke-width:2;
+  stroke-width:2.05;
   stroke-linecap:round;
   stroke-linejoin:round;
+  filter:drop-shadow(0 1px 0 rgba(255,255,255,.58));
 }
 .app-tool-icon .app-icon-fill { fill:currentColor; stroke:none; }
-#penToolButton { --icon-tile-bg:#263d65; --icon-glyph:#70b8ff; --icon-dot:#f7d450; }
-#highlighterToolButton { --icon-tile-bg:#6d5c22; --icon-glyph:#ffc34f; --icon-dot:#f7dd54; }
-#eraserToolButton { --icon-tile-bg:#6a3b45; --icon-glyph:#ff8f9f; --icon-dot:#64b6ff; }
-#imageToolButton { --icon-tile-bg:#254269; --icon-glyph:#67d49a; --icon-dot:#f6d04d; }
-#undoButton { --icon-tile-bg:#243f68; --icon-glyph:#64b7ff; --icon-dot:#68d491; }
-#redoButton { --icon-tile-bg:#43315f; --icon-glyph:#b994ff; --icon-dot:#ffae55; }
-#styleButton { --icon-tile-bg:#6a5729; --icon-glyph:#c29aff; --icon-dot:#ff88ad; }
-.style-button::after { display:none; }
 
+/* Palette colorata 0.1.57-style: ogni funzione è riconoscibile dal proprio colore. */
+#penToolButton { --icon-glyph:#2879c8; }
+#highlighterToolButton { --icon-glyph:#d99500; }
+#eraserToolButton { --icon-glyph:#d8526a; }
+#imageToolButton { --icon-glyph:#1f9a63; }
+#undoButton { --icon-glyph:#2785bd; }
+#redoButton { --icon-glyph:#7a56c7; }
+#styleButton { --icon-glyph:#b64f98; }
+
+/* Ripristina il pallino funzionale dello Stile: mostra il colore Ink attualmente selezionato. */
+.style-button::after { display:block; }
+
+/* Footer: icone colorate su fondo chiaro/neutro, non su tessera scura. */
 .footer-icon-button,
 .settings-button.settings-center-button.footer-icon-button {
-  --icon-tile-bg:#244565;
-  --icon-glyph:#72c7ef;
-  --icon-dot:#ffad52;
-  border-radius:9px;
-  border-color:rgba(255,255,255,.13);
-  background:var(--icon-tile-bg);
-  color:var(--icon-glyph);
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.06),0 1px 3px rgba(24,25,29,.18);
+  border-color:rgba(92,77,54,.22);
+  background:rgba(255,255,255,.34);
+  color:#3d8abf;
+  box-shadow:0 1px 3px rgba(55,43,29,.09);
 }
-.calendar-footer-button { --icon-tile-bg:#263f68; --icon-glyph:#70b8ff; --icon-dot:#ff788e; }
+.settings-button.settings-center-button.footer-icon-button { color:#3c8d91; }
+.calendar-footer-button { color:#3676c7; }
 .calendar-footer-button[aria-pressed="true"] {
-  background:#31537f;
-  box-shadow:inset 0 0 0 2px rgba(122,193,255,.30),0 1px 3px rgba(24,25,29,.18);
+  background:rgba(70,128,196,.12);
+  border-color:rgba(54,118,199,.30);
+  box-shadow:inset 0 0 0 1px rgba(54,118,199,.10);
 }
 .gear-icon,
 .calendar-icon {
   fill:none;
   stroke:currentColor;
-  stroke-width:1.8;
+  stroke-width:1.9;
   stroke-linecap:round;
   stroke-linejoin:round;
 }
 .paper[data-paper-color="black"] .footer-icon-button,
 .paper[data-paper-color="black"] .settings-button.settings-center-button.footer-icon-button {
-  border-color:rgba(255,255,255,.16);
-  background:var(--icon-tile-bg);
-  color:var(--icon-glyph);
+  border-color:rgba(255,255,255,.24);
+  background:rgba(255,255,255,.10);
+  color:#79c8f2;
+  box-shadow:none;
+}
+.paper[data-paper-color="black"] .settings-button.settings-center-button.footer-icon-button { color:#78d1c4; }
+.paper[data-paper-color="black"] .calendar-footer-button { color:#83b8ff; }
+.paper[data-paper-color="black"] .calendar-footer-button[aria-pressed="true"] {
+  background:rgba(255,255,255,.15);
+  border-color:rgba(131,184,255,.34);
 }
 @media (max-width:760px) {
   .quick-toolbar { top:5px; }
   .tool-button { min-width:34px; width:34px; height:32px; padding:2px; }
   .app-icon-tile { width:26px; height:26px; flex-basis:26px; }
-  .app-tool-icon { width:20px; height:20px; }
+  .app-tool-icon { width:21px; height:21px; }
 }
