@@ -2096,7 +2096,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .hours .hours-spacer { visibility: hidden; }
 
 
-/* 0.1.65 — pannello meteo dettagliato, caricato solo su richiesta. */
+/* 0.1.66 — pannello meteo dettagliato, caricato solo su richiesta. */
 .weather-detail-panel {
   position:fixed;
   inset:0;

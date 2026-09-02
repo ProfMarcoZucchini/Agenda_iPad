@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.65';
+const APP_VERSION = '0.1.66';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -1437,7 +1437,7 @@ function mondayOf(dateString) {
 }
 
 function plannerPeriodKey(dateString, mode, timetableIndex = currentTimetableIndex) {
-  if (mode === 'daily') return dateString; // stesso Ink della pagina Agenda
+  if (mode === 'daily') return `planner::day::${dateString}`; // 0.1.66: Ink indipendente dall'Agenda
   if (mode === 'weekly') return `planner::week::${mondayOf(dateString)}`;
   if (mode === 'monthly') return `planner::month::${dateString.slice(0, 7)}`;
   if (mode === 'timetable') {
@@ -1531,7 +1531,7 @@ function buildDailyPlannerHtml(dateString) {
         <section class="planner-box planner-todo"><h3>To-do</h3><div>□</div><div>□</div><div>□</div><div>□</div></section>
         <section class="planner-box planner-ideas"><h3>Note / Idee</h3></section>
       </aside>
-    </div><div class="planner-sync-label">↔ Ink sincronizzato con la pagina Agenda del giorno</div>`;
+    </div><div class="planner-sync-label">Ink indipendente dalla pagina Agenda del giorno</div>`;
 }
 
 function buildWeeklyPlannerHtml(dateString) {
@@ -2191,6 +2191,7 @@ function buildEmptyPageRecord(descriptor) {
   return {
     date: String(d.key || d.date || ''),
     kind: d.kind === 'note' ? 'day-note-ink'
+      : d.kind === 'planner-daily' ? 'planner-day-ink'
       : d.kind === 'planner-weekly' ? 'planner-week-ink'
       : d.kind === 'planner-monthly' ? 'planner-month-ink'
       : d.kind === 'planner-yearly' ? 'planner-year-ink'
@@ -2214,6 +2215,7 @@ function descriptorFromStoredRecord(record) {
   const referenceDate = String(record?.referenceDate || (key.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || currentDate));
   let pageKind = 'agenda';
   if (kind === 'day-note-ink') pageKind = 'note';
+  else if (kind === 'planner-day-ink') pageKind = 'planner-daily';
   else if (kind === 'planner-week-ink') pageKind = 'planner-weekly';
   else if (kind === 'planner-month-ink') pageKind = 'planner-monthly';
   else if (kind === 'planner-year-ink') pageKind = 'planner-yearly';
@@ -4296,6 +4298,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     const promise = putRecordWithSync({
       date: descriptor.key,
       kind: descriptor.kind === 'note' ? 'day-note-ink'
+        : descriptor.kind === 'planner-daily' ? 'planner-day-ink'
         : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
         : descriptor.kind === 'planner-monthly' ? 'planner-month-ink'
         : descriptor.kind === 'planner-yearly' ? 'planner-year-ink'
@@ -4767,7 +4770,7 @@ async function clearCurrentPage(options = {}) {
     statusLabel.textContent = 'pagina già vuota';
     return false;
   }
-  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (sincronizzato con Agenda)' : ''}` : 'pagina Agenda';
+  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (indipendente da Agenda)' : ''}` : 'pagina Agenda';
   if (requireConfirmation && !window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return false;
   eraserClearBusy = true;
   cancelPendingSave();
@@ -4907,10 +4910,11 @@ function createPreview(descriptor) {
   return clone;
 }
 
-function sharesCurrentDailyInk(descriptor) {
-  if (!descriptor || descriptor.date !== currentDate) return false;
-  return (currentPageKind === 'agenda' && descriptor.kind === 'planner-daily')
-    || (currentPageKind === 'planner-daily' && descriptor.kind === 'agenda');
+function sharesCurrentDailyInk(_descriptor) {
+  // 0.1.66 — Agenda e Planner sono superfici indipendenti.
+  // La funzione resta come guardia di compatibilità per non alterare la struttura
+  // dello swipe, ma non condivide più stroke o immagini tra le due viste.
+  return false;
 }
 
 async function loadPageForPreview(descriptor, preview) {

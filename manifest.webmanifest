@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.65 - meteo dettagliato per fasce orarie e giorni, scala Agenda riallineata, testo Windows visibile, Ink e Backup/Sync protetti",
+  "description": "Agenda iPad 0.1.66 - meteo dettagliato per fasce orarie e giorni, scala Agenda riallineata, testo Windows visibile, Ink e Backup/Sync protetti",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
