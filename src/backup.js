@@ -456,14 +456,14 @@ function safePathSegments(path) {
   return String(path || '').split('/').map((s) => s.trim()).filter(Boolean);
 }
 
-async function ensureOneDriveFolder(token, folderPath) {
+async function ensureOneDriveFolder(token, folderPath, signal = null) {
   const segments = safePathSegments(folderPath);
   if (!segments.length) return null;
   let parentId = 'root';
   let accumulated = '';
   for (const segment of segments) {
     accumulated += `/${segment}`;
-    const lookup = await fetch(`https://graph.microsoft.com/v1.0/me/drive/root:${accumulated}`, { headers: { Authorization: `Bearer ${token}` } });
+    const lookup = await fetch(`https://graph.microsoft.com/v1.0/me/drive/root:${accumulated}`, { headers: { Authorization: `Bearer ${token}` }, signal });
     if (lookup.ok) {
       const item = await lookup.json();
       parentId = item.id;
@@ -476,7 +476,7 @@ async function ensureOneDriveFolder(token, folderPath) {
     const created = await fetch(endpoint, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: segment, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' })
+      body: JSON.stringify({ name: segment, folder: {}, '@microsoft.graph.conflictBehavior': 'fail' }), signal
     });
     if (!created.ok) throw new Error(`OneDrive crea cartella: HTTP ${created.status}`);
     parentId = (await created.json()).id;
@@ -484,23 +484,23 @@ async function ensureOneDriveFolder(token, folderPath) {
   return parentId;
 }
 
-async function uploadOneDrive(blob, filename, token, folderPath) {
+async function uploadOneDrive(blob, filename, token, folderPath, contentType = 'application/zip', signal = null) {
   if (!token) throw new Error('Token OneDrive mancante');
-  const folderId = await ensureOneDriveFolder(token, folderPath);
+  const folderId = await ensureOneDriveFolder(token, folderPath, signal);
   const endpoint = folderId
     ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(filename)}:/content`
     : `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(filename)}:/content`;
-  const response = await fetch(endpoint, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/zip' }, body: blob });
+  const response = await fetch(endpoint, { method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType || blob?.type || 'application/octet-stream' }, body: blob, signal });
   if (!response.ok) throw new Error(`OneDrive upload: HTTP ${response.status}`);
   return response.json();
 }
 
-async function ensureGoogleFolder(token, folderId, folderName = 'Agenda iPad Backups') {
+async function ensureGoogleFolder(token, folderId, folderName = 'Agenda iPad Backups', signal = null) {
   if (folderId) return folderId;
   const safeName = String(folderName || 'Agenda iPad Backups').replace(/'/g, "\\'");
   const q = encodeURIComponent(`name='${safeName}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
   const list = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)&pageSize=10`, {
-    headers: { Authorization: `Bearer ${token}` }
+    headers: { Authorization: `Bearer ${token}` }, signal
   });
   if (!list.ok) throw new Error(`Google Drive cartella: HTTP ${list.status}`);
   const existing = (await list.json()).files?.[0];
@@ -508,30 +508,152 @@ async function ensureGoogleFolder(token, folderId, folderName = 'Agenda iPad Bac
   const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: folderName || 'Agenda iPad Backups', mimeType: 'application/vnd.google-apps.folder' })
+    body: JSON.stringify({ name: folderName || 'Agenda iPad Backups', mimeType: 'application/vnd.google-apps.folder' }), signal
   });
   if (!create.ok) throw new Error(`Google Drive crea cartella: HTTP ${create.status}`);
   return (await create.json()).id;
 }
 
-async function uploadGoogleDrive(blob, filename, token, folderId, folderName = 'Agenda iPad Backups') {
+async function uploadGoogleDrive(blob, filename, token, folderId, folderName = 'Agenda iPad Backups', contentType = 'application/zip', signal = null) {
   if (!token) throw new Error('Sessione Google Drive non connessa');
-  const effectiveFolderId = await ensureGoogleFolder(token, folderId, folderName);
-  const metadata = { name: filename, mimeType: 'application/zip' };
+  const effectiveFolderId = await ensureGoogleFolder(token, folderId, folderName, signal);
+  const effectiveType = contentType || blob?.type || 'application/octet-stream';
+  const metadata = { name: filename, mimeType: effectiveType };
   if (effectiveFolderId) metadata.parents = [effectiveFolderId];
   const boundary = `agenda_ipad_${Date.now().toString(36)}`;
   const body = new Blob([
     `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`, JSON.stringify(metadata),
-    `\r\n--${boundary}\r\nContent-Type: application/zip\r\n\r\n`, blob,
+    `\r\n--${boundary}\r\nContent-Type: ${effectiveType}\r\n\r\n`, blob,
     `\r\n--${boundary}--`
   ]);
   const response = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` },
-    body
+    body, signal
   });
   if (!response.ok) throw new Error(`Google Drive upload: HTTP ${response.status}`);
   return response.json();
+}
+
+async function uploadGoogleDriveResumable(blob, filename, token, folderName = 'Agenda iPad Registrazioni', contentType = 'application/octet-stream', signal = null) {
+  if (!token) throw new Error('Sessione Google Drive non connessa');
+  const folderId = await ensureGoogleFolder(token, '', folderName, signal);
+  const effectiveType = contentType || blob?.type || 'application/octet-stream';
+  const metadata = { name: filename, mimeType: effectiveType };
+  if (folderId) metadata.parents = [folderId];
+  const init = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,modifiedTime', {
+    method:'POST',
+    headers:{
+      Authorization:`Bearer ${token}`,
+      'Content-Type':'application/json; charset=UTF-8',
+      'X-Upload-Content-Type':effectiveType,
+      'X-Upload-Content-Length':String(blob.size)
+    },
+    body:JSON.stringify(metadata), signal
+  });
+  if (!init.ok) throw new Error(`Google Drive avvio upload: HTTP ${init.status}`);
+  const location = init.headers.get('Location');
+  if (!location) throw new Error('Google Drive: sessione upload non restituita');
+  const chunkSize = 5 * 1024 * 1024; // multiplo di 256 KiB
+  let offset = 0;
+  while (offset < blob.size) {
+    const end = Math.min(blob.size, offset + chunkSize);
+    const chunk = blob.slice(offset, end, effectiveType);
+    const response = await fetch(location, {
+      method:'PUT',
+      headers:{
+        'Content-Type':effectiveType,
+        'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}`
+      },
+      body:chunk, signal
+    });
+    if (response.status === 308) { offset = end; continue; }
+    if (!response.ok) throw new Error(`Google Drive upload: HTTP ${response.status}`);
+    return response.json();
+  }
+  throw new Error('Google Drive: upload non finalizzato');
+}
+
+async function uploadOneDriveSession(blob, filename, token, folderPath, contentType = 'application/octet-stream', signal = null) {
+  if (!token) throw new Error('Token OneDrive mancante');
+  const folderId = await ensureOneDriveFolder(token, folderPath, signal);
+  const createEndpoint = folderId
+    ? `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(filename)}:/createUploadSession`
+    : `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(filename)}:/createUploadSession`;
+  const created = await fetch(createEndpoint, {
+    method:'POST',
+    headers:{ Authorization:`Bearer ${token}`, 'Content-Type':'application/json' },
+    body:JSON.stringify({ item:{ '@microsoft.graph.conflictBehavior':'rename', name:filename } }), signal
+  });
+  if (!created.ok) throw new Error(`OneDrive avvio upload: HTTP ${created.status}`);
+  const uploadUrl = (await created.json()).uploadUrl;
+  if (!uploadUrl) throw new Error('OneDrive: sessione upload non restituita');
+  const effectiveType = contentType || blob?.type || 'application/octet-stream';
+  const chunkSize = 5 * 1024 * 1024; // 16 × 320 KiB
+  let offset = 0;
+  while (offset < blob.size) {
+    const end = Math.min(blob.size, offset + chunkSize);
+    const chunk = blob.slice(offset, end, effectiveType);
+    const response = await fetch(uploadUrl, {
+      method:'PUT',
+      headers:{
+        'Content-Range':`bytes ${offset}-${end - 1}/${blob.size}`
+      },
+      body:chunk, signal
+    });
+    if (response.status === 202) { offset = end; continue; }
+    if (!response.ok) throw new Error(`OneDrive upload: HTTP ${response.status}`);
+    return response.json();
+  }
+  throw new Error('OneDrive: upload non finalizzato');
+}
+
+async function uploadAudioGoogleDrive(blob, filename, token, folderName, contentType, signal = null) {
+  if (blob.size <= 5 * 1024 * 1024) return uploadGoogleDrive(blob, filename, token, '', folderName, contentType, signal);
+  return uploadGoogleDriveResumable(blob, filename, token, folderName, contentType, signal);
+}
+
+async function uploadAudioOneDrive(blob, filename, token, folderPath, contentType, signal = null) {
+  if (blob.size <= 200 * 1024 * 1024) return uploadOneDrive(blob, filename, token, folderPath, contentType, signal);
+  return uploadOneDriveSession(blob, filename, token, folderPath, contentType, signal);
+}
+
+async function downloadGoogleDriveFile(fileId, token, signal = null) {
+  if (!token) throw new Error('Sessione Google Drive non connessa');
+  if (!fileId) throw new Error('ID file Google Drive mancante');
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` }, signal
+  });
+  if (!response.ok) throw new Error(`Google Drive download: HTTP ${response.status}`);
+  return response.blob();
+}
+
+async function deleteGoogleDriveFile(fileId, token, signal = null) {
+  if (!token) throw new Error('Sessione Google Drive non connessa');
+  if (!fileId) return;
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
+    method:'DELETE', headers:{ Authorization:`Bearer ${token}` }, signal
+  });
+  if (!response.ok && response.status !== 404) throw new Error(`Google Drive elimina: HTTP ${response.status}`);
+}
+
+async function downloadOneDriveFile(fileId, token, signal = null) {
+  if (!token) throw new Error('Sessione OneDrive non connessa');
+  if (!fileId) throw new Error('ID file OneDrive mancante');
+  const response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(fileId)}/content`, {
+    headers:{ Authorization:`Bearer ${token}` }, signal
+  });
+  if (!response.ok) throw new Error(`OneDrive download: HTTP ${response.status}`);
+  return response.blob();
+}
+
+async function deleteOneDriveFile(fileId, token, signal = null) {
+  if (!token) throw new Error('Sessione OneDrive non connessa');
+  if (!fileId) return;
+  const response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(fileId)}`, {
+    method:'DELETE', headers:{ Authorization:`Bearer ${token}` }, signal
+  });
+  if (!response.ok && response.status !== 404) throw new Error(`OneDrive elimina: HTTP ${response.status}`);
 }
 
 async function downloadOrShare(archive) {
@@ -1021,5 +1143,46 @@ export function initBackupFoundation(options) {
     scheduleDueCheck('automatic');
   }).catch((err) => console.warn('Backup foundation init', err));
 
-  return { openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck };
+  const cloudBridge = {
+    async connectGoogle() { await saveConfig(); return googleAuth.connect({ prompt:'consent' }); },
+    async testGoogle() { await saveConfig(); return googleAuth.test(); },
+    async disconnectGoogle() { return googleAuth.disconnect(); },
+    async connectOneDrive() { await saveConfig(); return oneDriveAuth.beginConnect(); },
+    async testOneDrive() { await saveConfig(); return oneDriveAuth.test(); },
+    disconnectOneDrive() { return oneDriveAuth.disconnect(); },
+    getState() {
+      return {
+        googleConnected:Boolean(googleAuth.getAccessToken()),
+        oneDriveConnected:Boolean(oneDriveAuth.getAccessToken()),
+        googleExpiresAt:googleAuth.getExpiresAt(),
+        oneDriveExpiresAt:oneDriveAuth.getExpiresAt()
+      };
+    },
+    async uploadGoogle(blob, filename, folderName = 'Agenda iPad Registrazioni', contentType = blob?.type || 'application/octet-stream', signal = null) {
+      const token = googleAuth.getAccessToken();
+      if (!token) throw new Error('Google Drive non connesso in questa sessione');
+      return uploadAudioGoogleDrive(blob, filename, token, folderName, contentType, signal);
+    },
+    async uploadOneDrive(blob, filename, folderPath = 'Agenda iPad Registrazioni', contentType = blob?.type || 'application/octet-stream', signal = null) {
+      const token = oneDriveAuth.getAccessToken();
+      if (!token) throw new Error('OneDrive non connesso in questa sessione');
+      return uploadAudioOneDrive(blob, filename, token, folderPath, contentType, signal);
+    },
+    async ensureGoogleFolder(folderName = 'Agenda iPad Registrazioni', signal = null) {
+      const token = googleAuth.getAccessToken();
+      if (!token) throw new Error('Google Drive non connesso in questa sessione');
+      return ensureGoogleFolder(token, '', folderName, signal);
+    },
+    async ensureOneDriveFolder(folderPath = 'Agenda iPad Registrazioni', signal = null) {
+      const token = oneDriveAuth.getAccessToken();
+      if (!token) throw new Error('OneDrive non connesso in questa sessione');
+      return ensureOneDriveFolder(token, folderPath, signal);
+    },
+    async downloadGoogle(fileId, signal = null) { return downloadGoogleDriveFile(fileId, googleAuth.getAccessToken(), signal); },
+    async downloadOneDrive(fileId, signal = null) { return downloadOneDriveFile(fileId, oneDriveAuth.getAccessToken(), signal); },
+    async deleteGoogle(fileId, signal = null) { return deleteGoogleDriveFile(fileId, googleAuth.getAccessToken(), signal); },
+    async deleteOneDrive(fileId, signal = null) { return deleteOneDriveFile(fileId, oneDriveAuth.getAccessToken(), signal); }
+  };
+
+  return { openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck, cloudBridge };
 }

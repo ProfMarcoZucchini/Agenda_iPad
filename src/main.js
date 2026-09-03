@@ -5,8 +5,9 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
+import { initAudioRecorder } from './audio-recorder.js';
 import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
-const APP_VERSION = '0.1.73';
+const APP_VERSION = '0.1.75';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -272,6 +273,7 @@ let pageStyle = { ...DEFAULT_PAGE_STYLE };
 let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
 let backupFoundation = null;
+let audioRecorder = null;
 let syncFoundation = null;
 let syncStats = null;
 let lanTransport = null;
@@ -3042,6 +3044,7 @@ async function handleRemoteGroupEpochMismatch(details = {}) {
   beginRemoteGroupEpochGuard(details);
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
+  audioRecorder?.suspendForInk();
   await resetSyncStores();
   location.reload();
 }
@@ -4920,6 +4923,7 @@ function startStroke(ev, reason = 'pointerdown') {
   // viene abortita. Nessuna logica LAN entra nel pointermove.
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
+  audioRecorder?.suspendForInk();
   // 0.1.44: anche il recupero del santo è subordinato alla Pencil.
   // Se parte un tratto, una eventuale richiesta esterna viene interrotta.
   saintFetchController?.abort();
@@ -4941,6 +4945,7 @@ function startStroke(ev, reason = 'pointerdown') {
     pointerId = null;
     lanTransport?.resumeAfterInk();
     cloudTransport?.resumeAfterInk();
+    audioRecorder?.resumeAfterInk();
     return false;
   }
   lastPoint = point;
@@ -5024,6 +5029,7 @@ function finalizeStroke(reason = 'pointerup') {
   // dei frammenti residui soltanto dopo la conclusione della passata.
   lanTransport?.resumeAfterInk();
   cloudTransport?.resumeAfterInk();
+  audioRecorder?.resumeAfterInk();
   if (!cachedSaintName(currentDate)) scheduleSaintRefresh(700);
   if (!cachedHistoryInfo(currentDate).text) scheduleHistoryRefresh(850);
   if (agendaDateEligibleForWeather(currentDate)) scheduleWeatherRefresh(1000);
@@ -6129,7 +6135,7 @@ window.addEventListener('pointerup', routeGlobalPointerUp, { passive: false, cap
 window.addEventListener('pointercancel', routeGlobalPointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
-  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .history-detail-body')) return;
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .history-detail-body, .audio-library-body')) return;
   ev.preventDefault();
 }, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
@@ -6534,7 +6540,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
       onStats: (stats) => { cloudStats = stats; updateCloudStatus(); }
     });
     cloudStats = cloudTransport.getDiagnostics();
@@ -6566,7 +6572,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
       onStats: (stats) => { lanStats = stats; updateLanStatus(); }
     });
     lanStats = lanTransport.getDiagnostics();
@@ -6596,7 +6602,7 @@ async function bootAgenda() {
       mainStore: STORE,
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
       beforeRestoreApplied: async (details) => {
         // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
         // cambiare gruppo né propagare automaticamente uno snapshot storico.
@@ -6621,6 +6627,15 @@ async function bootAgenda() {
         await resetSyncStores();
         updateSyncRestoreGuard({ phase: 'global-restore-applied', restoredAt: new Date().toISOString(), ...details });
       }
+    });
+  }
+  if (!audioRecorder) {
+    audioRecorder = initAudioRecorder({
+      appVersion: APP_VERSION,
+      getPageDescriptor: () => ({ ...pageDescriptor() }),
+      setAppStatus: (message) => { statusLabel.textContent = message; },
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      cloudBridge: backupFoundation?.cloudBridge || null
     });
   }
   if ('serviceWorker' in navigator) {
