@@ -1996,6 +1996,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .tool-button[data-tool="highlighter"].active,
 .tool-button[data-tool="eraser"].active,
+.tool-button[data-tool="shape"].active,
 .image-tool-button.active {
   background: rgba(255,255,255,.77);
   border-color: rgba(91,76,58,.34);
@@ -2040,8 +2041,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   box-shadow: 0 0 0 1px rgba(65,55,44,.45);
 }
 /* La toolbar ora occupa più spazio orizzontale: preserva il titolo della pagina. */
-.page-header { padding-right: 500px; }
-.page-meta { margin-right: 452px; }
+.page-header { padding-right: 575px; }
+.page-meta { margin-right: 525px; }
 
 /* Footer illustrato nello stesso linguaggio della toolbar. */
 .footer-icon-button,
@@ -2079,8 +2080,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .tool-button span { font-size: 8.4px; }
   .app-icon-tile { width: 27px; height: 27px; flex-basis: 27px; }
   .app-tool-icon.true-color-icon { width: 27px; height: 27px; }
-  .page-header { padding-right: 410px; }
-  .page-meta { margin-right: 360px; }
+  .page-header { padding-right: 455px; }
+  .page-meta { margin-right: 405px; }
 }
 @media (max-width: 760px) {
   .quick-toolbar { top: 5px; gap: 2px; padding: 3px; }
@@ -2204,4 +2205,81 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .weather-day-copy strong { font-size:10px; }
   .weather-day-copy span { font-size:11px; }
   .weather-day-copy small { font-size:8.5px; }
+}
+
+
+/* 0.1.69 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
+.shape-palette {
+  position:absolute;
+  top:60px;
+  right:210px;
+  z-index:8;
+  display:grid;
+  grid-template-columns:repeat(7,32px);
+  gap:4px;
+  padding:7px;
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:8px;
+  background:#292a2c;
+  box-shadow:0 8px 22px rgba(0,0,0,.28);
+  pointer-events:auto;
+  touch-action:manipulation;
+}
+.shape-palette[hidden] { display:none !important; }
+.shape-palette button {
+  appearance:none;
+  width:32px;
+  height:29px;
+  padding:2px;
+  border:1px solid transparent;
+  border-radius:5px;
+  background:transparent;
+  color:#f4f4f4;
+  display:grid;
+  place-items:center;
+  touch-action:manipulation;
+}
+.shape-palette button.selected {
+  border-color:#8bc8ec;
+  background:rgba(106,178,225,.22);
+  box-shadow:0 0 0 1px rgba(139,200,236,.28);
+}
+.shape-palette svg { width:27px; height:27px; overflow:visible; pointer-events:none; }
+.shape-palette path {
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.55;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  vector-effect:non-scaling-stroke;
+}
+.shape-overlay {
+  position:absolute;
+  left:0;
+  right:0;
+  z-index:3;
+  width:100%;
+  pointer-events:auto;
+  touch-action:none;
+  cursor:crosshair;
+  overflow:visible;
+}
+.shape-overlay[hidden] { display:none !important; }
+.shape-preview-path {
+  fill:none;
+  stroke:#111111;
+  stroke-width:2.5;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  vector-effect:non-scaling-stroke;
+  pointer-events:none;
+}
+.paper.shape-mode #inkCanvas { pointer-events:none; }
+.page-preview .shape-overlay,
+.page-preview .shape-palette { display:none !important; }
+@media (max-width:900px) {
+  .shape-palette { top:56px; right:154px; }
+}
+@media (max-width:760px) {
+  .shape-palette { right:72px; grid-template-columns:repeat(6,32px); }
 }

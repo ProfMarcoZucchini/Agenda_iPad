@@ -5,7 +5,8 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.67';
+import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
+const APP_VERSION = '0.1.69';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -41,6 +42,7 @@ const HIGHLIGHTER_WIDTH = 15;
 const HIGHLIGHTER_OPACITY = 0.30;
 const ERASER_WIDTH = 22;
 const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
+const SHAPE_TYPE_STORAGE_KEY = 'agenda-ipad-shape-type-v1';
 const CALENDAR_VISIBILITY_STORAGE_KEY = 'agenda-ipad-calendar-visible-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
   pen: { colors: ['#111111', '#174f9b', '#a52b2b', '#23724b', '#f5f3eb'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
@@ -88,6 +90,11 @@ const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const eraserToolButton = document.getElementById('eraserToolButton');
+const shapeToolButton = document.getElementById('shapeToolButton');
+const shapePalette = document.getElementById('shapePalette');
+const shapeChoiceButtons = [...document.querySelectorAll('[data-shape-type]')];
+const shapeOverlay = document.getElementById('shapeOverlay');
+const shapePreviewPath = document.getElementById('shapePreviewPath');
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
@@ -240,9 +247,11 @@ let pageSwipe = null;
 let pageTurning = false;
 let previewPage = null;
 let nativeTouchGestureId = null;
+let shapeGesture = null;
 let lastPenPointerDownAt = -Infinity;
 const NATIVE_TOUCH_POINTER_ID = -2147483000;
 let activeTool = 'pen';
+let selectedShapeType = loadSelectedShapeType();
 let undoHistory = [];
 let redoHistory = [];
 let toolStyles = loadToolStyles();
@@ -294,6 +303,7 @@ const session = {
   imageTransforms: 0,
   imageCrops: 0,
   imagesDeleted: 0,
+  shapesInserted: 0,
   structuralErasures: 0,
   structuralEraseTouched: 0,
   structuralEraseFragments: 0,
@@ -389,6 +399,19 @@ function saveToolStyles() {
   try {
     localStorage.setItem(TOOL_STYLE_STORAGE_KEY, JSON.stringify(toolStyles));
   } catch {}
+}
+
+function loadSelectedShapeType() {
+  try {
+    const saved = localStorage.getItem(SHAPE_TYPE_STORAGE_KEY);
+    return SHAPE_TYPES.includes(saved) ? saved : 'rectangle';
+  } catch {
+    return 'rectangle';
+  }
+}
+
+function saveSelectedShapeType() {
+  try { localStorage.setItem(SHAPE_TYPE_STORAGE_KEY, selectedShapeType); } catch {}
 }
 
 
@@ -587,24 +610,25 @@ async function setPageTemplate(template) {
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', image: 'Immagine' };
+  const styleTool = activeTool === 'shape' ? 'pen' : activeTool;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', shape: 'Figure', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
-  for (const group of styleGroups) group.hidden = group.dataset.styleFor !== activeTool;
-  const effectiveColor = currentPageKind === 'planner-timetable' && activeTool === 'pen'
+  for (const group of styleGroups) group.hidden = group.dataset.styleFor !== styleTool;
+  const effectiveColor = currentPageKind === 'planner-timetable' && styleTool === 'pen'
     ? WEEKLY_TIMETABLE_INK_COLOR
-    : toolStyles[activeTool]?.color;
+    : toolStyles[styleTool]?.color;
   for (const swatch of colorSwatches) {
-    const matches = swatch.dataset.styleTool === activeTool && swatch.dataset.styleColor?.toLowerCase() === effectiveColor?.toLowerCase();
+    const matches = swatch.dataset.styleTool === styleTool && swatch.dataset.styleColor?.toLowerCase() === effectiveColor?.toLowerCase();
     swatch.classList.toggle('selected', matches);
     swatch.setAttribute('aria-pressed', matches ? 'true' : 'false');
   }
   for (const choice of widthChoices) {
-    const matches = choice.dataset.styleTool === activeTool && Number(choice.dataset.styleWidth) === Number(toolStyles[activeTool]?.width);
+    const matches = choice.dataset.styleTool === styleTool && Number(choice.dataset.styleWidth) === Number(toolStyles[styleTool]?.width);
     choice.classList.toggle('selected', matches);
     choice.setAttribute('aria-pressed', matches ? 'true' : 'false');
   }
   if (styleButton) {
-    const color = activeTool === 'eraser' ? '#e7dfd1' : effectiveColor ?? PEN_COLOR;
+    const color = styleTool === 'eraser' ? '#e7dfd1' : effectiveColor ?? PEN_COLOR;
     styleButton.style.setProperty('--active-style-color', color);
   }
   updatePageStyleUi();
@@ -628,15 +652,17 @@ function setStyleWidth(tool, width) {
 }
 
 function closeStylePanel() {
-  if (!stylePanel || stylePanel.hidden) return;
-  stylePanel.hidden = true;
+  if (!stylePanel) return;
+  if (!stylePanel.hidden) stylePanel.hidden = true;
   styleButton?.setAttribute('aria-expanded', 'false');
+  if (shapePalette && activeTool === 'shape') shapePalette.hidden = false;
 }
 
 function toggleStylePanel() {
   if (!stylePanel || drawing || pageTurning) return;
   const willOpen = stylePanel.hidden;
   stylePanel.hidden = !willOpen;
+  if (shapePalette && activeTool === 'shape') shapePalette.hidden = willOpen;
   styleButton?.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
   if (willOpen) updateStyleUi();
 }
@@ -1615,6 +1641,13 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   currentPlannerMode = target.plannerMode ?? plannerModeFromKind(target.kind) ?? currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable) activeTool = 'pen';
+  if (enteringTimetable) {
+    cancelShapeGesture();
+    if (shapePalette) shapePalette.hidden = true;
+    shapeOverlay?.setAttribute('hidden', '');
+    shapeToolButton?.setAttribute('aria-expanded', 'false');
+    paper?.classList.remove('shape-mode');
+  }
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(record?.strokes) ? record.strokes : [];
@@ -3938,16 +3971,186 @@ function updateToolUi() {
 }
 
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'shape', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
+  if (tool !== 'shape') cancelShapeGesture();
   activeTool = tool;
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
+  paper?.classList.toggle('shape-mode', tool === 'shape');
   paper?.classList.toggle('image-edit-mode', tool === 'image');
+  if (shapePalette) shapePalette.hidden = tool !== 'shape';
+  shapeOverlay?.toggleAttribute('hidden', tool !== 'shape');
+  shapeToolButton?.setAttribute('aria-expanded', tool === 'shape' ? 'true' : 'false');
+  if (tool === 'shape') syncShapeOverlayBounds();
   renderImages();
   updateToolUi();
   updateStyleUi();
-  statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore' : tool === 'eraser' ? 'gomma' : tool === 'image' ? 'modalità immagini' : 'penna';
+  statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore'
+    : tool === 'eraser' ? 'gomma'
+    : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · trascina o fai clic`
+    : tool === 'image' ? 'modalità immagini' : 'penna';
+}
+
+function initializeShapePaletteIcons() {
+  const namespace = 'http://www.w3.org/2000/svg';
+  for (const button of shapeChoiceButtons) {
+    const type = button.dataset.shapeType;
+    if (!SHAPE_TYPES.includes(type)) continue;
+    const svg = document.createElementNS(namespace, 'svg');
+    svg.setAttribute('viewBox', '0 0 32 32');
+    svg.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS(namespace, 'path');
+    path.setAttribute('d', shapeIconPathData(type));
+    svg.appendChild(path);
+    button.replaceChildren(svg);
+  }
+  updateShapePaletteUi();
+}
+
+function updateShapePaletteUi() {
+  for (const button of shapeChoiceButtons) {
+    const selected = button.dataset.shapeType === selectedShapeType;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+}
+
+function setSelectedShapeType(type) {
+  if (!SHAPE_TYPES.includes(type) || drawing || pageTurning) return;
+  cancelShapeGesture();
+  selectedShapeType = type;
+  saveSelectedShapeType();
+  updateShapePaletteUi();
+  statusLabel.textContent = `figura · ${SHAPE_LABELS[type]} · trascina o fai clic`;
+}
+
+function syncShapeOverlayBounds() {
+  if (!shapeOverlay || !rect) return;
+  const writableHeight = Math.max(1, rect.height - protectedTop - FOOTER_PX);
+  shapeOverlay.style.top = `${protectedTop}px`;
+  shapeOverlay.style.bottom = `${FOOTER_PX}px`;
+  shapeOverlay.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
+  const penStyle = toolStrokeStyle('pen');
+  if (shapePreviewPath) {
+    shapePreviewPath.style.stroke = storedInkDisplayColor(penStyle, pageStyle.color);
+    shapePreviewPath.style.strokeWidth = String(penStyle.width);
+  }
+}
+
+function shapePointFromPointer(ev) {
+  if (!rect || !pointInsideWritableArea(ev)) return null;
+  return {
+    x: Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height))
+  };
+}
+
+function shapeBoundsFromGesture(gesture) {
+  const minWidth = 12 / Math.max(1, rect.width);
+  const minHeight = 12 / Math.max(1, rect.height);
+  let left = Math.min(gesture.start.x, gesture.current.x);
+  let right = Math.max(gesture.start.x, gesture.current.x);
+  let top = Math.min(gesture.start.y, gesture.current.y);
+  let bottom = Math.max(gesture.start.y, gesture.current.y);
+  if (right - left < minWidth && bottom - top < minHeight) {
+    const halfWidth = Math.min(.09, 70 / Math.max(1, rect.width));
+    const halfHeight = Math.min(.07, 42 / Math.max(1, rect.height));
+    left = gesture.start.x - halfWidth;
+    right = gesture.start.x + halfWidth;
+    top = gesture.start.y - halfHeight;
+    bottom = gesture.start.y + halfHeight;
+  } else {
+    if (right - left < minWidth) right = left + minWidth;
+    if (bottom - top < minHeight) bottom = top + minHeight;
+  }
+  const writableTop = protectedTop / Math.max(1, rect.height);
+  const writableBottom = (rect.height - FOOTER_PX) / Math.max(1, rect.height);
+  const width = right - left;
+  const height = bottom - top;
+  left = Math.max(0, Math.min(1 - width, left));
+  right = left + width;
+  top = Math.max(writableTop, Math.min(writableBottom - height, top));
+  bottom = top + height;
+  return { left, top, right, bottom };
+}
+
+function updateShapePreview() {
+  if (!shapeGesture || !shapePreviewPath || !rect) return;
+  const points = buildShapePoints(selectedShapeType, shapeBoundsFromGesture(shapeGesture));
+  shapePreviewPath.setAttribute('d', shapePathData(points, rect.width, rect.height, protectedTop));
+}
+
+function beginShapeGesture(ev) {
+  if (activeTool !== 'shape' || shapeGesture || drawing || pageTurning || pageStyleBulkBusy) return;
+  if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+  const point = shapePointFromPointer(ev);
+  if (!point) return;
+  cancelPendingSave();
+  shapeGesture = { pointerId: ev.pointerId, start: point, current: point };
+  syncShapeOverlayBounds();
+  updateShapePreview();
+  try { shapeOverlay?.setPointerCapture?.(ev.pointerId); } catch {}
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function moveShapeGesture(ev) {
+  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return;
+  const x = Math.max(rect.left, Math.min(rect.right, ev.clientX));
+  const y = Math.max(rect.top + protectedTop, Math.min(rect.bottom - FOOTER_PX, ev.clientY));
+  shapeGesture.current = {
+    x: (x - rect.left) / Math.max(1, rect.width),
+    y: (y - rect.top) / Math.max(1, rect.height)
+  };
+  updateShapePreview();
+  ev.preventDefault();
+  ev.stopPropagation();
+}
+
+function cancelShapeGesture() {
+  if (shapePreviewPath) shapePreviewPath.setAttribute('d', '');
+  shapeGesture = null;
+}
+
+function endShapeGesture(ev, cancelled = false) {
+  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return;
+  const gesture = shapeGesture;
+  if (!cancelled) moveShapeGesture(ev);
+  try { shapeOverlay?.releasePointerCapture?.(gesture.pointerId); } catch {}
+  if (cancelled) {
+    cancelShapeGesture();
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  const style = toolStrokeStyle('pen');
+  const now = performance.now();
+  const shape = {
+    id: makeId(),
+    kind: 'shape',
+    shapeType: selectedShapeType,
+    shapeVersion: 1,
+    tool: 'pen',
+    color: style.color,
+    width: style.width,
+    opacity: style.opacity,
+    points: buildShapePoints(selectedShapeType, shapeBoundsFromGesture(gesture)).map((point, index) => ({
+      ...point, p: .5, t: now + index
+    })),
+    createdAt: new Date().toISOString()
+  };
+  cancelShapeGesture();
+  strokes.push(shape);
+  rememberUndo({ type: 'add-stroke', stroke: shape, index: strokes.length - 1 });
+  syncFoundation?.recordStrokeAdded(pageDescriptor(), shape);
+  session.shapesInserted++;
+  renderAll();
+  dirty = true;
+  scheduleSave();
+  statusLabel.textContent = `${SHAPE_LABELS[shape.shapeType]} inserita`;
+  ev.preventDefault();
+  ev.stopPropagation();
 }
 
 // 0.1.29 — import e ritaglio restano separati dal motore Ink.
@@ -4189,6 +4392,7 @@ function resizeCanvas() {
   canvas.style.height = `${r.height}px`;
   protectedTop = Math.max(0, Math.min(r.height, hr.bottom - r.top));
   rect = canvas.getBoundingClientRect();
+  syncShapeOverlayBounds();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderAll();
 }
@@ -4510,7 +4714,7 @@ function finalizeStroke(reason = 'pointerup') {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -4543,6 +4747,10 @@ function activateUiButton(button) {
   }
   if (button === styleButton) {
     toggleStylePanel();
+    return;
+  }
+  if (button.matches('[data-shape-type]')) {
+    setSelectedShapeType(button.dataset.shapeType);
     return;
   }
   if (button.matches('.planner-mode-button')) {
@@ -5271,6 +5479,13 @@ async function commitPageTurn() {
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable) activeTool = 'pen';
+  if (enteringTimetable) {
+    cancelShapeGesture();
+    if (shapePalette) shapePalette.hidden = true;
+    shapeOverlay?.setAttribute('hidden', '');
+    shapeToolButton?.setAttribute('aria-expanded', 'false');
+    paper?.classList.remove('shape-mode');
+  }
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
@@ -5359,6 +5574,7 @@ function nativeTouchProxy(touch, originalEvent) {
 }
 
 function handlePaperTouchStart(ev) {
+  if (activeTool === 'shape') { ev.preventDefault(); return; }
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
   if (isUiControlTarget(ev.target)) return;
@@ -5474,6 +5690,7 @@ function bindDirectUiButton(button) {
 const directUiButtons = [...new Set([
   calendarButton,
   ...toolButtons,
+  ...shapeChoiceButtons,
   undoButton,
   redoButton,
   styleButton,
@@ -5554,6 +5771,7 @@ miniCalendar?.addEventListener('click', (ev) => {
 
 stylePanel?.addEventListener('pointerdown', handleStylePanelDirectPointer, { passive: false, capture: true });
 stylePanel?.addEventListener('touchstart', handleStylePanelTouchFallback, { passive: false, capture: true });
+initializeShapePaletteIcons();
 
 // 0.1.47 — router globale condiviso: il motore Ink Agenda resta byte-per-byte invariato.
 // 0.1.50 — Orario settimanale = normale pagina Planner.
@@ -5763,6 +5981,12 @@ redoButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(redoButton)) return;
   redoLastModification();
 });
+for (const button of shapeChoiceButtons) {
+  button.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(button)) return;
+    setSelectedShapeType(button.dataset.shapeType);
+  });
+}
 calendarButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(calendarButton)) return;
   toggleCalendar();
@@ -5817,6 +6041,11 @@ bindSettingsCommand(cloudRecoverJoinCodeButton, () => void handleCloudRecoverSav
 bindSettingsCommand(cloudTestButton, () => void handleCloudTest());
 bindSettingsCommand(cloudSyncNowButton, () => void handleCloudSyncNow());
 bindSettingsCommand(lanSyncNowButton, () => void handleLanSyncNow());
+
+shapeOverlay?.addEventListener('pointerdown', beginShapeGesture, { passive: false });
+shapeOverlay?.addEventListener('pointermove', moveShapeGesture, { passive: false });
+shapeOverlay?.addEventListener('pointerup', (ev) => endShapeGesture(ev, false), { passive: false });
+shapeOverlay?.addEventListener('pointercancel', (ev) => endShapeGesture(ev, true), { passive: false });
 
 imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
 imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
@@ -5981,7 +6210,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
       onStats: (stats) => { cloudStats = stats; updateCloudStatus(); }
     });
     cloudStats = cloudTransport.getDiagnostics();
@@ -6013,7 +6242,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
       onStats: (stats) => { lanStats = stats; updateLanStatus(); }
     });
     lanStats = lanTransport.getDiagnostics();
@@ -6043,7 +6272,7 @@ async function bootAgenda() {
       mainStore: STORE,
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
       beforeRestoreApplied: async (details) => {
         // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
         // cambiare gruppo né propagare automaticamente uno snapshot storico.
