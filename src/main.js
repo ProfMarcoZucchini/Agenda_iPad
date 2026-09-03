@@ -6,10 +6,13 @@ import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
-const APP_VERSION = '0.1.70';
+const APP_VERSION = '0.1.71';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
+const LOCAL_IMAGE_CLIPBOARD_DB = 'AgendaIPadLocalImageClipboardDB';
+const LOCAL_IMAGE_CLIPBOARD_STORE = 'clipboard';
+const LOCAL_IMAGE_CLIPBOARD_KEY = 'image-cut-v1';
 const SYNC_EVENT_STORE = 'syncEvents';
 const SYNC_META_STORE = 'syncMeta';
 const SYNC_BLOB_STORE = 'syncBlobs';
@@ -128,7 +131,8 @@ const cancelImageCropButton = document.getElementById('cancelImageCropButton');
 const applyImageCropButton = document.getElementById('applyImageCropButton');
 const rotateImageLeftButton = document.getElementById('rotateImageLeftButton');
 const rotateImageRightButton = document.getElementById('rotateImageRightButton');
-const deleteImageButton = document.getElementById('deleteImageButton');
+const cutImageButton = document.getElementById('cutImageButton');
+const pasteImageButton = document.getElementById('pasteImageButton');
 const startupOverlay = document.getElementById('startupOverlay');
 const coverScreen = document.getElementById('coverScreen');
 const creditsScreen = document.getElementById('creditsScreen');
@@ -190,6 +194,9 @@ let imageGesture = null;
 let imageBusy = false;
 let imageCropEditor = null;
 let imageCropGesture = null;
+// 0.1.71 — clipboard immagini locale al solo dispositivo, su DB separato.
+// Non entra in Sync né nei backup dell'Agenda e viene svuotata solo dopo un Incolla persistito.
+let localImageCutClipboard = null;
 let drawing = false;
 let pointerId = null;
 // 0.1.17 — i tap Apple Pencil sui controlli UI sono gestiti esplicitamente.
@@ -369,6 +376,90 @@ function nearestAllowedWidth(tool, value, fallback) {
 function allowedColor(tool, value, fallback) {
   const colors = ALLOWED_STYLE_VALUES[tool]?.colors ?? [];
   return colors.includes(String(value).toLowerCase()) ? String(value).toLowerCase() : fallback;
+}
+
+
+function openLocalImageClipboardDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(LOCAL_IMAGE_CLIPBOARD_DB, 1);
+    req.onupgradeneeded = () => {
+      const clipboardDb = req.result;
+      if (!clipboardDb.objectStoreNames.contains(LOCAL_IMAGE_CLIPBOARD_STORE)) {
+        clipboardDb.createObjectStore(LOCAL_IMAGE_CLIPBOARD_STORE, { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Clipboard immagini locale non disponibile'));
+  });
+}
+
+async function saveLocalImageCutClipboard(value = localImageCutClipboard) {
+  if (!value?.image) return false;
+  const clipboardDb = await openLocalImageClipboardDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = clipboardDb.transaction(LOCAL_IMAGE_CLIPBOARD_STORE, 'readwrite');
+      tx.objectStore(LOCAL_IMAGE_CLIPBOARD_STORE).put({ key: LOCAL_IMAGE_CLIPBOARD_KEY, ...value });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Salvataggio clipboard immagini annullato'));
+    });
+    return true;
+  } finally {
+    clipboardDb.close();
+  }
+}
+
+async function loadLocalImageCutClipboard() {
+  const clipboardDb = await openLocalImageClipboardDb();
+  try {
+    const row = await new Promise((resolve, reject) => {
+      const tx = clipboardDb.transaction(LOCAL_IMAGE_CLIPBOARD_STORE, 'readonly');
+      const req = tx.objectStore(LOCAL_IMAGE_CLIPBOARD_STORE).get(LOCAL_IMAGE_CLIPBOARD_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+    const image = normalizeImageObject(row?.image);
+    localImageCutClipboard = image ? { ...row, image, key: undefined } : null;
+    if (localImageCutClipboard) delete localImageCutClipboard.key;
+    return localImageCutClipboard;
+  } finally {
+    clipboardDb.close();
+  }
+}
+
+async function clearLocalImageCutClipboard() {
+  const clipboardDb = await openLocalImageClipboardDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = clipboardDb.transaction(LOCAL_IMAGE_CLIPBOARD_STORE, 'readwrite');
+      tx.objectStore(LOCAL_IMAGE_CLIPBOARD_STORE).delete(LOCAL_IMAGE_CLIPBOARD_KEY);
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Pulizia clipboard immagini annullata'));
+    });
+    localImageCutClipboard = null;
+    return true;
+  } finally {
+    clipboardDb.close();
+  }
+}
+
+async function reconcileLocalImageCutClipboard() {
+  if (!localImageCutClipboard?.pendingImageId || !localImageCutClipboard?.pendingPageKey) return;
+  try {
+    const record = await getRecord(localImageCutClipboard.pendingPageKey);
+    const pastePersisted = imagesFromRecord(record).some((image) => image?.id === localImageCutClipboard.pendingImageId);
+    if (pastePersisted) {
+      await clearLocalImageCutClipboard();
+      return;
+    }
+    const { pendingImageId, pendingPageKey, pasteRequestedAt, ...rest } = localImageCutClipboard;
+    localImageCutClipboard = rest;
+    await saveLocalImageCutClipboard();
+  } catch (err) {
+    console.warn('Riconciliazione clipboard immagini non riuscita', err);
+  }
 }
 
 function loadToolStyles() {
@@ -3526,10 +3617,20 @@ function updateImageInspector() {
   const imageMode = activeTool === 'image';
   imageInspector.hidden = !imageMode;
   const hasSelection = Boolean(selectedImage());
-  for (const button of [cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton]) {
+  for (const button of [cropImageButton, rotateImageLeftButton, rotateImageRightButton]) {
     if (!button) continue;
     button.disabled = !hasSelection;
     button.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
+  }
+  if (cutImageButton) {
+    const canCut = hasSelection && !localImageCutClipboard?.image;
+    cutImageButton.disabled = !canCut;
+    cutImageButton.setAttribute('aria-disabled', canCut ? 'false' : 'true');
+  }
+  if (pasteImageButton) {
+    const canPaste = Boolean(localImageCutClipboard?.image) && !localImageCutClipboard?.pendingImageId;
+    pasteImageButton.disabled = !canPaste;
+    pasteImageButton.setAttribute('aria-disabled', canPaste ? 'false' : 'true');
   }
 }
 
@@ -3694,7 +3795,12 @@ function beginImageGesture(ev) {
   if (activeTool !== 'image' || drawing || pageTurning || !imageLayer) return;
   const item = ev.target instanceof Element ? ev.target.closest('.image-object') : null;
   if (!item || !imageLayer.contains(item)) {
+    // 0.1.71 — un tap sul foglio chiude il menu Immagini senza iniziare un tratto Ink.
     setSelectedImage(null);
+    selectTool('pen');
+    statusLabel.textContent = 'menu immagini chiuso';
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
     return;
   }
   const id = item.dataset.imageId;
@@ -3779,19 +3885,103 @@ function rotateSelectedImage(delta) {
   scheduleSave();
 }
 
-function deleteSelectedImage() {
+async function cutSelectedImage() {
   if (denyMutationDuringSyncRecovery()) return;
-  if (drawing || pageTurning) return;
+  if (drawing || pageTurning || imageBusy) return;
+  if (localImageCutClipboard?.image) {
+    statusLabel.textContent = 'incolla prima l’immagine già tagliata';
+    return;
+  }
   const index = images.findIndex((image) => image.id === selectedImageId);
   if (index < 0) return;
-  const [image] = images.splice(index, 1);
-  rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
-  selectedImageId = null;
-  session.imagesDeleted++;
-  dirty = true;
-  renderImages();
-  syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
-  scheduleSave();
+  const image = images[index];
+  const clipboard = {
+    image: cloneImageObject(image),
+    sourcePageKey: currentPageKey(),
+    cutAt: new Date().toISOString()
+  };
+  imageBusy = true;
+  try {
+    await saveLocalImageCutClipboard(clipboard);
+    localImageCutClipboard = clipboard;
+    images.splice(index, 1);
+    rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
+    selectedImageId = null;
+    session.imagesDeleted++;
+    dirty = true;
+    renderImages();
+    syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
+    scheduleSave();
+    updateImageInspector();
+    statusLabel.textContent = 'immagine tagliata · pronta da incollare';
+  } catch (err) {
+    console.warn('Taglia immagine non riuscito', err);
+    statusLabel.textContent = 'errore taglia · immagine non rimossa';
+  } finally {
+    imageBusy = false;
+  }
+}
+
+async function ensureClipboardImageBlob(image) {
+  if (!image?.src) throw new Error('Clipboard immagine non valida');
+  if (isSha256Hash(image.blobHash) && await hasSyncBlob(image.blobHash).catch(() => false)) return image;
+  const blob = dataUrlToBlob(image.src);
+  const row = await registerBlob(blob, image.mimeType || blob.type);
+  image.blobHash = row.hash;
+  image.blobSize = row.size;
+  image.mimeType = row.mimeType;
+  return image;
+}
+
+async function pasteCutImage() {
+  if (denyMutationDuringSyncRecovery()) return;
+  if (drawing || pageTurning || imageBusy || !localImageCutClipboard?.image || localImageCutClipboard?.pendingImageId) return;
+  imageBusy = true;
+  const clipboardSnapshot = localImageCutClipboard;
+  statusLabel.textContent = 'incollo immagine';
+  try {
+    const source = await ensureClipboardImageBlob(cloneImageObject(clipboardSnapshot.image));
+    const now = new Date().toISOString();
+    const image = normalizeImageObject({
+      ...source,
+      id: makeImageId(),
+      createdAt: now,
+      modifiedAt: now
+    });
+    if (!image) throw new Error('Immagine incollata non valida');
+    // Prima di modificare la pagina, rendiamo persistente sul solo dispositivo
+    // lo stato "incolla in attesa". Se l'app si interrompe qui, al riavvio la
+    // riconciliazione ripristina automaticamente la possibilità di Incolla.
+    const pendingClipboard = {
+      ...clipboardSnapshot,
+      pendingImageId: image.id,
+      pendingPageKey: currentPageKey(),
+      pasteRequestedAt: now
+    };
+    await saveLocalImageCutClipboard(pendingClipboard);
+    localImageCutClipboard = pendingClipboard;
+    images.push(image);
+    selectedImageId = image.id;
+    rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: images.length - 1 });
+    dirty = true;
+    renderImages();
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image, {
+      reason: 'local-cut-paste',
+      sourcePageKey: clipboardSnapshot.sourcePageKey
+    });
+    // Non svuotiamo ancora la clipboard: persistSnapshot la elimina soltanto
+    // dopo il commit locale riuscito della pagina di destinazione.
+    updateImageInspector();
+    scheduleSave();
+    statusLabel.textContent = 'immagine incollata · salvataggio in corso';
+  } catch (err) {
+    console.warn('Incolla immagine non riuscito', err);
+    statusLabel.textContent = 'errore incolla · immagine ancora in memoria';
+    // In caso di errore la clipboard NON viene eliminata.
+    updateImageInspector();
+  } finally {
+    imageBusy = false;
+  }
 }
 
 
@@ -4264,10 +4454,14 @@ function requestImageImport() {
 }
 
 function activateImageTool() {
+  if (drawing || pageTurning) return;
+  if (activeTool === 'image') {
+    selectTool('pen');
+    statusLabel.textContent = 'menu immagini chiuso';
+    return;
+  }
   selectTool('image');
-  // Prima immagine: il comando IMG produce subito un effetto esplicito e apre
-  // il selettore. Per immagini successive resta disponibile il pulsante Importa.
-  if (activeTool === 'image' && images.length === 0) requestImageImport();
+  statusLabel.textContent = 'menu immagini';
 }
 
 function resetUndoHistory() {
@@ -4632,6 +4826,16 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     session.maxStorageTxMs = Math.max(session.maxStorageTxMs, txMs);
     if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, txMs);
     session.storageWrites++;
+    // 0.1.71 — una immagine tagliata resta nella clipboard locale fino a quando
+    // la pagina di destinazione dell'Incolla è stata realmente persistita.
+    if (localImageCutClipboard?.pendingImageId
+        && localImageCutClipboard.pendingPageKey === descriptor.key
+        && (pageImages || []).some((image) => image?.id === localImageCutClipboard.pendingImageId)) {
+      await clearLocalImageCutClipboard().catch((err) => {
+        console.warn('Pulizia clipboard immagini dopo Incolla non riuscita', err);
+      });
+      updateImageInspector();
+    }
     if (updateStatus) statusLabel.textContent = 'salvato';
     return true;
   } catch (err) {
@@ -4885,7 +5089,8 @@ function activateUiButton(button) {
   if (button === applyImageCropButton) { void applyImageCrop(); return; }
   if (button === rotateImageLeftButton) { rotateSelectedImage(-15); return; }
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
-  if (button === deleteImageButton) { deleteSelectedImage(); return; }
+  if (button === cutImageButton) { void cutSelectedImage(); return; }
+  if (button === pasteImageButton) { void pasteCutImage(); return; }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
 }
 
@@ -5797,7 +6002,7 @@ const directUiButtons = [...new Set([
   redoButton,
   styleButton,
   ...plannerModeButtons,
-  importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, deleteImageButton,
+  importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, cutImageButton, pasteImageButton,
   cancelImageCropButton, applyImageCropButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
@@ -6112,7 +6317,8 @@ cancelImageCropButton?.addEventListener('click', () => { if (!wasJustActivatedBy
 applyImageCropButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(applyImageCropButton)) void applyImageCrop(); });
 rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageLeftButton)) rotateSelectedImage(-15); });
 rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
-deleteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(deleteImageButton)) deleteSelectedImage(); });
+cutImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cutImageButton)) void cutSelectedImage(); });
+pasteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(pasteImageButton)) void pasteCutImage(); });
 imageFileInput?.addEventListener('change', () => {
   const file = imageFileInput.files?.[0];
   imageFileInput.value = '';
@@ -6259,6 +6465,7 @@ async function loadInitialPage() {
 
 async function bootAgenda() {
   updateHeader();
+  await loadLocalImageCutClipboard().catch((err) => console.warn('Clipboard immagini locale non caricata', err));
   updateToolUi();
   paper?.classList.toggle('image-edit-mode', activeTool === 'image');
   renderImages();
@@ -6267,6 +6474,8 @@ async function bootAgenda() {
   resizeCanvas();
   requestAnimationFrame(rafWatchdog);
   await loadInitialPage();
+  await reconcileLocalImageCutClipboard();
+  updateImageInspector();
   if (!syncFoundation) {
     try {
       const [persistedState, storedPending] = await Promise.all([

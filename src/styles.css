@@ -2208,7 +2208,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.70 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
+/* 0.1.71 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
 .shape-palette {
   position:absolute;
   top:60px;
@@ -2285,7 +2285,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.70 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
+/* 0.1.71 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
 .shape-overlay {
   pointer-events:none !important;
   z-index:7;
@@ -2377,3 +2377,9 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .weather-location-label { max-width:78px; font-size:7.4px; }
   .paper:not(.planner-view):not(.note-view) .date-block { margin-left:78px; }
 }
+
+
+/* 0.1.71 — Taglia/Incolla immagini */
+.image-inspector { flex-wrap: wrap; max-width: min(520px, 78vw); justify-content:flex-end; }
+.image-inspector #pasteImageButton:not(:disabled) { border-color: rgba(75,125,85,.42); background: rgba(111,174,120,.14); }
+.image-inspector #cutImageButton:not(:disabled) { border-color: rgba(174,103,73,.38); }
