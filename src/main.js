@@ -6,7 +6,7 @@ import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
-const APP_VERSION = '0.1.69';
+const APP_VERSION = '0.1.70';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -33,6 +33,8 @@ const SAINT_API_URL = 'https://www.santodelgiorno.it/santi.json';
 const WIKIPEDIA_API_URL = 'https://it.wikipedia.org/w/api.php';
 const WIKIPEDIA_ONTHISDAY_URL = 'https://it.wikipedia.org/api/rest_v1/feed/onthisday';
 const OPEN_METEO_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+const WEATHER_REVERSE_GEOCODE_URL = 'https://api.bigdatacloud.net/data/reverse-geocode-client';
+const WEATHER_LOCALITY_CACHE_STORAGE_KEY = 'agenda-ipad-weather-locality-cache-v1';
 const WEATHER_MAX_FORECAST_DAYS = 15;
 const CLOUD_DEFAULT_ENDPOINT = 'https://www.marcozucchini.it/agenda-sync/api';
 const PEN_COLOR = '#111111';
@@ -149,6 +151,7 @@ const cloudSyncStatus = document.getElementById('cloudSyncStatus');
 const saintNameButton = document.getElementById('saintNameButton');
 const weatherBadge = document.getElementById('weatherBadge');
 const weatherIcon = document.getElementById('weatherIcon');
+const weatherLocationLabel = document.getElementById('weatherLocationLabel');
 const weatherDetailPanel = document.getElementById('weatherDetailPanel');
 const weatherDetailTitle = document.getElementById('weatherDetailTitle');
 const weatherDetailDate = document.getElementById('weatherDetailDate');
@@ -228,6 +231,9 @@ let weatherLocationPromise = null;
 let weatherFetchController = null;
 let weatherRefreshTimer = 0;
 let weatherDetailFetchController = null;
+let weatherLocalityFetchController = null;
+let weatherLocalityCache = loadWeatherLocalityCache();
+let weatherLocalityLabelText = '';
 let weatherDetailCache = { locationKey:'', fetchedAt:0, payload:null };
 let historyFetchController = null;
 let historyDetailFetchController = null;
@@ -701,6 +707,71 @@ function weatherVisualForCode(code) {
   return { asset:'cloud.svg', label:'Variabile' };
 }
 
+function loadWeatherLocalityCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WEATHER_LOCALITY_CACHE_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+
+function saveWeatherLocalityCache() {
+  try { localStorage.setItem(WEATHER_LOCALITY_CACHE_STORAGE_KEY, JSON.stringify(weatherLocalityCache)); } catch {}
+}
+
+function cleanWeatherLocality(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 64);
+}
+
+function localityFromReverseGeocode(payload) {
+  const city = cleanWeatherLocality(payload?.city);
+  const locality = cleanWeatherLocality(payload?.locality);
+  const subdivision = cleanWeatherLocality(payload?.principalSubdivision);
+  if (locality && city && locality.toLocaleLowerCase('it-IT') !== city.toLocaleLowerCase('it-IT')) return `${locality} · ${city}`;
+  return locality || city || subdivision || '';
+}
+
+function updateWeatherLocalityUi(label = weatherLocalityLabelText) {
+  weatherLocalityLabelText = cleanWeatherLocality(label);
+  if (!weatherLocationLabel) return;
+  weatherLocationLabel.textContent = weatherLocalityLabelText || 'Posizione';
+  weatherLocationLabel.title = weatherLocalityLabelText || 'Posizione meteo attuale';
+}
+
+async function ensureWeatherLocality(coords) {
+  if (!coords || !weatherLocationKey) return '';
+  const cached = weatherLocalityCache?.[weatherLocationKey];
+  if (cached?.label && Date.now() - Number(cached.at || 0) < 24 * 60 * 60 * 1000) {
+    updateWeatherLocalityUi(cached.label);
+    return cached.label;
+  }
+  weatherLocalityFetchController?.abort();
+  const controller = new AbortController();
+  weatherLocalityFetchController = controller;
+  try {
+    const params = new URLSearchParams({
+      latitude:String(coords.lat), longitude:String(coords.lon), localityLanguage:'it'
+    });
+    const response = await fetch(`${WEATHER_REVERSE_GEOCODE_URL}?${params.toString()}`, {
+      method:'GET', mode:'cors', credentials:'omit', cache:'no-store', signal:controller.signal
+    });
+    if (!response.ok) throw new Error(`Località HTTP ${response.status}`);
+    const payload = await response.json();
+    const label = localityFromReverseGeocode(payload);
+    if (!label) return '';
+    weatherLocalityCache = { ...weatherLocalityCache, [weatherLocationKey]: { label, at:Date.now() } };
+    const entries = Object.entries(weatherLocalityCache).sort((a,b) => Number(b[1]?.at || 0) - Number(a[1]?.at || 0)).slice(0, 8);
+    weatherLocalityCache = Object.fromEntries(entries);
+    saveWeatherLocalityCache();
+    updateWeatherLocalityUi(label);
+    return label;
+  } catch (err) {
+    if (err?.name !== 'AbortError') console.warn('Località meteo non disponibile', err);
+    return '';
+  } finally {
+    if (weatherLocalityFetchController === controller) weatherLocalityFetchController = null;
+  }
+}
+
 function setWeatherBadgeFor(root, dateString, pageKind = currentPageKind) {
   const badge = root?.querySelector?.('.weather-badge');
   const img = root?.querySelector?.('.weather-icon');
@@ -712,8 +783,10 @@ function setWeatherBadgeFor(root, dateString, pageKind = currentPageKind) {
   const visual = weatherVisualForCode(forecast.code);
   img.src = `./assets/weather/${visual.asset}`;
   img.alt = `Previsione: ${visual.label}`;
-  badge.title = `${visual.label} · tocca per i dettagli`;
-  badge.setAttribute('aria-label', `Previsione meteo locale: ${visual.label}. Tocca per i dettagli`);
+  updateWeatherLocalityUi();
+  const place = weatherLocalityLabelText ? ` · ${weatherLocalityLabelText}` : '';
+  badge.title = `${visual.label}${place} · tocca per i dettagli`;
+  badge.setAttribute('aria-label', `Previsione meteo: ${visual.label}${place}. Tocca per i dettagli`);
 }
 
 function closeWeatherDetails() {
@@ -851,7 +924,9 @@ function renderWeatherDetails(payload, dateString) {
     const metrics=document.createElement('small'); metrics.textContent=`Pioggia ${row.rain ?? '—'}% · vento ${row.wind ?? '—'} km/h`;
     copy.append(desc,temp,metrics); card.append(copy); weatherWeek.append(card);
   }
-  weatherDetailStatus.textContent = weekRows.length ? 'Previsione aggiornata per la posizione attuale.' : 'Previsione disponibile solo parzialmente.';
+  weatherDetailStatus.textContent = weekRows.length
+    ? `Previsione aggiornata${weatherLocalityLabelText ? ` per ${weatherLocalityLabelText}` : ' per la posizione attuale'}.`
+    : 'Previsione disponibile solo parzialmente.';
   weatherDetailStatus.classList.remove('error');
 }
 
@@ -893,6 +968,7 @@ async function openWeatherDetails() {
     }
     return;
   }
+  void ensureWeatherLocality(coords);
   weatherDetailFetchController?.abort();
   const controller = new AbortController();
   weatherDetailFetchController = controller;
@@ -941,6 +1017,8 @@ function getDeviceWeatherPosition() {
         weatherCoordsAt = Date.now();
         weatherLocationKey = nextKey;
         weatherLocationState = 'ready';
+        const cachedLocality = weatherLocalityCache?.[nextKey]?.label;
+        if (cachedLocality) updateWeatherLocalityUi(cachedLocality);
         resolve(weatherCoords);
       } else {
         weatherLocationState = 'unavailable';
@@ -964,10 +1042,12 @@ async function refreshWeatherForCurrentDate() {
   }
   const locationIsFresh = weatherCoords && Date.now() - weatherCoordsAt < 10 * 60 * 1000;
   if (weatherForecastCache.has(dateString) && locationIsFresh && weatherForecastLocationKey === weatherLocationKey) {
+    void ensureWeatherLocality(weatherCoords);
     setWeatherBadgeFor(document, dateString, currentPageKind);
     return;
   }
   const coords = await getDeviceWeatherPosition();
+  if (coords) void ensureWeatherLocality(coords);
   if (!coords || currentPageKind !== 'agenda' || currentDate !== dateString) {
     setWeatherBadgeFor(document, dateString, currentPageKind);
     return;
@@ -3970,6 +4050,19 @@ function updateToolUi() {
   }
 }
 
+function activateShapeTool() {
+  if (drawing || pageTurning) return;
+  if (activeTool !== 'shape') {
+    selectTool('shape');
+    return;
+  }
+  if (!shapePalette) return;
+  const opening = shapePalette.hidden;
+  shapePalette.hidden = !opening;
+  shapeToolButton?.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) updateShapePaletteUi();
+}
+
 function selectTool(tool) {
   if (!['pen', 'highlighter', 'eraser', 'shape', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
@@ -4082,10 +4175,11 @@ function updateShapePreview() {
 }
 
 function beginShapeGesture(ev) {
-  if (activeTool !== 'shape' || shapeGesture || drawing || pageTurning || pageStyleBulkBusy) return;
-  if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+  if (activeTool !== 'shape' || shapeGesture || drawing || pageTurning || pageStyleBulkBusy) return false;
+  if (isUiControlTarget(ev.target)) return false;
+  if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return false;
   const point = shapePointFromPointer(ev);
-  if (!point) return;
+  if (!point) return false;
   cancelPendingSave();
   shapeGesture = { pointerId: ev.pointerId, start: point, current: point };
   syncShapeOverlayBounds();
@@ -4093,10 +4187,11 @@ function beginShapeGesture(ev) {
   try { shapeOverlay?.setPointerCapture?.(ev.pointerId); } catch {}
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
 function moveShapeGesture(ev) {
-  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return;
+  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return false;
   const x = Math.max(rect.left, Math.min(rect.right, ev.clientX));
   const y = Math.max(rect.top + protectedTop, Math.min(rect.bottom - FOOTER_PX, ev.clientY));
   shapeGesture.current = {
@@ -4106,6 +4201,7 @@ function moveShapeGesture(ev) {
   updateShapePreview();
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
 function cancelShapeGesture() {
@@ -4114,7 +4210,7 @@ function cancelShapeGesture() {
 }
 
 function endShapeGesture(ev, cancelled = false) {
-  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return;
+  if (!shapeGesture || ev.pointerId !== shapeGesture.pointerId) return false;
   const gesture = shapeGesture;
   if (!cancelled) moveShapeGesture(ev);
   try { shapeOverlay?.releasePointerCapture?.(gesture.pointerId); } catch {}
@@ -4122,7 +4218,7 @@ function endShapeGesture(ev, cancelled = false) {
     cancelShapeGesture();
     ev.preventDefault();
     ev.stopPropagation();
-    return;
+    return true;
   }
   const style = toolStrokeStyle('pen');
   const now = performance.now();
@@ -4151,6 +4247,7 @@ function endShapeGesture(ev, cancelled = false) {
   statusLabel.textContent = `${SHAPE_LABELS[shape.shapeType]} inserita`;
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
 // 0.1.29 — import e ritaglio restano separati dal motore Ink.
@@ -4612,6 +4709,7 @@ function startStroke(ev, reason = 'pointerdown') {
   historyDetailFetchController?.abort();
   weatherFetchController?.abort();
   weatherDetailFetchController?.abort();
+  weatherLocalityFetchController?.abort();
 
   cancelPendingSave();
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
@@ -4727,6 +4825,10 @@ function activateUiButton(button) {
   if (button === redoButton && !redoHistory.length) return;
   if (button === imageToolButton) {
     activateImageTool();
+    return;
+  }
+  if (button === shapeToolButton) {
+    activateShapeTool();
     return;
   }
   if (button.matches('.tool-button[data-tool]')) {
@@ -5782,17 +5884,19 @@ function routeGlobalPointerDown(ev) {
     ev.preventDefault();
     return;
   }
+  if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
 function routeGlobalPointerMove(ev) {
-  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing) {
+  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture) {
     ev.preventDefault();
     return;
   }
+  if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
-function routeGlobalPointerUp(ev) { handlePointerUp(ev); }
-function routeGlobalPointerCancel(ev) { handlePointerCancel(ev); }
+function routeGlobalPointerUp(ev) { if (endShapeGesture(ev, false)) return; handlePointerUp(ev); }
+function routeGlobalPointerCancel(ev) { if (endShapeGesture(ev, true)) return; handlePointerCancel(ev); }
 
 paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
 paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });
@@ -5970,6 +6074,7 @@ for (const button of toolButtons) {
   button.addEventListener('click', () => {
     if (wasJustActivatedByPencil(button)) return;
     if (button === imageToolButton) activateImageTool();
+    else if (button === shapeToolButton) activateShapeTool();
     else selectTool(button.dataset.tool);
   });
 }
@@ -6041,11 +6146,6 @@ bindSettingsCommand(cloudRecoverJoinCodeButton, () => void handleCloudRecoverSav
 bindSettingsCommand(cloudTestButton, () => void handleCloudTest());
 bindSettingsCommand(cloudSyncNowButton, () => void handleCloudSyncNow());
 bindSettingsCommand(lanSyncNowButton, () => void handleLanSyncNow());
-
-shapeOverlay?.addEventListener('pointerdown', beginShapeGesture, { passive: false });
-shapeOverlay?.addEventListener('pointermove', moveShapeGesture, { passive: false });
-shapeOverlay?.addEventListener('pointerup', (ev) => endShapeGesture(ev, false), { passive: false });
-shapeOverlay?.addEventListener('pointercancel', (ev) => endShapeGesture(ev, true), { passive: false });
 
 imageLayer?.addEventListener('pointerdown', beginImageGesture, { passive: false });
 imageLayer?.addEventListener('pointermove', moveImageGesture, { passive: false });
