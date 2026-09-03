@@ -2208,7 +2208,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.71 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
+/* 0.1.72 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
 .shape-palette {
   position:absolute;
   top:60px;
@@ -2285,7 +2285,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.71 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
+/* 0.1.72 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
 .shape-overlay {
   pointer-events:none !important;
   z-index:7;
@@ -2338,7 +2338,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .weather-icon { width:28px; height:28px; flex:0 0 28px; }
 .weather-location-label {
   display:block;
-  max-width:96px;
+  max-width:74px;
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
@@ -2348,7 +2348,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   line-height:1;
   text-align:left;
 }
-.paper:not(.planner-view):not(.note-view) .date-block { margin-left:96px; }
+.paper:not(.planner-view):not(.note-view) .date-block { margin-left:6px; }
 .paper[data-paper-color="black"] .weather-location-label { color:rgba(247,240,226,.82); }
 
 @media (max-width:900px) {
@@ -2372,14 +2372,22 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .shape-palette { top:36px; right:6px; grid-template-columns:repeat(6,29px); gap:3px; padding:5px; }
   .shape-palette button { width:29px; height:27px; }
   .shape-palette svg { width:23px; height:23px; }
-  .weather-badge { max-width:108px; height:27px; }
+  .weather-badge { max-width:91px; height:27px; }
   .weather-icon { width:25px; height:25px; flex-basis:25px; }
-  .weather-location-label { max-width:78px; font-size:7.4px; }
-  .paper:not(.planner-view):not(.note-view) .date-block { margin-left:78px; }
+  .weather-location-label { max-width:61px; font-size:7.4px; }
+  .paper:not(.planner-view):not(.note-view) .date-block { margin-left:11px; }
 }
 
 
-/* 0.1.71 — Taglia/Incolla immagini */
+/* 0.1.72 — Taglia/Incolla immagini */
 .image-inspector { flex-wrap: wrap; max-width: min(520px, 78vw); justify-content:flex-end; }
 .image-inspector #pasteImageButton:not(:disabled) { border-color: rgba(75,125,85,.42); background: rgba(111,174,120,.14); }
 .image-inspector #cutImageButton:not(:disabled) { border-color: rgba(174,103,73,.38); }
+
+
+/* 0.1.72 — intestazione Agenda stabile: il meteo non sposta mai data/santo/storia. */
+.paper:not(.planner-view):not(.note-view) .date-block { margin-left:6px !important; }
+.weather-location-label { pointer-events:none; }
+@media (max-width:760px) {
+  .paper:not(.planner-view):not(.note-view) .date-block { margin-left:11px !important; }
+}
