@@ -5,7 +5,7 @@ import { initCloudSyncTransport } from './cloud-sync.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
-const APP_VERSION = '0.1.66';
+const APP_VERSION = '0.1.67';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -3693,6 +3693,12 @@ function renderImageCropSelection() {
   imageCropSelection.style.top = `${r.y * 100}%`;
   imageCropSelection.style.width = `${r.w * 100}%`;
   imageCropSelection.style.height = `${r.h * 100}%`;
+  // 0.1.67 — il comando è applicabile solo quando esiste un ritaglio reale.
+  if (applyImageCropButton) {
+    const applicable = !cropRectIsFull(r) && !imageBusy;
+    applyImageCropButton.disabled = !applicable;
+    applyImageCropButton.setAttribute('aria-disabled', applicable ? 'false' : 'true');
+  }
 }
 
 function sizeImageCropStage() {
@@ -3832,7 +3838,7 @@ async function cropPreviewToData(rect, preferredMimeType) {
     mimeType = blob?.type || fallbackType;
   }
   if (!blob) throw new Error('Esportazione ritaglio non riuscita');
-  return { src: await dataUrlFromBlob(blob), mimeType, width: cw, height: ch };
+  return { src: await dataUrlFromBlob(blob), blob, mimeType, width: cw, height: ch };
 }
 
 function applyCropGeometry(image, rect, layerRect) {
@@ -3894,7 +3900,11 @@ async function applyImageCrop() {
     statusLabel.textContent = 'errore ritaglio';
   } finally {
     imageBusy = false;
-    if (applyImageCropButton) applyImageCropButton.disabled = false;
+    if (applyImageCropButton) {
+      const applicable = Boolean(imageCropEditor) && !cropRectIsFull(imageCropEditor.rect);
+      applyImageCropButton.disabled = !applicable;
+      applyImageCropButton.setAttribute('aria-disabled', applicable ? 'false' : 'true');
+    }
     if (cancelImageCropButton) cancelImageCropButton.disabled = false;
   }
 }
