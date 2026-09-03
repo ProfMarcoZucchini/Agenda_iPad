@@ -2208,7 +2208,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.72 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
+/* 0.1.73 — Figure: parità geometrica e comportamentale con Agenda Windows 0.1.20. */
 .shape-palette {
   position:absolute;
   top:60px;
@@ -2285,7 +2285,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.72 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
+/* 0.1.73 — Figure operative su Safari/iPadOS + toolbar compatta + località meteo. */
 .shape-overlay {
   pointer-events:none !important;
   z-index:7;
@@ -2379,15 +2379,50 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.72 — Taglia/Incolla immagini */
+/* 0.1.73 — Taglia/Incolla immagini */
 .image-inspector { flex-wrap: wrap; max-width: min(520px, 78vw); justify-content:flex-end; }
 .image-inspector #pasteImageButton:not(:disabled) { border-color: rgba(75,125,85,.42); background: rgba(111,174,120,.14); }
 .image-inspector #cutImageButton:not(:disabled) { border-color: rgba(174,103,73,.38); }
 
 
-/* 0.1.72 — intestazione Agenda stabile: il meteo non sposta mai data/santo/storia. */
+/* 0.1.73 — intestazione Agenda stabile: il meteo non sposta mai data/santo/storia. */
 .paper:not(.planner-view):not(.note-view) .date-block { margin-left:6px !important; }
 .weather-location-label { pointer-events:none; }
 @media (max-width:760px) {
   .paper:not(.planner-view):not(.note-view) .date-block { margin-left:11px !important; }
+}
+
+
+/* 0.1.73 — Footer: autore e versione definitivamente ancorati in basso a sinistra.
+   Neutralizza la vecchia regola .version-button della 0.1.25. */
+.baseline-footer .copyright-block {
+  position:absolute;
+  left:12px;
+  right:auto;
+  top:50%;
+  transform:translateY(-50%);
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+  gap:4px;
+  width:auto;
+  max-width:none;
+  overflow:visible;
+  white-space:nowrap;
+}
+.baseline-footer #authorCreditsButton { order:1; }
+.baseline-footer #versionButton {
+  order:2;
+  position:static;
+  left:auto;
+  right:auto;
+  top:auto;
+  transform:none;
+  flex:0 0 auto;
+  margin:0;
+  padding:5px 0 5px 1px;
+}
+.baseline-footer #versionButton:active { transform:translateY(1px); }
+@media (max-width:760px) {
+  .baseline-footer .copyright-block { left:9px; gap:3px; }
 }

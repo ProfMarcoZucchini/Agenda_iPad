@@ -6,7 +6,7 @@ import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
-const APP_VERSION = '0.1.72';
+const APP_VERSION = '0.1.73';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -194,7 +194,7 @@ let imageGesture = null;
 let imageBusy = false;
 let imageCropEditor = null;
 let imageCropGesture = null;
-// 0.1.72 — clipboard immagini locale al solo dispositivo, su DB separato.
+// 0.1.73 — clipboard immagini locale al solo dispositivo, su DB separato.
 // Non entra in Sync né nei backup dell'Agenda e viene svuotata solo dopo un Incolla persistito.
 let localImageCutClipboard = null;
 let drawing = false;
@@ -3810,7 +3810,7 @@ function beginImageGesture(ev) {
   if (activeTool !== 'image' || drawing || pageTurning || !imageLayer) return;
   const item = ev.target instanceof Element ? ev.target.closest('.image-object') : null;
   if (!item || !imageLayer.contains(item)) {
-    // 0.1.72 — un tap sul foglio chiude il menu Immagini senza iniziare un tratto Ink.
+    // 0.1.73 — un tap sul foglio chiude il menu Immagini senza iniziare un tratto Ink.
     setSelectedImage(null);
     selectTool('pen');
     statusLabel.textContent = 'menu immagini chiuso';
@@ -4841,7 +4841,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     session.maxStorageTxMs = Math.max(session.maxStorageTxMs, txMs);
     if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, txMs);
     session.storageWrites++;
-    // 0.1.72 — una immagine tagliata resta nella clipboard locale fino a quando
+    // 0.1.73 — una immagine tagliata resta nella clipboard locale fino a quando
     // la pagina di destinazione dell'Incolla è stata realmente persistita.
     if (localImageCutClipboard?.pendingImageId
         && localImageCutClipboard.pendingPageKey === descriptor.key

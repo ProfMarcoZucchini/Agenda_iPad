@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.72 - gestione immagini Taglia/Incolla con clipboard locale al dispositivo, Figure Windows parity, meteo dettagliato e Sync/Backup protetti",
+  "description": "Agenda iPad 0.1.73 - gestione immagini Taglia/Incolla con clipboard locale al dispositivo, Figure Windows parity, meteo dettagliato e Sync/Backup protetti",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
