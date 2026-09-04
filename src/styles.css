@@ -2766,3 +2766,71 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 /* 0.1.82 — Voice Script Enhanced */
 .voice-vocabulary-field { grid-column:1 / -1; }
 .voice-vocabulary-field textarea { min-height:64px; resize:vertical; font-size:14px; line-height:1.3; }
+
+/* 0.1.83 — Rubrica Password cifrata */
+.password-vault-footer-button { color:#5f8da6; }
+.password-vault-key-icon { width:28px; height:28px; overflow:visible; }
+.password-vault-panel {
+  position:fixed; inset:0; z-index:2200; display:grid; place-items:center;
+  padding:max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  background:rgba(34,28,22,.28); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
+}
+.password-vault-panel[hidden] { display:none !important; }
+.password-vault-card {
+  width:min(1080px, 96vw); height:min(760px, 92vh); overflow:hidden;
+  display:flex; flex-direction:column; gap:10px;
+  background:#f8f2e5; color:#3f382f; border:1px solid rgba(91,74,52,.28); border-radius:20px;
+  box-shadow:0 20px 65px rgba(30,24,18,.32), inset 0 1px rgba(255,255,255,.8);
+  padding:16px 18px 18px;
+}
+.password-vault-head { display:flex; align-items:center; justify-content:space-between; gap:14px; border-bottom:1px solid rgba(104,85,60,.18); padding-bottom:9px; }
+.password-vault-head h2 { margin:0; font-family:Georgia,serif; font-size:24px; color:#3d5262; }
+.password-vault-head p { margin:2px 0 0; color:#85745e; font-size:13px; }
+.password-vault-head-actions { display:flex; align-items:center; gap:8px; }
+.password-vault-head-actions button, .password-vault-toolbar button, .password-vault-editor button, .password-vault-auth-view button {
+  appearance:none; border:1px solid rgba(83,70,52,.24); border-radius:10px; background:rgba(255,255,255,.72); color:#433b31;
+  padding:8px 12px; font-weight:750; touch-action:manipulation;
+}
+#passwordVaultCloseButton { width:36px; height:36px; border-radius:50%; padding:0; font-size:24px; line-height:1; }
+.password-vault-primary { background:#5f94a7 !important; color:white !important; border-color:#4d7887 !important; }
+.password-vault-editor button.danger { background:#a74f4d; color:white; border-color:#863f3d; }
+.password-vault-status { min-height:34px; border-radius:10px; background:rgba(255,255,255,.58); border:1px solid rgba(91,74,52,.14); padding:8px 11px; font-size:13px; white-space:pre-wrap; }
+.password-vault-auth-view { width:min(620px,100%); margin:auto; padding:22px; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(92,75,53,.15); }
+.password-vault-auth-view h3 { margin:0 0 8px; color:#435c68; }
+.password-vault-auth-view p { line-height:1.45; }
+.password-vault-pin-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
+.password-vault-pin-grid label, .password-vault-pin-entry { display:grid; gap:5px; font-weight:700; color:#5d5143; }
+.password-vault-pin-grid input, .password-vault-pin-entry input {
+  min-height:48px; font-size:25px; letter-spacing:.5em; text-align:center; border:1px solid rgba(79,67,52,.28); border-radius:10px; background:#fffdfa; color:#2e2a25;
+}
+.password-vault-unlock-actions { display:grid; gap:10px; }
+.password-vault-biometric { min-height:48px; background:#edf6f6 !important; color:#356f75 !important; border-color:#8dbdc0 !important; }
+.password-vault-or { text-align:center; font-size:12px; color:#9a8a76; text-transform:uppercase; letter-spacing:.08em; }
+.password-vault-security-note { color:#756956; font-size:12px; line-height:1.45; }
+.password-vault-unlocked { min-height:0; flex:1; display:flex; flex-direction:column; gap:9px; }
+.password-vault-unlocked[hidden] { display:none !important; }
+.password-vault-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.password-vault-toolbar input[type="search"] { flex:1 1 300px; min-height:38px; border:1px solid rgba(80,68,52,.22); border-radius:10px; background:#fffdfa; padding:8px 11px; font-size:14px; color:#332e28; }
+.password-vault-az { display:flex; gap:3px; overflow-x:auto; padding:3px 1px 5px; scrollbar-width:thin; }
+.password-vault-az button { flex:0 0 auto; min-width:29px; height:29px; padding:0 6px; border-radius:8px; border:1px solid rgba(80,68,52,.16); background:rgba(255,255,255,.58); color:#5a5146; font-size:12px; font-weight:750; }
+.password-vault-az button.active { background:#6d9eb0; color:#fff; border-color:#557f8e; }
+.password-vault-body { min-height:0; flex:1; display:grid; grid-template-columns:minmax(250px, .85fr) minmax(360px, 1.35fr); gap:12px; }
+.password-vault-list { min-height:0; overflow:auto; border:1px solid rgba(80,68,52,.15); border-radius:12px; background:rgba(255,255,255,.5); padding:6px; }
+.password-vault-entry { width:100%; display:grid; gap:2px; text-align:left; padding:9px 10px; border:0; border-bottom:1px solid rgba(82,69,53,.10); background:transparent; color:#3b352e; border-radius:8px; }
+.password-vault-entry strong { font-size:14px; }
+.password-vault-entry small { color:#7e7364; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.password-vault-entry.selected { background:#e4eef0; }
+.password-vault-empty { padding:28px 15px; text-align:center; color:#8c7d69; }
+.password-vault-editor { min-height:0; overflow:auto; display:grid; align-content:start; gap:10px; border:1px solid rgba(80,68,52,.15); border-radius:12px; background:rgba(255,255,255,.56); padding:12px; }
+.password-vault-editor[hidden] { display:none !important; }
+.password-vault-editor label { display:grid; gap:4px; font-size:12px; font-weight:750; color:#645849; }
+.password-vault-editor input, .password-vault-editor textarea { width:100%; box-sizing:border-box; border:1px solid rgba(80,68,52,.23); border-radius:9px; background:#fffdfa; color:#302b25; padding:9px 10px; font:inherit; resize:vertical; }
+.password-vault-secret-row { display:grid; grid-template-columns:1fr auto; gap:7px; }
+.password-vault-copy-row, .password-vault-editor-actions { display:flex; flex-wrap:wrap; gap:8px; }
+@media (max-width:760px) {
+  .password-vault-card { width:98vw; height:96vh; padding:12px; border-radius:14px; }
+  .password-vault-body { grid-template-columns:1fr; grid-template-rows:minmax(150px,.8fr) minmax(280px,1.2fr); }
+  .password-vault-pin-grid { grid-template-columns:1fr; }
+  .password-vault-head h2 { font-size:20px; }
+}
+.paper[data-paper-color="black"] .password-vault-footer-button { color:#9fcad2; }

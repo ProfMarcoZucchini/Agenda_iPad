@@ -8,15 +8,16 @@ import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { initAudioRecorder } from './audio-recorder.js';
 import { initVoiceScript } from './voice-script.js';
 import { initLassoTool } from './lasso-tool.js';
+import { initPasswordVault, VAULT_CONFIG_KEY, VAULT_DATA_KEY, VAULT_LOCAL_AUTH_KEY, VAULT_LOCAL_STATE_KEY, VAULT_SYNC_KEY, portableVaultRow, isPortableVaultRow, buildVaultBackupPayload, rowsFromVaultBackupPayload } from './password-vault.js';
 import { SHAPE_TYPES as WINDOWS_SHAPE_TYPES, SHAPE_LABELS as WINDOWS_SHAPE_LABELS, buildShapePoints as buildWindowsShapePoints, shapePathData, shapeIconPathData as windowsShapeIconPathData } from './shapes.js';
 import { EXTRA_SHAPE_TYPES, EXTRA_SHAPE_LABELS, buildExtraShapePoints, extraShapeIconPathData } from './extra-shapes.js';
 const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.82';
+const APP_VERSION = '0.1.83';
 const DB_NAME = 'AgendaIPadReintegrationDB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = 'pages';
 const LOCAL_IMAGE_CLIPBOARD_DB = 'AgendaIPadLocalImageClipboardDB';
 const LOCAL_IMAGE_CLIPBOARD_STORE = 'clipboard';
@@ -24,6 +25,7 @@ const LOCAL_IMAGE_CLIPBOARD_KEY = 'image-cut-v1';
 const SYNC_EVENT_STORE = 'syncEvents';
 const SYNC_META_STORE = 'syncMeta';
 const SYNC_BLOB_STORE = 'syncBlobs';
+const PASSWORD_VAULT_STORE = 'passwordVault';
 const SYNC_STATE_KEY = 'sync-state-v1';
 const LAN_STATE_KEY = 'lan-transport-state-v1';
 const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
@@ -295,6 +297,7 @@ let backupFoundation = null;
 let audioRecorder = null;
 let voiceScript = null;
 let lassoTool = null;
+let passwordVault = null;
 let lastVoicePlacementTouchAt = -Infinity;
 let syncFoundation = null;
 let syncStats = null;
@@ -2253,6 +2256,7 @@ function openDb() {
         blobs.createIndex('mimeType', 'mimeType', { unique: false });
         blobs.createIndex('createdAt', 'createdAt', { unique: false });
       }
+      if (!database.objectStoreNames.contains(PASSWORD_VAULT_STORE)) database.createObjectStore(PASSWORD_VAULT_STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => { db = req.result; resolve(db); };
     req.onerror = () => reject(req.error);
@@ -2276,6 +2280,134 @@ function putRecord(record) {
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Transazione IndexedDB annullata'));
   });
+}
+
+function getPasswordVaultRow(key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PASSWORD_VAULT_STORE, 'readonly');
+    const req = tx.objectStore(PASSWORD_VAULT_STORE).get(String(key || ''));
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function putPasswordVaultLocalRow(row) {
+  if (!row?.key) return Promise.reject(new Error('Record locale Rubrica Password non valido'));
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PASSWORD_VAULT_STORE, 'readwrite');
+    tx.objectStore(PASSWORD_VAULT_STORE).put(row);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Persistenza locale Rubrica Password annullata'));
+  });
+}
+
+function deletePasswordVaultLocalRow(key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PASSWORD_VAULT_STORE, 'readwrite');
+    tx.objectStore(PASSWORD_VAULT_STORE).delete(String(key || ''));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Eliminazione locale Rubrica Password annullata'));
+  });
+}
+
+function vaultClockFromEvent(event) {
+  if (!event?.eventId) return null;
+  return {
+    hlcWallMs: Number(event.hlcWallMs) || 0,
+    hlcLogical: Number(event.hlcLogical) || 0,
+    eventId: String(event.eventId)
+  };
+}
+
+function compareVaultClocks(a, b) {
+  return compareHlcDeterministic(a || {}, b || {});
+}
+
+async function readPasswordVaultPortableRows() {
+  await openDb();
+  const [configRow, dataRow] = await Promise.all([
+    getPasswordVaultRow(VAULT_CONFIG_KEY),
+    getPasswordVaultRow(VAULT_DATA_KEY)
+  ]);
+  return [configRow, dataRow].map(portableVaultRow).filter(Boolean);
+}
+
+async function getPasswordVaultBackupPayload() {
+  const rows = await readPasswordVaultPortableRows();
+  return buildVaultBackupPayload(rows);
+}
+
+async function restorePasswordVaultBackupPayload(payload) {
+  if (!payload) return { restored: 0, skipped: 'backup-without-vault' };
+  const rows = rowsFromVaultBackupPayload(payload);
+  await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(PASSWORD_VAULT_STORE, 'readwrite');
+    const store = tx.objectStore(PASSWORD_VAULT_STORE);
+    store.delete(VAULT_CONFIG_KEY);
+    store.delete(VAULT_DATA_KEY);
+    store.delete(VAULT_LOCAL_AUTH_KEY);
+    store.delete(VAULT_LOCAL_STATE_KEY);
+    for (const row of rows) store.put(row);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Ripristino Rubrica Password annullato'));
+  });
+  passwordVault?.lock?.('restore');
+  if (passwordVault?.refresh) await passwordVault.refresh().catch(() => {});
+  return { restored: rows.length };
+}
+
+async function commitPasswordVaultPortableRows(inputRows) {
+  await openDb();
+  const rows = (inputRows || []).map(portableVaultRow).filter(Boolean);
+  if (!rows.length) return { rows: 0, events: 0 };
+  const descriptor = { key: VAULT_SYNC_KEY, kind: 'password-vault', date: '' };
+  for (const row of rows) {
+    syncFoundation?.queueEvent({
+      entityId: `password-vault:${row.key}`,
+      entityType: 'password-vault',
+      operation: 'vault.envelope.set',
+      descriptor,
+      payload: { row },
+      flags: { sensitive: true, encryptedAtRest: true, payloadEncryption: 'AES-256-GCM' }
+    });
+  }
+  const commit = syncFoundation?.prepareAtomicCommit(VAULT_SYNC_KEY) || { events: [], eventIds: [], stateRow: null };
+  const eventByKey = new Map();
+  for (const event of commit.events || []) {
+    const rowKey = String(event?.payload?.row?.key || '');
+    if (rowKey) eventByKey.set(rowKey, event);
+  }
+  const storedRows = rows.map((row) => {
+    const event = eventByKey.get(row.key);
+    return event ? { ...row, lastSyncClock: vaultClockFromEvent(event) } : row;
+  });
+  const stores = [PASSWORD_VAULT_STORE];
+  if (commit.events?.length) stores.push(SYNC_EVENT_STORE, SYNC_META_STORE);
+  const started = performance.now();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(stores, 'readwrite');
+      const vaultStore = tx.objectStore(PASSWORD_VAULT_STORE);
+      for (const row of storedRows) vaultStore.put(row);
+      if (commit.events?.length) {
+        const eventStore = tx.objectStore(SYNC_EVENT_STORE);
+        for (const event of commit.events) eventStore.put(event);
+        if (commit.stateRow) tx.objectStore(SYNC_META_STORE).put(commit.stateRow);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Commit Rubrica Password annullato'));
+    });
+    if (commit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(commit.eventIds, performance.now() - started);
+    return { rows: storedRows.length, events: commit.events?.length || 0 };
+  } catch (err) {
+    if (commit.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
+    throw err;
+  }
 }
 
 function getSyncMeta(key = SYNC_STATE_KEY) {
@@ -2536,7 +2668,12 @@ async function queueAuthoritativeGroupSnapshot() {
     }
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  return { records: records.length, events: queued };
+  const vaultRows = await readPasswordVaultPortableRows();
+  if (vaultRows.length) {
+    const vaultCommit = await commitPasswordVaultPortableRows(vaultRows);
+    queued += Number(vaultCommit?.events) || 0;
+  }
+  return { records: records.length, events: queued, vaultRows: vaultRows.length };
 }
 
 function putRemoteEventResult(event, status, pageRecord = null, detail = null) {
@@ -2861,6 +2998,38 @@ async function applyRemotePageSnapshotEvent(event) {
   return { applied: 1 };
 }
 
+async function applyRemotePasswordVaultEvent(event) {
+  const incoming = portableVaultRow(event?.payload?.row);
+  if (!incoming || !isPortableVaultRow(incoming)) {
+    await putRemoteEventResult(event, 'deferred', null, 'payload Rubrica Password cifrato non valido');
+    return { deferred: 1 };
+  }
+  const existing = await getPasswordVaultRow(incoming.key).catch(() => null);
+  const incomingClock = vaultClockFromEvent(event);
+  if (existing?.lastSyncClock && compareVaultClocks(incomingClock, existing.lastSyncClock) <= 0) {
+    await putRemoteEventResult(event, 'ignored', null, 'evento Rubrica Password precedente allo stato locale');
+    return { ignored: 1 };
+  }
+  const storedRow = { ...incoming, lastSyncClock: incomingClock };
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction([PASSWORD_VAULT_STORE, SYNC_EVENT_STORE, SYNC_META_STORE], 'readwrite');
+    tx.objectStore(PASSWORD_VAULT_STORE).put(storedRow);
+    tx.objectStore(SYNC_EVENT_STORE).put({
+      ...event,
+      status: 'applied',
+      source: 'sync-remote',
+      receivedAt: new Date().toISOString(),
+      remoteDetail: 'payload Rubrica Password già cifrato end-to-end'
+    });
+    if (syncFoundation) tx.objectStore(SYNC_META_STORE).put(syncFoundation.getStateRow());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Applicazione Sync Rubrica Password annullata'));
+  });
+  await passwordVault?.handleRemoteUpdate?.(incoming.key);
+  return { applied: 1 };
+}
+
 async function applyRemoteSyncEvents(events) {
   const totals = { applied: 0, deferred: 0, ignored: 0, conflicts: 0 };
   await openDb();
@@ -2879,6 +3048,7 @@ async function applyRemoteSyncEvents(events) {
     else if (event.operation === 'page.clear') result = await applyRemotePageClear(event);
     else if (event.operation === 'page.property.set') result = await applyRemotePageProperty(event);
     else if (event.entityType === 'image-object') result = await applyRemoteImageEvent(event);
+    else if (event.entityType === 'password-vault' && event.operation === 'vault.envelope.set') result = await applyRemotePasswordVaultEvent(event);
     else {
       await putRemoteEventResult(event, 'deferred', null, 'tipo evento non ancora applicato');
       result = { deferred: 1 };
@@ -6900,6 +7070,20 @@ async function bootAgenda() {
       console.warn('Agenda Sync Core non disponibile', err);
     }
   }
+  if (!passwordVault && syncFoundation) {
+    passwordVault = initPasswordVault({
+      getRow: getPasswordVaultRow,
+      putLocalRow: putPasswordVaultLocalRow,
+      deleteLocalRow: deletePasswordVaultLocalRow,
+      commitPortableRows: commitPasswordVaultPortableRows,
+      onStatus: (message) => { if (message) statusLabel.textContent = message; },
+      onOpen: () => {
+        if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-password');
+        deactivatePageTool('password-vault');
+      },
+      onClose: () => { updateToolUi(); }
+    });
+  }
   if (!cloudTransport && syncFoundation) {
     const config = loadCloudConfig();
     if (cloudEndpointInput) cloudEndpointInput.value = config.endpoint || CLOUD_DEFAULT_ENDPOINT;
@@ -6984,6 +7168,8 @@ async function bootAgenda() {
       flushCurrent: async () => { if (dirty) await persistNow(); },
       setAppStatus: (message) => { statusLabel.textContent = message; },
       isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
+      getSecurePasswordVaultBackup: getPasswordVaultBackupPayload,
+      restoreSecurePasswordVaultBackup: restorePasswordVaultBackupPayload,
       beforeRestoreApplied: async (details) => {
         // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
         // cambiare gruppo né propagare automaticamente uno snapshot storico.

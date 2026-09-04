@@ -363,12 +363,13 @@ function backupFileName(appVersion, createdAt) {
   return `Agenda_iPad_FULL_${stamp}_app-${appVersion}_fmt-${BACKUP_FORMAT_VERSION}.zip`;
 }
 
-async function makeBackupPackage({ appVersion, records, preferences, config }) {
+async function makeBackupPackage({ appVersion, records, preferences, config, secureVault = null }) {
   const createdAt = new Date().toISOString();
   const media = extractMediaFromRecords(records);
   const pagesBytes = jsonBytes({ schemaVersion: 2, count: media.portableRecords.length, records: media.portableRecords });
   const prefBytes = jsonBytes({ schemaVersion: 1, values: preferences });
   const mediaBytes = jsonBytes({ schemaVersion: 1, items: media.mediaItems, layoutVersion: 1 });
+  const secureVaultBytes = secureVault ? jsonBytes(secureVault) : null;
   const safeConfig = {
     frequency: config.frequency, customDays: config.customDays, retention: config.retention,
     destinations: config.destinations,
@@ -385,7 +386,8 @@ async function makeBackupPackage({ appVersion, records, preferences, config }) {
     collections: [
       { id: 'pages', path: 'data/pages.json', encoding: 'json', schemaVersion: 2 },
       { id: 'preferences', path: 'data/preferences.json', encoding: 'json', schemaVersion: 1 },
-      { id: 'media', path: 'media/index.json', encoding: 'json-index', schemaVersion: 1, extensible: true }
+      { id: 'media', path: 'media/index.json', encoding: 'json-index', schemaVersion: 1, extensible: true },
+      ...(secureVaultBytes ? [{ id: 'password-vault', path: 'data/password-vault.json', encoding: 'json-encrypted-envelope', schemaVersion: 1, encrypted: true }] : [])
     ],
     mediaLayout: { images: 'media/images/', audio: 'media/audio/', video: 'media/video/', attachments: 'media/attachments/' },
     backupSettingsSnapshot: safeConfig,
@@ -396,7 +398,8 @@ async function makeBackupPackage({ appVersion, records, preferences, config }) {
     'manifest.json': await sha256Hex(manifestBytes),
     'data/pages.json': await sha256Hex(pagesBytes),
     'data/preferences.json': await sha256Hex(prefBytes),
-    'media/index.json': await sha256Hex(mediaBytes)
+    'media/index.json': await sha256Hex(mediaBytes),
+    ...(secureVaultBytes ? { 'data/password-vault.json': await sha256Hex(secureVaultBytes) } : {})
   };
   for (const entry of media.mediaEntries) checksumFiles[entry.name] = await sha256Hex(entry.bytes);
   const checksums = { algorithm: 'SHA-256', files: checksumFiles };
@@ -407,6 +410,7 @@ async function makeBackupPackage({ appVersion, records, preferences, config }) {
     { name: 'data/pages.json', bytes: pagesBytes },
     { name: 'data/preferences.json', bytes: prefBytes },
     { name: 'media/index.json', bytes: mediaBytes },
+    ...(secureVaultBytes ? [{ name: 'data/password-vault.json', bytes: secureVaultBytes }] : []),
     ...media.mediaEntries
   ]);
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums };
@@ -427,8 +431,12 @@ async function verifyBackupBlob(blob) {
   }
   const pages = parseJsonBytes(files.get('data/pages.json'), 'data/pages.json');
   const preferences = parseJsonBytes(files.get('data/preferences.json'), 'data/preferences.json');
+  const passwordVault = files.has('data/password-vault.json')
+    ? parseJsonBytes(files.get('data/password-vault.json'), 'data/password-vault.json')
+    : null;
+  if (passwordVault && passwordVault.encrypted !== true) throw new Error('Rubrica Password del backup non risulta cifrata');
   if (Array.isArray(pages.records)) pages.records = hydrateMediaIntoRecords(pages.records, files);
-  return { manifest, pages, preferences, files };
+  return { manifest, pages, preferences, passwordVault, files };
 }
 
 function dueAt(config) {
@@ -675,7 +683,8 @@ export function initBackupFoundation(options) {
   const {
     appVersion, mainDbName, mainStore, flushCurrent = async () => {}, setAppStatus = () => {},
     isRealtimeBusy = () => false, beforeRestoreApplied = async () => {}, afterRestoreApplied = async () => {},
-    beforeGlobalRestoreApplied = async () => {}, afterGlobalRestoreApplied = async () => {}
+    beforeGlobalRestoreApplied = async () => {}, afterGlobalRestoreApplied = async () => {},
+    getSecurePasswordVaultBackup = async () => null, restoreSecurePasswordVaultBackup = async () => ({ restored: 0 })
   } = options;
 
   const settingsButton = document.getElementById('settingsButton');
@@ -867,7 +876,8 @@ export function initBackupFoundation(options) {
       await flushCurrent();
       const records = await readMainRecords(mainDbName, mainStore);
       const preferences = collectPortablePreferences();
-      const pkg = await makeBackupPackage({ appVersion, records, preferences, config });
+      const secureVault = await getSecurePasswordVaultBackup();
+      const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault });
       if (config.verifyAfterBackup) await verifyBackupBlob(pkg.blob);
       const zipHash = await sha256Hex(pkg.blob);
       const id = `${pkg.createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -995,6 +1005,7 @@ export function initBackupFoundation(options) {
       else await beforeRestoreApplied(details);
       await flushCurrent();
       await replaceMainRecords(mainDbName, mainStore, records);
+      if (parsed.passwordVault) await restoreSecurePasswordVaultBackup(parsed.passwordVault);
       // Le credenziali e il gruppo Sync appartengono al dispositivo corrente, non allo snapshot.
       // I backup 0.1.58 e precedenti possono contenerli: vengono deliberatamente ignorati.
       restorePortablePreferences(parsed.preferences?.values || {});
