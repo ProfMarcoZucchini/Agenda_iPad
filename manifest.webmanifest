@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.78 - Voice Script con dettatura in tempo reale protetta dall’Ink, registratore multiplo, Figure estese e Sync protetto",
+  "description": "Agenda iPad 0.1.81 - Lazo chiuso con spostamento, Taglia/Incolla tra pagine, Voice Script protetto dall’Ink, registratore multiplo e Sync protetto",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

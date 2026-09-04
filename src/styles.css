@@ -2689,3 +2689,80 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 @media (max-width:760px) {
   .voice-script-preview { max-width:82%; padding:2px 4px 3px; border-radius:5px; }
 }
+
+/* 0.1.80 — Lazo: selezione chiusa, spostamento, Taglia/Incolla locale. */
+.lasso-inspector {
+  max-width:min(520px,78vw);
+  flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.lasso-inspector #lassoCutButton:not(:disabled) {
+  border-color:rgba(174,103,73,.38);
+  background:rgba(218,133,91,.10);
+}
+.lasso-inspector #lassoPasteButton:not(:disabled) {
+  border-color:rgba(75,125,85,.42);
+  background:rgba(111,174,120,.14);
+}
+.lasso-hint {
+  align-self:center;
+  max-width:185px;
+  padding:0 5px;
+  font-size:8px;
+  line-height:1.15;
+  font-weight:700;
+  color:#6b5b49;
+  white-space:normal;
+  text-align:right;
+}
+.lasso-overlay {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  z-index:8;
+  pointer-events:none;
+  overflow:visible;
+}
+.lasso-overlay[hidden] { display:none !important; }
+.lasso-path {
+  fill:rgba(100,160,195,.055);
+  stroke:#4b92b7;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  stroke-dasharray:5 4;
+  vector-effect:non-scaling-stroke;
+}
+.lasso-path:not(.closed) { fill:none; }
+.lasso-bounds {
+  fill:rgba(111,174,190,.045);
+  stroke:#6faebc;
+  stroke-width:1.4;
+  stroke-dasharray:4 3;
+  vector-effect:non-scaling-stroke;
+}
+.paper[data-paper-color="black"] .lasso-path { stroke:#9fd7ee; fill:rgba(159,215,238,.07); }
+.paper[data-paper-color="black"] .lasso-bounds { stroke:#b9dfec; fill:rgba(185,223,236,.05); }
+.page-preview .lasso-overlay,
+.page-preview .lasso-inspector { display:none !important; }
+.tool-button[data-tool="lasso"].has-selection::after {
+  content:"";
+  position:absolute;
+  right:3px;
+  bottom:3px;
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  background:#68a9bf;
+  border:1px solid rgba(255,255,255,.9);
+}
+@media (max-width:760px) {
+  .lasso-hint { display:none; }
+  .lasso-inspector { max-width:min(350px,92vw); }
+}
+
+
+/* 0.1.81 — Voice Script Enhanced */
+.voice-vocabulary-field { grid-column:1 / -1; }
+.voice-vocabulary-field textarea { min-height:64px; resize:vertical; font-size:14px; line-height:1.3; }

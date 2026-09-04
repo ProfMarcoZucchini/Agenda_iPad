@@ -7,13 +7,14 @@ import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { initAudioRecorder } from './audio-recorder.js';
 import { initVoiceScript } from './voice-script.js';
+import { initLassoTool } from './lasso-tool.js';
 import { SHAPE_TYPES as WINDOWS_SHAPE_TYPES, SHAPE_LABELS as WINDOWS_SHAPE_LABELS, buildShapePoints as buildWindowsShapePoints, shapePathData, shapeIconPathData as windowsShapeIconPathData } from './shapes.js';
 import { EXTRA_SHAPE_TYPES, EXTRA_SHAPE_LABELS, buildExtraShapePoints, extraShapeIconPathData } from './extra-shapes.js';
 const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.78';
+const APP_VERSION = '0.1.81';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -102,6 +103,15 @@ const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const eraserToolButton = document.getElementById('eraserToolButton');
+const lassoToolButton = document.getElementById('lassoToolButton');
+const lassoOverlay = document.getElementById('lassoOverlay');
+const lassoPath = document.getElementById('lassoPath');
+const lassoBounds = document.getElementById('lassoBounds');
+const lassoInspector = document.getElementById('lassoInspector');
+const lassoCutButton = document.getElementById('lassoCutButton');
+const lassoPasteButton = document.getElementById('lassoPasteButton');
+const lassoClearButton = document.getElementById('lassoClearButton');
+const lassoHint = document.getElementById('lassoHint');
 const voiceScriptToolButton = document.getElementById('voiceScriptToolButton');
 const shapeToolButton = document.getElementById('shapeToolButton');
 const shapePalette = document.getElementById('shapePalette');
@@ -284,6 +294,7 @@ let pageStyleScope = 'current';
 let backupFoundation = null;
 let audioRecorder = null;
 let voiceScript = null;
+let lassoTool = null;
 let lastVoicePlacementTouchAt = -Infinity;
 let syncFoundation = null;
 let syncStats = null;
@@ -720,8 +731,8 @@ async function setPageTemplate(template) {
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const styleTool = (activeTool === 'shape' || activeTool === 'voice') ? 'pen' : activeTool;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', shape: 'Figure', voice: 'Voice Script', image: 'Immagine' };
+  const styleTool = (activeTool === 'shape' || activeTool === 'voice' || activeTool === 'lasso') ? 'pen' : activeTool;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', lasso: 'Lazo', shape: 'Figure', voice: 'Voice Script', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== styleTool;
   const effectiveColor = currentPageKind === 'planner-timetable' && styleTool === 'pen'
@@ -4307,11 +4318,29 @@ function activateShapeTool() {
   if (opening) updateShapePaletteUi();
 }
 
+function deactivatePageTool(reason = '') {
+  if (drawing || pageTurning) return false;
+  if (activeTool === 'lasso') lassoTool?.setActive?.(false);
+  cancelShapeGesture();
+  activeTool = 'none';
+  selectedImageId = null;
+  closeStylePanel();
+  if (shapePalette) shapePalette.hidden = true;
+  shapeOverlay?.setAttribute('hidden', '');
+  shapeToolButton?.setAttribute('aria-expanded', 'false');
+  paper?.classList.remove('shape-mode', 'lasso-mode', 'voice-script-armed', 'image-edit-mode');
+  renderImages();
+  updateToolUi();
+  updateStyleUi();
+  if (reason) statusLabel.textContent = reason;
+  return true;
+}
+
 function activateVoiceScriptTool() {
   if (drawing || pageTurning) return;
   if (voiceScript?.isActive?.()) {
     voiceScript.stopAndFinalize('toolbar');
-    if (activeTool === 'voice') selectTool('pen');
+    deactivatePageTool();
     updateToolUi();
     return;
   }
@@ -4323,18 +4352,22 @@ function activateVoiceScriptTool() {
     statusLabel.textContent = 'termina prima la registrazione audio';
     return;
   }
+  deactivatePageTool();
   selectTool('voice');
   statusLabel.textContent = 'Voice Script · tocca con Pencil o dito il punto di inserimento';
 }
 
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
   if (tool !== 'shape') cancelShapeGesture();
+  if (activeTool === 'lasso' && tool !== 'lasso') lassoTool?.setActive?.(false);
   activeTool = tool;
+  if (tool === 'lasso') lassoTool?.setActive?.(true);
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
   paper?.classList.toggle('shape-mode', tool === 'shape');
+  paper?.classList.toggle('lasso-mode', tool === 'lasso');
   paper?.classList.toggle('voice-script-armed', tool === 'voice');
   paper?.classList.toggle('image-edit-mode', tool === 'image');
   if (shapePalette) shapePalette.hidden = tool !== 'shape';
@@ -4346,6 +4379,7 @@ function selectTool(tool) {
   updateStyleUi();
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore'
     : tool === 'eraser' ? 'gomma'
+    : tool === 'lasso' ? 'lazo · disegna un contorno chiuso'
     : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · trascina o fai clic`
     : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
@@ -4562,6 +4596,11 @@ function undoLastModification() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !undoHistory.length) return;
   const action = undoHistory.pop();
+  if (lassoTool?.applyHistory?.(action, 'undo')) {
+    pushBounded(redoHistory, action, REDO_LIMIT);
+    updateToolUi();
+    return;
+  }
   if (action?.type === 'add-stroke' && action.stroke?.id) {
     const index = strokes.findIndex((stroke) => stroke.id === action.stroke.id);
     if (index >= 0) {
@@ -4617,6 +4656,11 @@ function redoLastModification() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !redoHistory.length) return;
   const action = redoHistory.pop();
+  if (lassoTool?.applyHistory?.(action, 'redo')) {
+    pushBounded(undoHistory, action, UNDO_LIMIT);
+    updateToolUi();
+    return;
+  }
   if (action?.type === 'add-stroke' && action.stroke?.id) {
     if (!strokes.some((stroke) => stroke.id === action.stroke.id)) {
       const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : strokes.length, strokes.length));
@@ -4700,12 +4744,74 @@ function drawCrossPlatformText(item, targetCtx, width, height, paperColor = page
   targetCtx.globalCompositeOperation = 'source-over';
   targetCtx.globalAlpha = 1;
   targetCtx.fillStyle = storedInkDisplayColor({ tool: 'pen', color: item?.color ?? PEN_COLOR }, paperColor);
-  targetCtx.textBaseline = 'top';
+  const baselineAnchored = item?.anchorMode === 'baseline';
+  targetCtx.textBaseline = baselineAnchored ? 'alphabetic' : 'top';
   targetCtx.font = `${fontPx}px ${fontStack}`;
   String(item?.text ?? '').split(/\r?\n/).forEach((line, index) => {
     targetCtx.fillText(line, x, y + index * lineHeight);
   });
   targetCtx.restore();
+}
+
+function segmentIntersectsBox(a, b, box) {
+  if (!a || !b || !box) return false;
+  const inside = (point) => point.x >= box.left && point.x <= box.right && point.y >= box.top && point.y <= box.bottom;
+  if (inside(a) || inside(b)) return true;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const clip = (p, q) => {
+    if (Math.abs(p) < 1e-9) return q >= 0;
+    const r = q / p;
+    if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+    else { if (r < t0) return false; if (r < t1) t1 = r; }
+    return true;
+  };
+  return clip(-dx, a.x - box.left) && clip(dx, box.right - a.x)
+    && clip(-dy, a.y - box.top) && clip(dy, box.bottom - a.y) && t0 <= t1;
+}
+
+function crossPlatformTextLineBoxes(item, width, height) {
+  if (!isCrossPlatformTextItem(item)) return [];
+  const x = Math.max(0, Math.min(width, Number(item?.x ?? 0) * width));
+  const y = Math.max(0, Math.min(height, Number(item?.y ?? 0) * height));
+  const normalizedSize = Number(item?.fontSizeNorm);
+  const fontPx = Math.max(18, Math.min(72, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
+  const lineHeight = fontPx * 1.05;
+  const requestedFont = safeCanvasFontFamily(item?.fontFamily);
+  const fontStack = [requestedFont ? `"${requestedFont}"` : '', '"Snell Roundhand"', '"Apple Chancery"', '"Segoe Script"', '"Segoe Print"', 'cursive'].filter(Boolean).join(', ');
+  const baselineAnchored = item?.anchorMode === 'baseline';
+  ctx.save();
+  ctx.font = `${fontPx}px ${fontStack}`;
+  const boxes = String(item?.text ?? '').split(/\r?\n/).map((line, index) => {
+    const metrics = ctx.measureText(line || ' ');
+    const widthPx = Math.max(fontPx * .35, Number(metrics?.width) || 0);
+    const lineY = y + index * lineHeight;
+    if (baselineAnchored) {
+      const ascent = Math.max(fontPx * .72, Number(metrics?.actualBoundingBoxAscent) || 0);
+      const descent = Math.max(fontPx * .18, Number(metrics?.actualBoundingBoxDescent) || 0);
+      return { left:x, top:Math.max(0, lineY-ascent), right:Math.min(width, x+widthPx), bottom:Math.min(height, lineY+descent) };
+    }
+    return { left:x, top:lineY, right:Math.min(width, x + widthPx), bottom:Math.min(height, lineY + lineHeight) };
+  });
+  ctx.restore();
+  return boxes;
+}
+
+function textItemHitByEraser(item, eraserStroke) {
+  if (!isCrossPlatformTextItem(item)) return false;
+  const width = Math.max(1, rect?.width || canvas.clientWidth || 1024);
+  const height = Math.max(1, rect?.height || canvas.clientHeight || 1366);
+  const points = Array.isArray(eraserStroke?.points) ? eraserStroke.points.map((point) => ({ x:(Number(point?.x)||0)*width, y:(Number(point?.y)||0)*height })) : [];
+  if (!points.length) return false;
+  const radius = Math.max(3, (Number(eraserStroke?.width) || ERASER_WIDTH) / 2);
+  const boxes = crossPlatformTextLineBoxes(item, width, height).map((box) => ({ left:box.left-radius, top:box.top-radius, right:box.right+radius, bottom:box.bottom+radius }));
+  if (points.length === 1) return boxes.some((box) => points[0].x >= box.left && points[0].x <= box.right && points[0].y >= box.top && points[0].y <= box.bottom);
+  for (let index = 1; index < points.length; index++) {
+    if (boxes.some((box) => segmentIntersectsBox(points[index - 1], points[index], box))) return true;
+  }
+  return false;
 }
 
 function drawStoredStroke(stroke) {
@@ -4747,6 +4853,7 @@ function renderAll() {
   ctx.restore();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   for (const stroke of strokes) drawStoredStroke(stroke);
+  lassoTool?.syncPage?.();
 }
 
 function resizeCanvas() {
@@ -4964,7 +5071,7 @@ function newStrokeDiag(ev, reason) {
 }
 
 function startStroke(ev, reason = 'pointerdown') {
-  if (!ready || pageTurning || activeTool === 'image') return false;
+  if (!ready || pageTurning || activeTool === 'image' || activeTool === 'lasso' || activeTool === 'none') return false;
   if (saintDetailPanel && !saintDetailPanel.hidden) return false;
   if (historyDetailPanel && !historyDetailPanel.hidden) return false;
   if (weatherDetailPanel && !weatherDetailPanel.hidden) return false;
@@ -5034,23 +5141,32 @@ function applyCompletedEraser(eraserStroke) {
   const result = structuralErase(before, eraserStroke, {
     widthPx: Math.max(1, rect?.width || canvas.clientWidth || 1024),
     heightPx: Math.max(1, rect?.height || canvas.clientHeight || 1366),
-    makeFragmentId: () => makeId()
+    makeFragmentId: () => makeId(),
+    eligible: (stroke) => !isCrossPlatformTextItem(stroke)
   });
 
-  // La gomma realtime usa ancora destination-out esclusivamente per il feedback
-  // immediato. A PEN UP lo stato persistente diventa strutturale: lo stroke gomma
-  // non viene mai aggiunto alla pagina e non potrà cancellare stroke concorrenti futuri.
-  strokes = result.strokes;
+  const textChanges = [];
+  for (let index = 0; index < before.length; index++) {
+    const item = before[index];
+    if (!isCrossPlatformTextItem(item) || !item?.id) continue;
+    if (textItemHitByEraser(item, eraserStroke)) textChanges.push({ original:item, originalIndex:index, fragments:[] });
+  }
+  const removedTextIds = new Set(textChanges.map((change) => String(change.original?.id || '')));
+  const changes = [...result.changes, ...textChanges];
+
+  // Il feedback realtime usa destination-out. Al rilascio la cancellazione
+  // diventa strutturale anche per gli oggetti testo Voice Script/Windows.
+  strokes = result.strokes.filter((stroke) => !removedTextIds.has(String(stroke?.id || '')));
   renderAll();
   const eraseMs = performance.now() - eraseStarted;
   session.structuralErasures++;
-  session.structuralEraseTouched += result.touched || 0;
+  session.structuralEraseTouched += (result.touched || 0) + textChanges.length;
   session.structuralEraseFragments += result.fragments || 0;
   session.maxStructuralEraseMs = Math.max(session.maxStructuralEraseMs, eraseMs);
-  if (!result.changes.length) return false;
+  if (!changes.length) return false;
 
-  rememberUndo({ type: 'erase-strokes', changes: result.changes });
-  recordStructuralEraseChanges(result.changes, 'eraser-structural');
+  rememberUndo({ type: 'erase-strokes', changes });
+  recordStructuralEraseChanges(changes, 'eraser-structural');
   return true;
 }
 
@@ -5134,6 +5250,8 @@ async function commitVoiceScriptText(payload = {}) {
     fontFamily: payload.fontFamily || 'Snell Roundhand',
     fontSizeNorm: Math.max(18, Math.min(72, Number(payload.fontSizePx) || 32)) / height,
     language: payload.language || 'it-IT',
+    anchorMode: 'baseline',
+    recognitionConfidence: Number.isFinite(Number(payload.confidence)) ? Number(payload.confidence) : 0,
     createdAt: payload.createdAt || new Date().toISOString(),
     modifiedAt: new Date().toISOString()
   };
@@ -5180,10 +5298,11 @@ function beginVoiceScriptPlacement(ev) {
   });
   if (started) {
     if (ev.pointerType === 'touch') lastVoicePlacementTouchAt = performance.now();
-    activeTool = 'pen';
-    paper?.classList.remove('voice-script-armed');
+    deactivatePageTool();
+    // La dettatura resta attiva, ma nessun altro strumento pagina viene
+    // riattivato automaticamente. Per scrivere durante la dettatura si
+    // seleziona esplicitamente Penna (o un altro strumento).
     updateToolUi();
-    updateStyleUi();
   }
   ev.preventDefault?.();
   ev.stopPropagation?.();
@@ -5191,7 +5310,7 @@ function beginVoiceScriptPlacement(ev) {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .lasso-overlay, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -5211,6 +5330,9 @@ function activateUiButton(button) {
     activateShapeTool();
     return;
   }
+  if (button === lassoCutButton) { void lassoTool?.cutSelection?.(); return; }
+  if (button === lassoPasteButton) { void lassoTool?.pasteClipboard?.(); return; }
+  if (button === lassoClearButton) { lassoTool?.clearSelection?.('selezione annullata'); return; }
   if (button === voiceScriptToolButton) {
     activateVoiceScriptTool();
     return;
@@ -6062,6 +6184,7 @@ function nativeTouchProxy(touch, originalEvent) {
 
 function handlePaperTouchStart(ev) {
   if (activeTool === 'shape') { ev.preventDefault(); return; }
+  if (activeTool === 'lasso') { ev.preventDefault(); return; }
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
   if (performance.now() - lastVoicePlacementTouchAt < 500) { ev.preventDefault(); return; }
@@ -6085,6 +6208,7 @@ function handlePaperTouchStart(ev) {
 }
 
 function handlePaperTouchMove(ev) {
+  if (activeTool === 'lasso') { ev.preventDefault(); return; }
   if (nativeTouchGestureId == null || !pageSwipe || !pageSwipe.nativeTouch || pageTurning) return;
   const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
   if (!touch) return;
@@ -6181,6 +6305,46 @@ function bindDirectUiButton(button) {
   }, { passive: false });
 }
 
+lassoTool = initLassoTool({
+  button: lassoToolButton,
+  overlay: lassoOverlay,
+  path: lassoPath,
+  boundsRect: lassoBounds,
+  inspector: lassoInspector,
+  cutButton: lassoCutButton,
+  pasteButton: lassoPasteButton,
+  clearButton: lassoClearButton,
+  hint: lassoHint,
+  canvas,
+  statusLabel,
+  getPageKey: () => currentPageKey(),
+  getDescriptor: () => ({ ...pageDescriptor() }),
+  getWritableBounds: () => {
+    const h = Math.max(1, canvas.clientHeight || rect?.height || 1);
+    return {
+      yMin: Math.max(0, Math.min(1, protectedTop / h)),
+      yMax: Math.max(0, Math.min(1, (h - FOOTER_PX) / h))
+    };
+  },
+  getStrokes: () => strokes,
+  setStrokes: (value) => { strokes = Array.isArray(value) ? value : []; },
+  getImages: () => images,
+  setImages: (value) => { images = Array.isArray(value) ? value : []; },
+  makeStrokeId: () => makeId(),
+  makeImageId: () => makeImageId(),
+  cloneImage: (image) => cloneImageObject(image),
+  recordStrokeAdded: (descriptor, stroke) => syncFoundation?.recordStrokeAdded(descriptor, stroke),
+  recordStrokeDeleted: (descriptor, strokeId, reason) => syncFoundation?.recordStrokeDeleted(descriptor, strokeId, reason),
+  recordImageAdded: (descriptor, image, sourcePageKey) => syncFoundation?.recordImageMetadata(descriptor, 'image.add', image, { reason:'lasso-paste', sourcePageKey }),
+  recordImageUpdated: (descriptor, image, before) => syncFoundation?.recordImageMetadata(descriptor, 'image.update', image, { before, reason:'lasso-move' }),
+  recordImageDeleted: (descriptor, imageId) => syncFoundation?.recordImageDeleted(descriptor, imageId),
+  renderAll: () => renderAll(),
+  renderImages: () => renderImages(),
+  rememberUndo: (action) => rememberUndo(action),
+  scheduleSave: () => scheduleSave(),
+  markDirty: () => { dirty = true; }
+});
+
 const directUiButtons = [...new Set([
   calendarButton,
   ...toolButtons,
@@ -6190,6 +6354,7 @@ const directUiButtons = [...new Set([
   styleButton,
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, cutImageButton, pasteImageButton,
+  lassoCutButton, lassoPasteButton, lassoClearButton,
   cancelImageCropButton, applyImageCropButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
@@ -6284,6 +6449,7 @@ function routeGlobalPointerDown(ev) {
     return;
   }
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
+  if (activeTool === 'lasso' && !isUiControlTarget(ev.target) && lassoTool?.handlePointerDown?.(ev)) return;
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
@@ -6292,15 +6458,18 @@ function routeGlobalPointerMove(ev) {
     ev.preventDefault();
     return;
   }
+  if (activeTool === 'lasso' && lassoTool?.handlePointerMove?.(ev)) return;
   if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
 function routeGlobalPointerUp(ev) {
+  if (activeTool === 'lasso' && lassoTool?.handlePointerUp?.(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerUp(ev);
   voiceScript?.flushIfIdle?.();
 }
 function routeGlobalPointerCancel(ev) {
+  if (activeTool === 'lasso' && lassoTool?.handlePointerUp?.(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerCancel(ev);
   voiceScript?.flushIfIdle?.();
@@ -6523,6 +6692,9 @@ rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedBy
 rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
 cutImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cutImageButton)) void cutSelectedImage(); });
 pasteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(pasteImageButton)) void pasteCutImage(); });
+lassoCutButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoCutButton)) void lassoTool?.cutSelection?.(); });
+lassoPasteButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoPasteButton)) void lassoTool?.pasteClipboard?.(); });
+lassoClearButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoClearButton)) lassoTool?.clearSelection?.('selezione annullata'); });
 imageFileInput?.addEventListener('change', () => {
   const file = imageFileInput.files?.[0];
   imageFileInput.value = '';
@@ -6835,7 +7007,7 @@ async function bootAgenda() {
     });
     audioButton?.addEventListener('pointerdown', () => {
       if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('registratore-audio');
-      if (activeTool === 'voice') selectTool('pen');
+      deactivatePageTool();
     }, { capture:true, passive:true });
   }
   if ('serviceWorker' in navigator) {
