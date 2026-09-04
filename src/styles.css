@@ -2763,6 +2763,6 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.81 — Voice Script Enhanced */
+/* 0.1.82 — Voice Script Enhanced */
 .voice-vocabulary-field { grid-column:1 / -1; }
 .voice-vocabulary-field textarea { min-height:64px; resize:vertical; font-size:14px; line-height:1.3; }

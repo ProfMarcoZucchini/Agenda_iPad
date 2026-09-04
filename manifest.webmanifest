@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.81 - Lazo chiuso con spostamento, Taglia/Incolla tra pagine, Voice Script protetto dall’Ink, registratore multiplo e Sync protetto",
+  "description": "Agenda iPad 0.1.82 - Lazo chiuso con spostamento, Taglia/Incolla tra pagine, Voice Script protetto dall’Ink, registratore multiplo e Sync protetto",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

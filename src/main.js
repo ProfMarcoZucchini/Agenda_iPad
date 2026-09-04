@@ -14,7 +14,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.81';
+const APP_VERSION = '0.1.82';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -4357,6 +4357,25 @@ function activateVoiceScriptTool() {
   statusLabel.textContent = 'Voice Script · tocca con Pencil o dito il punto di inserimento';
 }
 
+// 0.1.82 — Lazo usa un'attivazione esplicita, come Figure/Immagini/Voce.
+// Su Safari/iPadOS non dipende più esclusivamente dal ramo generico data-tool.
+function activateLassoTool() {
+  if (pageTurning) return false;
+  if (drawing) finalizeStroke('lasso-toolbar-recovery');
+  if (drawing || pageTurning) return false;
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lasso-tool');
+  selectTool('lasso');
+  // Rinforzo intenzionale: se un browser ha perso uno dei passaggi UI,
+  // lo stato del controller Lazo viene riallineato esplicitamente.
+  lassoTool?.setActive?.(true);
+  paper?.classList.add('lasso-mode');
+  lassoToolButton?.classList.add('active');
+  lassoToolButton?.setAttribute('aria-pressed', 'true');
+  if (lassoInspector) lassoInspector.hidden = false;
+  statusLabel.textContent = 'lazo · disegna un contorno chiuso';
+  return true;
+}
+
 function selectTool(tool) {
   if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
@@ -5310,7 +5329,9 @@ function beginVoiceScriptPlacement(ev) {
 }
 
 function isUiControlTarget(target) {
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .lasso-overlay, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
+  // L'overlay Lazo è puramente grafico (pointer-events:none) e NON deve mai
+  // impedire al router di ricevere il gesto, anche su Safari/iPadOS.
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
 
 function getUiButtonTarget(target) {
@@ -5328,6 +5349,10 @@ function activateUiButton(button) {
   }
   if (button === shapeToolButton) {
     activateShapeTool();
+    return;
+  }
+  if (button === lassoToolButton) {
+    activateLassoTool();
     return;
   }
   if (button === lassoCutButton) { void lassoTool?.cutSelection?.(); return; }
@@ -6652,6 +6677,7 @@ for (const button of toolButtons) {
     if (wasJustActivatedByPencil(button)) return;
     if (button === imageToolButton) activateImageTool();
     else if (button === shapeToolButton) activateShapeTool();
+    else if (button === lassoToolButton) activateLassoTool();
     else if (button === voiceScriptToolButton) activateVoiceScriptTool();
     else selectTool(button.dataset.tool);
   });
