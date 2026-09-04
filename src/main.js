@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.83';
+const APP_VERSION = '0.1.84';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -282,9 +282,13 @@ let pageSwipe = null;
 let pageTurning = false;
 let previewPage = null;
 let nativeTouchGestureId = null;
+let nativeLassoTouchGestureId = null;
+let nativeLassoLastTouch = null;
+let lastLassoPointerDownAt = -Infinity;
 let shapeGesture = null;
 let lastPenPointerDownAt = -Infinity;
 const NATIVE_TOUCH_POINTER_ID = -2147483000;
+const NATIVE_LASSO_TOUCH_POINTER_ID = -2147482999;
 let activeTool = 'pen';
 let selectedShapeType = loadSelectedShapeType();
 let undoHistory = [];
@@ -6366,20 +6370,41 @@ function findNativeTouch(list, identifier) {
   return null;
 }
 
-function nativeTouchProxy(touch, originalEvent) {
+function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER_ID) {
   return {
-    pointerId: NATIVE_TOUCH_POINTER_ID,
+    pointerId,
     pointerType: 'touch',
     clientX: touch.clientX,
     clientY: touch.clientY,
     target: originalEvent.target,
-    preventDefault: () => originalEvent.preventDefault()
+    preventDefault: () => originalEvent.preventDefault(),
+    stopPropagation: () => originalEvent.stopPropagation?.()
   };
 }
 
 function handlePaperTouchStart(ev) {
   if (activeTool === 'shape') { ev.preventDefault(); return; }
-  if (activeTool === 'lasso') { ev.preventDefault(); return; }
+  if (activeTool === 'lasso') {
+    if (isUiControlTarget(ev.target)) return;
+    if (!ready || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false || ev.touches.length !== 1) {
+      ev.preventDefault();
+      return;
+    }
+    // 0.1.84: Safari/iPadOS può esporre il gesto del Lazo solo come Touch Event
+    // nativo. Se il Pointer Event equivalente è già arrivato, non duplichiamo.
+    if (performance.now() - lastLassoPointerDownAt < 140) {
+      ev.preventDefault();
+      return;
+    }
+    const touch = ev.touches[0];
+    const handled = lassoTool?.handlePointerDown?.(nativeTouchProxy(touch, ev, NATIVE_LASSO_TOUCH_POINTER_ID));
+    if (handled) {
+      nativeLassoTouchGestureId = touch.identifier;
+      nativeLassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
+    }
+    ev.preventDefault();
+    return;
+  }
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
   if (performance.now() - lastVoicePlacementTouchAt < 500) { ev.preventDefault(); return; }
@@ -6403,7 +6428,17 @@ function handlePaperTouchStart(ev) {
 }
 
 function handlePaperTouchMove(ev) {
-  if (activeTool === 'lasso') { ev.preventDefault(); return; }
+  if (activeTool === 'lasso') {
+    if (nativeLassoTouchGestureId != null) {
+      const touch = findNativeTouch(ev.touches, nativeLassoTouchGestureId);
+      if (touch) {
+        nativeLassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
+        lassoTool?.handlePointerMove?.(nativeTouchProxy(touch, ev, NATIVE_LASSO_TOUCH_POINTER_ID));
+      }
+    }
+    ev.preventDefault();
+    return;
+  }
   if (nativeTouchGestureId == null || !pageSwipe || !pageSwipe.nativeTouch || pageTurning) return;
   const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
   if (!touch) return;
@@ -6412,6 +6447,19 @@ function handlePaperTouchMove(ev) {
 }
 
 function handlePaperTouchEnd(ev, cancelled = false) {
+  if (activeTool === 'lasso' && nativeLassoTouchGestureId != null) {
+    const ended = findNativeTouch(ev.changedTouches, nativeLassoTouchGestureId);
+    const fallback = nativeLassoLastTouch;
+    nativeLassoTouchGestureId = null;
+    nativeLassoLastTouch = null;
+    if (ended || fallback) {
+      const touch = ended || fallback;
+      lassoTool?.handlePointerUp?.(nativeTouchProxy(touch, ev, NATIVE_LASSO_TOUCH_POINTER_ID), cancelled);
+      voiceScript?.flushIfIdle?.();
+    }
+    ev.preventDefault();
+    return;
+  }
   if (nativeTouchGestureId == null) return;
   const ended = findNativeTouch(ev.changedTouches, nativeTouchGestureId);
   if (!ended && !cancelled) return;
@@ -6644,7 +6692,10 @@ function routeGlobalPointerDown(ev) {
     return;
   }
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
-  if (activeTool === 'lasso' && !isUiControlTarget(ev.target) && lassoTool?.handlePointerDown?.(ev)) return;
+  if (activeTool === 'lasso' && !isUiControlTarget(ev.target) && lassoTool?.handlePointerDown?.(ev)) {
+    if (ev.pointerType !== 'mouse') lastLassoPointerDownAt = performance.now();
+    return;
+  }
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
