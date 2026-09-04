@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'agenda-ipad-reintegration-';
-const CACHE = 'agenda-ipad-reintegration-0.1.75';
-const CORE = ['./', './index.html', './src/main.js', './src/audio-recorder.js', './src/shapes.js', './src/sync-core.js', './src/lan-sync.js', './src/cloud-sync.js', './src/cloud-crypto.js', './src/blob-store.js', './src/backup.js', './src/cloud-auth.js', './src/styles.css', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './apple-touch-icon.png', './assets/cover-agenda-ipad.png', './assets/welcome-agenda-ipad.png', './assets/weather/sun.svg', './assets/weather/sun-cloud.svg', './assets/weather/cloud.svg', './assets/weather/rain.svg', './assets/weather/fog.svg', './assets/weather/snow.svg'];
+const CACHE = 'agenda-ipad-reintegration-0.1.78';
+const CORE = ['./', './index.html', './src/main.js', './src/audio-recorder.js', './src/voice-script.js', './src/shapes.js', './src/extra-shapes.js', './src/sync-core.js', './src/lan-sync.js', './src/cloud-sync.js', './src/cloud-crypto.js', './src/blob-store.js', './src/backup.js', './src/cloud-auth.js', './src/styles.css', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './apple-touch-icon.png', './assets/cover-agenda-ipad.png', './assets/welcome-agenda-ipad.png', './assets/weather/sun.svg', './assets/weather/sun-cloud.svg', './assets/weather/cloud.svg', './assets/weather/rain.svg', './assets/weather/fog.svg', './assets/weather/snow.svg'];
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)).then(() => self.skipWaiting()));
 });

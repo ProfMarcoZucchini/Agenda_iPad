@@ -7,17 +7,17 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="theme-color" content="#e9dfc8" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.75" />
-  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.75" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.78" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.78" />
   <link rel="stylesheet" href="./src/styles.css" />
-  <title>Agenda iPad · 0.1.75</title>
+  <title>Agenda iPad · 0.1.78</title>
 </head>
 <body class="startup-active">
   <section id="startupOverlay" class="startup-overlay" aria-label="Avvio Agenda iPad">
     <div id="coverScreen" class="startup-screen cover-screen">
       <div class="cover-card">
         <img src="./assets/cover-agenda-ipad.png" alt="Copertina Agenda iPad" draggable="false" />
-        <div class="cover-version">v0.1.75</div>
+        <div class="cover-version">v0.1.78</div>
       </div>
     </div>
     <div id="creditsScreen" class="startup-screen credits-screen" hidden>
@@ -45,6 +45,7 @@
       <header id="pageHeader" class="page-header" aria-label="Intestazione pagina">
         <button id="weatherBadge" class="weather-badge" type="button" hidden aria-label="Apri previsioni meteo dettagliate" title="Apri previsioni meteo dettagliate">
           <img id="weatherIcon" class="weather-icon" alt="" draggable="false" />
+          <span id="audioPageIndicator" class="audio-page-indicator" hidden aria-hidden="true"></span>
           <span id="weatherLocationLabel" class="weather-location-label">Posizione</span>
         </button>
         <div class="date-block">
@@ -74,6 +75,7 @@
 
       <nav class="quick-toolbar" aria-label="Strumenti rapidi di scrittura">
         <button id="penToolButton" class="tool-button active" type="button" data-tool="pen" aria-pressed="true" title="Penna"><i class="app-icon-tile" aria-hidden="true"><svg class="app-tool-icon true-color-icon" viewBox="0 0 40 40"><g transform="rotate(-45 20 20)"><polygon points="3,17 9,14 9,26 3,23" fill="#d6a46f" stroke="#664b35" stroke-width="1.5"/><polygon points="3,17 5.8,20 3,23" fill="#4f3d31"/><rect x="9" y="14" width="22" height="12" rx="1.6" fill="#f2b632" stroke="#5f4b38" stroke-width="1.6"/><path d="M13 14v12" stroke="#d18c13" stroke-width="1.1"/><rect x="31" y="14" width="6" height="12" rx="1.4" fill="#5ea6d8" stroke="#4a6472" stroke-width="1.5"/></g></svg></i><span>Penna</span></button>
+        <button id="voiceScriptToolButton" class="tool-button voice-script-tool-button" type="button" data-tool="voice" aria-pressed="false" title="Voice Script · scegli la posizione e detta" aria-label="Voice Script"><i class="app-icon-tile" aria-hidden="true"><svg class="app-tool-icon true-color-icon" viewBox="0 0 40 40"><path d="M7 21c3.8-6.5 8.5-9.6 13-9.6S29.2 14.5 33 21c-3.5 5.8-8 8.7-13 8.7S10.5 26.8 7 21z" fill="#e98593" stroke="#785056" stroke-width="1.5"/><path d="M9.8 21c3.6 1.7 6.9 2.5 10.2 2.5s6.6-.8 10.2-2.5" fill="none" stroke="#9c555f" stroke-width="1.4" stroke-linecap="round"/><path d="M14 16.6c1.9 1 3.9 1.5 6 1.5s4.1-.5 6-1.5" fill="none" stroke="#f7c4cb" stroke-width="1.2" stroke-linecap="round"/><path d="M31.5 10.5c2.4 1.1 3.9 2.8 4.5 5.1M32.8 6.9c4 1.7 6.3 4.7 6.9 8.9" fill="none" stroke="#68a8cf" stroke-width="1.7" stroke-linecap="round"/></svg></i><span>Voce</span></button>
         <button id="highlighterToolButton" class="tool-button" type="button" data-tool="highlighter" aria-pressed="false" title="Evidenziatore"><i class="app-icon-tile" aria-hidden="true"><svg class="app-tool-icon true-color-icon" viewBox="0 0 40 40"><g transform="rotate(-55 20 20)"><polygon points="4,17 10,14 10,26 4,23" fill="#f5d754" stroke="#7b6330" stroke-width="1.4"/><rect x="10" y="14" width="21" height="12" rx="1.8" fill="#f5ce43" stroke="#6c5a31" stroke-width="1.5"/><rect x="29" y="14" width="7" height="12" rx="1.3" fill="#6fb56a" stroke="#486947" stroke-width="1.5"/></g><path d="M6 35h17" stroke="#e8c536" stroke-width="3.2" stroke-linecap="round" opacity=".85"/></svg></i><span>Evid.</span></button>
         <button id="eraserToolButton" class="tool-button" type="button" data-tool="eraser" aria-pressed="false" title="Gomma"><i class="app-icon-tile" aria-hidden="true"><svg class="app-tool-icon true-color-icon" viewBox="0 0 40 40"><g transform="rotate(-48 20 20)"><rect x="8" y="12" width="24" height="16" rx="4" fill="#e77fa3" stroke="#65504b" stroke-width="1.6"/><path d="M8 22h24v6H12a4 4 0 0 1-4-4z" fill="#64a8cf" stroke="#52646d" stroke-width="1.2"/><path d="M20 12v16" stroke="#725259" stroke-width="1.1" opacity=".65"/></g><path d="M9 34h21" stroke="#665548" stroke-width="1.7" stroke-linecap="round"/></svg></i><span>Gomma</span></button>
         <button id="shapeToolButton" class="tool-button shape-tool-button" type="button" data-tool="shape" aria-pressed="false" aria-expanded="false" title="Figure geometriche · trascina per inserire"><i class="app-icon-tile" aria-hidden="true"><svg class="app-tool-icon true-color-icon" viewBox="0 0 40 40"><rect x="6" y="7" width="13" height="12" rx="2.2" fill="#8bc8ec" stroke="#356d96" stroke-width="1.6"/><circle cx="27.5" cy="12" r="5.4" fill="#f4c94f" stroke="#8e7021" stroke-width="1.5"/><path d="M9 31l7-10 7 10z" fill="#72bc86" stroke="#36704b" stroke-width="1.5" stroke-linejoin="round"/><path d="M23 20l8 11" stroke="#e57a82" stroke-width="2.4" stroke-linecap="round"/></svg></i><span>Figure</span></button>
@@ -107,17 +109,44 @@
         <button type="button" data-shape-type="thought-cloud" aria-label="Fumetto pensiero" title="Fumetto pensiero"></button>
         <button type="button" data-shape-type="heart" aria-label="Cuore" title="Cuore"></button>
         <button type="button" data-shape-type="lightning" aria-label="Fulmine" title="Fulmine"></button>
+        <button type="button" data-shape-type="trapezoid" aria-label="Trapezio" title="Trapezio"></button>
+        <button type="button" data-shape-type="parallelogram" aria-label="Parallelogramma" title="Parallelogramma"></button>
+        <button type="button" data-shape-type="octagon" aria-label="Ottagono" title="Ottagono"></button>
+        <button type="button" data-shape-type="plus" aria-label="Croce più" title="Croce +"></button>
+        <button type="button" data-shape-type="x-cross" aria-label="Croce X" title="Croce ×"></button>
+        <button type="button" data-shape-type="check" aria-label="Spunta" title="Spunta"></button>
+        <button type="button" data-shape-type="arrow-up-right" aria-label="Freccia alto destra" title="Freccia alto destra"></button>
+        <button type="button" data-shape-type="arrow-down-right" aria-label="Freccia basso destra" title="Freccia basso destra"></button>
+        <button type="button" data-shape-type="arrow-up-left" aria-label="Freccia alto sinistra" title="Freccia alto sinistra"></button>
+        <button type="button" data-shape-type="arrow-down-left" aria-label="Freccia basso sinistra" title="Freccia basso sinistra"></button>
+        <button type="button" data-shape-type="arrow-double-horizontal" aria-label="Doppia freccia orizzontale" title="Doppia freccia orizzontale"></button>
+        <button type="button" data-shape-type="arrow-double-vertical" aria-label="Doppia freccia verticale" title="Doppia freccia verticale"></button>
       </section>
 
       <section id="stylePanel" class="style-panel" hidden aria-label="Stile strumento e pagina">
         <div class="style-panel-title"><strong id="stylePanelTitle">Stile Penna</strong><span>impostazioni applicate ai nuovi tratti</span></div>
         <div id="penStyleGroup" class="style-group" data-style-for="pen">
-          <div class="style-row"><span>Colore</span><div class="style-options">
+          <div class="style-row color-style-row"><span>Colore</span><div class="style-options color-palette-grid">
             <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#111111" aria-label="Nero" title="Nero" style="--swatch:#111111"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#8e8e8e" aria-label="Grigio" title="Grigio" style="--swatch:#8e8e8e"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#a52b2b" aria-label="Rosso scuro" title="Rosso scuro" style="--swatch:#a52b2b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f02f37" aria-label="Rosso vivo" title="Rosso vivo" style="--swatch:#f02f37"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f07f31" aria-label="Arancio" title="Arancio" style="--swatch:#f07f31"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f2d21b" aria-label="Giallo" title="Giallo" style="--swatch:#f2d21b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#23724b" aria-label="Verde scuro" title="Verde scuro" style="--swatch:#23724b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#1698cf" aria-label="Azzurro" title="Azzurro" style="--swatch:#1698cf"></button>
             <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#174f9b" aria-label="Blu" title="Blu" style="--swatch:#174f9b"></button>
-            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#a52b2b" aria-label="Rosso" title="Rosso" style="--swatch:#a52b2b"></button>
-            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#23724b" aria-label="Verde" title="Verde" style="--swatch:#23724b"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#9c4ca8" aria-label="Viola" title="Viola" style="--swatch:#9c4ca8"></button>
             <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f5f3eb" aria-label="Bianco" title="Bianco" style="--swatch:#f5f3eb"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#c7c7c7" aria-label="Grigio chiaro" title="Grigio chiaro" style="--swatch:#c7c7c7"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#bd845f" aria-label="Marrone" title="Marrone" style="--swatch:#bd845f"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#ef9fb6" aria-label="Rosa" title="Rosa" style="--swatch:#ef9fb6"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#f3b82f" aria-label="Ambra" title="Ambra" style="--swatch:#f3b82f"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#eadca7" aria-label="Crema" title="Crema" style="--swatch:#eadca7"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#9ccf24" aria-label="Verde lime" title="Verde lime" style="--swatch:#9ccf24"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#8fc9d8" aria-label="Celeste" title="Celeste" style="--swatch:#8fc9d8"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#7696b7" aria-label="Blu grigio" title="Blu grigio" style="--swatch:#7696b7"></button>
+            <button class="color-swatch" type="button" data-style-tool="pen" data-style-color="#c1b6d6" aria-label="Lavanda" title="Lavanda" style="--swatch:#c1b6d6"></button>
           </div></div>
           <div class="style-row"><span>Spessore</span><div class="style-options width-options">
             <button class="width-choice" type="button" data-style-tool="pen" data-style-width="1.4" aria-label="Molto fine">XS</button>
@@ -128,12 +157,27 @@
           </div></div>
         </div>
         <div id="highlighterStyleGroup" class="style-group" data-style-for="highlighter" hidden>
-          <div class="style-row"><span>Colore</span><div class="style-options">
+          <div class="style-row color-style-row"><span>Colore</span><div class="style-options color-palette-grid">
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#111111" aria-label="Nero" title="Nero" style="--swatch:#111111"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#8e8e8e" aria-label="Grigio" title="Grigio" style="--swatch:#8e8e8e"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#a52b2b" aria-label="Rosso scuro" title="Rosso scuro" style="--swatch:#a52b2b"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f03b43" aria-label="Rosso vivo" title="Rosso vivo" style="--swatch:#f03b43"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f3a65a" aria-label="Arancio" title="Arancio" style="--swatch:#f3a65a"></button>
             <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f0d84f" aria-label="Giallo" title="Giallo" style="--swatch:#f0d84f"></button>
             <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fd38b" aria-label="Verde" title="Verde" style="--swatch:#7fd38b"></button>
-            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ef91b2" aria-label="Rosa" title="Rosa" style="--swatch:#ef91b2"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#38c286" aria-label="Verde acqua" title="Verde acqua" style="--swatch:#38c286"></button>
             <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#7fc8e8" aria-label="Azzurro" title="Azzurro" style="--swatch:#7fc8e8"></button>
-            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f3a65a" aria-label="Arancio" title="Arancio" style="--swatch:#f3a65a"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#8b77d8" aria-label="Viola" title="Viola" style="--swatch:#8b77d8"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#f5f3eb" aria-label="Bianco" title="Bianco" style="--swatch:#f5f3eb"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#c7c7c7" aria-label="Grigio chiaro" title="Grigio chiaro" style="--swatch:#c7c7c7"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#bd845f" aria-label="Marrone" title="Marrone" style="--swatch:#bd845f"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ef91b2" aria-label="Rosa" title="Rosa" style="--swatch:#ef91b2"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#ffc84a" aria-label="Ambra" title="Ambra" style="--swatch:#ffc84a"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#eadca7" aria-label="Crema" title="Crema" style="--swatch:#eadca7"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#b4dc38" aria-label="Lime" title="Lime" style="--swatch:#b4dc38"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#9bd8e4" aria-label="Celeste" title="Celeste" style="--swatch:#9bd8e4"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#86a9c9" aria-label="Blu grigio" title="Blu grigio" style="--swatch:#86a9c9"></button>
+            <button class="color-swatch" type="button" data-style-tool="highlighter" data-style-color="#c7b9df" aria-label="Lavanda" title="Lavanda" style="--swatch:#c7b9df"></button>
           </div></div>
           <div class="style-row"><span>Spessore</span><div class="style-options width-options">
             <button class="width-choice" type="button" data-style-tool="highlighter" data-style-width="8" aria-label="Molto fine">XS</button>
@@ -186,11 +230,11 @@
       <input id="imageFileInput" class="visually-hidden-file" type="file" accept="image/*" />
       <div id="imageInspector" class="image-inspector" hidden aria-label="Comandi immagine">
         <button id="importImageButton" type="button" title="Importa immagine">＋ Importa</button>
+        <button id="cutImageButton" type="button" title="Taglia immagine">✂ Taglia</button>
         <button id="cropImageButton" type="button" title="Ritaglia immagine">✂ Ritaglia</button>
+        <button id="pasteImageButton" type="button" title="Incolla immagine tagliata">▣ Incolla</button>
         <button id="rotateImageLeftButton" type="button" title="Ruota a sinistra">↶ 15°</button>
         <button id="rotateImageRightButton" type="button" title="Ruota a destra">↷ 15°</button>
-        <button id="cutImageButton" type="button" title="Taglia immagine">✂ Taglia</button>
-        <button id="pasteImageButton" type="button" title="Incolla immagine tagliata">▣ Incolla</button>
       </div>
       <div id="imageCropOverlay" class="image-inspector image-crop-overlay" hidden aria-label="Ritaglio immagine">
         <div class="image-crop-dialog" role="dialog" aria-modal="true" aria-labelledby="imageCropTitle">
@@ -215,6 +259,7 @@
       </div>
 
       <svg id="shapeOverlay" class="shape-overlay" hidden aria-label="Area inserimento figure geometriche" preserveAspectRatio="none"><path id="shapePreviewPath" class="shape-preview-path" d=""></path></svg>
+      <div id="voiceScriptOverlay" class="voice-script-overlay" hidden aria-hidden="true"><div id="voiceScriptPreview" class="voice-script-preview">Parla…</div></div>
 
       <canvas id="inkCanvas" aria-label="Area di scrittura Apple Pencil"></canvas>
 
@@ -224,7 +269,7 @@
         <button id="markLagButton" class="footer-button diagnostic-hidden" type="button" tabindex="-1" aria-hidden="true">LAG</button>
         <div class="copyright-block" aria-label="Autore e versione">
           <button id="authorCreditsButton" class="author-credits-button" type="button" title="Informazioni e crediti">© Marco Zucchini</button>
-          <button id="versionButton" class="version-button footer-version-button" type="button" title="Versione e diagnostica">V.0.1.75</button>
+          <button id="versionButton" class="version-button footer-version-button" type="button" title="Versione e diagnostica">V.0.1.78</button>
         </div>
         <button id="settingsButton" class="settings-button settings-center-button footer-icon-button" type="button" aria-expanded="false" title="Impostazioni" aria-label="Impostazioni">
           <svg class="gear-icon true-footer-icon" viewBox="0 0 40 40" aria-hidden="true" focusable="false"><path d="M17 4h6l1 4a13 13 0 0 1 2.7 1.5l4-1 3 5.2-3 3a13 13 0 0 1 0 3.2l3 3-3 5.2-4-1a13 13 0 0 1-2.7 1.5l-1 4h-6l-1-4a13 13 0 0 1-2.7-1.5l-4 1-3-5.2 3-3a13 13 0 0 1 0-3.2l-3-3 3-5.2 4 1A13 13 0 0 1 16 8z" fill="#75b9c1" stroke="#53645f" stroke-width="1.4"/><circle cx="20" cy="18.3" r="5.6" fill="#f2c85b" stroke="#6a5a3e" stroke-width="1.4"/><circle cx="20" cy="18.3" r="2.3" fill="#fff1bd"/></svg>
@@ -260,7 +305,7 @@
   <section id="settingsPanel" class="settings-panel" hidden aria-label="Impostazioni Agenda iPad">
     <div class="settings-card">
       <header class="settings-header">
-        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.75</p></div>
+        <div><h2>Impostazioni</h2><p>Backup portabile e versionato · Agenda iPad 0.1.78</p></div>
         <button id="closeSettingsButton" class="settings-close" type="button" aria-label="Chiudi impostazioni">×</button>
       </header>
       <nav class="settings-tabs" role="tablist" aria-label="Sezioni impostazioni">
@@ -297,14 +342,14 @@
           <div class="settings-grid">
             <label class="setting-field"><span>Hub LAN</span><input id="lanHubUrl" type="url" inputmode="url" autocomplete="off" placeholder="https://PC-AGENDA.local:8787"></label>
             <label class="setting-field"><span>Codice gruppo LAN</span><input id="lanSyncKey" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="codice mostrato dall’hub"></label>
-            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.75</option></select></label>
+            <label class="setting-field"><span>Modalità</span><select id="lanSyncMode" disabled><option>Manuale · 0.1.78</option></select></label>
           </div>
           <div class="backup-actions lan-sync-actions">
             <button id="lanTestButton" type="button">Test LAN</button>
             <button id="lanSyncNowButton" class="primary" type="button">Sincronizza adesso</button>
           </div>
           <div id="lanSyncStatus" class="backup-status">LAN non ancora verificata.</div>
-          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.75 è Agenda Cloud Sync Aruba.</p>
+          <p class="settings-note"><strong>Ink priority:</strong> nessuna rete nel <code>pointermove</code>. Se inizia un tratto mentre è attiva una richiesta LAN, la richiesta viene interrotta. Il trasporto LAN resta disponibile come percorso di compatibilità e collaudo; il percorso principale della 0.1.78 è Agenda Cloud Sync Aruba.</p>
           <p class="settings-note">Se Agenda è aperta da HTTPS, iPadOS/Safari richiede anche un hub LAN HTTPS con certificato attendibile.</p>
         </section>
 
@@ -390,6 +435,19 @@
             </div>
             <p class="settings-note"><strong>Default iniziale:</strong> Locale · Opus 48 kbit/s mono. Ogni nuova registrazione può comunque cambiare destinazione direttamente dal pannello Registratore prima di premere REC.</p>
             <p class="settings-note">Le registrazioni usano un archivio audio separato e non vengono inserite nei normali ZIP di Backup Agenda, evitando che i backup diventino molto pesanti. Per una seconda copia scegli Locale+Drive o Locale+OneDrive.</p>
+          </section>
+
+          <section class="settings-section voice-script-settings-section">
+            <h3>Voice Script</h3>
+            <div class="settings-grid">
+              <label class="setting-field"><span>Lingua riconoscimento</span><select id="voiceScriptLanguage"><option value="it-IT">Italiano</option><option value="en-US">English (US)</option><option value="en-GB">English (UK)</option><option value="fr-FR">Français</option><option value="de-DE">Deutsch</option><option value="es-ES">Español</option></select></label>
+              <label class="setting-field"><span>Font testo</span><select id="voiceScriptFont"><option value="Snell Roundhand">Corsivo Agenda</option><option value="Arial">Sans serif</option><option value="Georgia">Serif</option><option value="Menlo">Monospaziato</option></select></label>
+              <label class="setting-field"><span>Dimensione</span><select id="voiceScriptFontSize"><option value="24">Piccolo</option><option value="32" selected>Medio</option><option value="40">Grande</option><option value="48">Molto grande</option></select></label>
+              <label class="setting-field"><span>Colore</span><select id="voiceScriptColor"><option value="pen">Colore Penna corrente</option><option value="#111111">Nero</option><option value="#174f9b">Blu</option><option value="#a52b2b">Rosso</option><option value="#23724b">Verde</option><option value="#f5f3eb">Bianco</option></select></label>
+            </div>
+            <div class="audio-option-grid"><label class="setting-check"><input id="voiceScriptInterim" type="checkbox" checked><span>Mostra il testo provvisorio durante la dettatura</span></label></div>
+            <div id="voiceScriptSettingsStatus" class="backup-status">Verifica Voice Script…</div>
+            <p class="settings-note"><strong>Priorità Ink sempre attiva:</strong> durante un tratto Apple Pencil il riconoscimento può continuare, ma Voice Script non aggiorna grafica, database o Sync. Il testo definitivo viene salvato solo quando Ink è libero. La punteggiatura dipende dal motore di riconoscimento disponibile su iPadOS.</p>
           </section>
 
           <section class="settings-section audio-storage-section">
@@ -484,7 +542,7 @@
 
   <section id="reportPanel" class="report-panel" hidden aria-label="Diagnostica Apple Pencil">
     <div class="report-card">
-      <h2>Diagnostica Pencil + Sync Core 0.1.75</h2>
+      <h2>Diagnostica Pencil + Sync Core 0.1.78</h2>
       <textarea id="reportText" readonly spellcheck="false"></textarea>
       <div class="report-actions">
         <button id="clearPageButton" type="button" class="danger">PULISCI PAGINA TEST</button>

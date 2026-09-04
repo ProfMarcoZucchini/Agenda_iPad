@@ -6,8 +6,14 @@ import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { initAudioRecorder } from './audio-recorder.js';
-import { SHAPE_TYPES, SHAPE_LABELS, buildShapePoints, shapePathData, shapeIconPathData } from './shapes.js';
-const APP_VERSION = '0.1.75';
+import { initVoiceScript } from './voice-script.js';
+import { SHAPE_TYPES as WINDOWS_SHAPE_TYPES, SHAPE_LABELS as WINDOWS_SHAPE_LABELS, buildShapePoints as buildWindowsShapePoints, shapePathData, shapeIconPathData as windowsShapeIconPathData } from './shapes.js';
+import { EXTRA_SHAPE_TYPES, EXTRA_SHAPE_LABELS, buildExtraShapePoints, extraShapeIconPathData } from './extra-shapes.js';
+const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
+const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
+const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
+const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
+const APP_VERSION = '0.1.78';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 3;
 const STORE = 'pages';
@@ -51,8 +57,8 @@ const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
 const SHAPE_TYPE_STORAGE_KEY = 'agenda-ipad-shape-type-v1';
 const CALENDAR_VISIBILITY_STORAGE_KEY = 'agenda-ipad-calendar-visible-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
-  pen: { colors: ['#111111', '#174f9b', '#a52b2b', '#23724b', '#f5f3eb'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
-  highlighter: { colors: ['#f0d84f', '#7fd38b', '#ef91b2', '#7fc8e8', '#f3a65a'], widths: [8, 12, 15, 20, 26] },
+  pen: { colors: ['#111111','#8e8e8e','#a52b2b','#f02f37','#f07f31','#f2d21b','#23724b','#1698cf','#174f9b','#9c4ca8','#f5f3eb','#c7c7c7','#bd845f','#ef9fb6','#f3b82f','#eadca7','#9ccf24','#8fc9d8','#7696b7','#c1b6d6'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
+  highlighter: { colors: ['#111111','#8e8e8e','#a52b2b','#f03b43','#f3a65a','#f0d84f','#7fd38b','#38c286','#7fc8e8','#8b77d8','#f5f3eb','#c7c7c7','#bd845f','#ef91b2','#ffc84a','#eadca7','#b4dc38','#9bd8e4','#86a9c9','#c7b9df'], widths: [8, 12, 15, 20, 26] },
   eraser: { widths: [12, 16, 22, 30, 40] }
 });
 const UNDO_LIMIT = 10;
@@ -96,6 +102,7 @@ const clearPageButton = document.getElementById('clearPageButton');
 const baselineLabel = document.querySelector('.baseline-label');
 const toolButtons = [...document.querySelectorAll('.tool-button[data-tool]')];
 const eraserToolButton = document.getElementById('eraserToolButton');
+const voiceScriptToolButton = document.getElementById('voiceScriptToolButton');
 const shapeToolButton = document.getElementById('shapeToolButton');
 const shapePalette = document.getElementById('shapePalette');
 const shapeChoiceButtons = [...document.querySelectorAll('[data-shape-type]')];
@@ -156,6 +163,8 @@ const cloudSyncStatus = document.getElementById('cloudSyncStatus');
 const saintNameButton = document.getElementById('saintNameButton');
 const weatherBadge = document.getElementById('weatherBadge');
 const weatherIcon = document.getElementById('weatherIcon');
+const audioPageIndicator = document.getElementById('audioPageIndicator');
+const audioButton = document.getElementById('audioButton');
 const weatherLocationLabel = document.getElementById('weatherLocationLabel');
 const weatherDetailPanel = document.getElementById('weatherDetailPanel');
 const weatherDetailTitle = document.getElementById('weatherDetailTitle');
@@ -274,6 +283,8 @@ let globalPageStyle = { ...DEFAULT_PAGE_STYLE };
 let pageStyleScope = 'current';
 let backupFoundation = null;
 let audioRecorder = null;
+let voiceScript = null;
+let lastVoicePlacementTouchAt = -Infinity;
 let syncFoundation = null;
 let syncStats = null;
 let lanTransport = null;
@@ -709,8 +720,8 @@ async function setPageTemplate(template) {
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const styleTool = activeTool === 'shape' ? 'pen' : activeTool;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', shape: 'Figure', image: 'Immagine' };
+  const styleTool = (activeTool === 'shape' || activeTool === 'voice') ? 'pen' : activeTool;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', shape: 'Figure', voice: 'Voice Script', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== styleTool;
   const effectiveColor = currentPageKind === 'planner-timetable' && styleTool === 'pen'
@@ -750,18 +761,22 @@ function setStyleWidth(tool, width) {
   statusLabel.textContent = 'spessore impostato';
 }
 
+function closeShapePalette() {
+  if (shapePalette) shapePalette.hidden = true;
+  shapeToolButton?.setAttribute('aria-expanded', 'false');
+}
+
 function closeStylePanel() {
   if (!stylePanel) return;
   if (!stylePanel.hidden) stylePanel.hidden = true;
   styleButton?.setAttribute('aria-expanded', 'false');
-  if (shapePalette && activeTool === 'shape') shapePalette.hidden = false;
 }
 
 function toggleStylePanel() {
   if (!stylePanel || drawing || pageTurning) return;
   const willOpen = stylePanel.hidden;
   stylePanel.hidden = !willOpen;
-  if (shapePalette && activeTool === 'shape') shapePalette.hidden = willOpen;
+  if (willOpen) closeShapePalette();
   styleButton?.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
   if (willOpen) updateStyleUi();
 }
@@ -2122,6 +2137,22 @@ function configurePageRoot(root, descriptor) {
   if (hours) hours.hidden = descriptor.kind === 'note' || planner;
 }
 
+let audioIndicatorSerial = 0;
+async function refreshAudioPageIndicator() {
+  if (!audioPageIndicator) return;
+  const serial = ++audioIndicatorSerial;
+  const descriptor = pageDescriptor();
+  if (!audioRecorder?.countForPage) { audioPageIndicator.hidden = true; return; }
+  try {
+    const count = await audioRecorder.countForPage(descriptor.key);
+    if (serial !== audioIndicatorSerial || currentPageKey() !== descriptor.key) return;
+    audioPageIndicator.hidden = !(count > 0);
+    audioPageIndicator.title = count > 0 ? `${count} registrazion${count === 1 ? 'e' : 'i'} associat${count === 1 ? 'a' : 'e'} alla pagina` : '';
+  } catch {
+    if (serial === audioIndicatorSerial) audioPageIndicator.hidden = true;
+  }
+}
+
 function updateHeader() {
   setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   configurePageRoot(paper, pageDescriptor());
@@ -2143,6 +2174,7 @@ function updateHeader() {
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
     else baselineLabel.textContent = 'AGENDA · PLANNER · INK STABILE';
   }
+  void refreshAudioPageIndicator();
 }
 
 function notesMetaKey(dateString) {
@@ -4242,6 +4274,10 @@ function updateToolUi() {
     button.classList.toggle('active', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
+  if (voiceScriptToolButton && voiceScript?.isListening?.()) {
+    voiceScriptToolButton.classList.add('voice-listening');
+    voiceScriptToolButton.setAttribute('aria-pressed', 'true');
+  }
   // 0.1.19: Undo/Redo restano sempre target Pointer reali. Lo stato
   // disponibile/non disponibile è semantico e visivo, non usa HTML disabled.
   if (undoButton) {
@@ -4271,14 +4307,35 @@ function activateShapeTool() {
   if (opening) updateShapePaletteUi();
 }
 
+function activateVoiceScriptTool() {
+  if (drawing || pageTurning) return;
+  if (voiceScript?.isActive?.()) {
+    voiceScript.stopAndFinalize('toolbar');
+    if (activeTool === 'voice') selectTool('pen');
+    updateToolUi();
+    return;
+  }
+  if (!voiceScript?.isSupported?.()) {
+    statusLabel.textContent = 'Voice Script non disponibile su questo Safari/iPadOS';
+    return;
+  }
+  if (audioRecorder?.isRecording?.()) {
+    statusLabel.textContent = 'termina prima la registrazione audio';
+    return;
+  }
+  selectTool('voice');
+  statusLabel.textContent = 'Voice Script · tocca con Pencil o dito il punto di inserimento';
+}
+
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser', 'shape', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
   if (tool !== 'shape') cancelShapeGesture();
   activeTool = tool;
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
   paper?.classList.toggle('shape-mode', tool === 'shape');
+  paper?.classList.toggle('voice-script-armed', tool === 'voice');
   paper?.classList.toggle('image-edit-mode', tool === 'image');
   if (shapePalette) shapePalette.hidden = tool !== 'shape';
   shapeOverlay?.toggleAttribute('hidden', tool !== 'shape');
@@ -4290,6 +4347,7 @@ function selectTool(tool) {
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore'
     : tool === 'eraser' ? 'gomma'
     : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · trascina o fai clic`
+    : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
 }
 
@@ -5036,6 +5094,102 @@ function finalizeStroke(reason = 'pointerup') {
   if (pageChanged) scheduleSave();
 }
 
+function wrapVoiceScriptText(text, xNorm, fontFamily, fontSizePx) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  const width = Math.max(1, canvas.clientWidth || rect?.width || 1024);
+  const xPx = Math.max(0, Math.min(width, Number(xNorm) * width));
+  const maxWidth = Math.max(90, width - xPx - 16);
+  ctx.save();
+  ctx.font = `${Math.max(18, Math.min(72, Number(fontSizePx) || 32))}px "${safeCanvasFontFamily(fontFamily) || 'Snell Roundhand'}", "Apple Chancery", "Segoe Script", cursive`;
+  const words = raw.split(/\s+/);
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else line = candidate;
+  }
+  if (line) lines.push(line);
+  ctx.restore();
+  return lines.join('\n');
+}
+
+async function commitVoiceScriptText(payload = {}) {
+  const descriptor = { ...(payload.descriptor || pageDescriptor()) };
+  const text = wrapVoiceScriptText(payload.text, payload.x, payload.fontFamily, payload.fontSizePx);
+  if (!text || !descriptor.key) return false;
+  const height = Math.max(1, canvas.clientHeight || rect?.height || 1366);
+  const item = {
+    id: makeId(),
+    kind: 'text',
+    tool: 'voice-text',
+    source: 'voice-script',
+    text,
+    x: Math.max(0, Math.min(1, Number(payload.x) || 0)),
+    y: Math.max(0, Math.min(1, Number(payload.y) || 0)),
+    color: payload.color || toolStrokeStyle('pen').color || PEN_COLOR,
+    fontFamily: payload.fontFamily || 'Snell Roundhand',
+    fontSizeNorm: Math.max(18, Math.min(72, Number(payload.fontSizePx) || 32)) / height,
+    language: payload.language || 'it-IT',
+    createdAt: payload.createdAt || new Date().toISOString(),
+    modifiedAt: new Date().toISOString()
+  };
+
+  if (descriptor.key === currentPageKey()) {
+    strokes.push(item);
+    rememberUndo({ type:'add-stroke', stroke:item, index:strokes.length - 1 });
+    syncFoundation?.recordStrokeAdded(descriptor, item);
+    renderAll();
+    dirty = true;
+    scheduleSave();
+    return true;
+  }
+
+  try {
+    await openDb();
+    const record = await getRecord(descriptor.key);
+    const pageStrokes = [...(Array.isArray(record?.strokes) ? record.strokes : []), item];
+    const targetStyle = normalizePageStyle(record?.pageStyle || globalPageStyle);
+    const targetImages = Array.isArray(record?.images) ? record.images : [];
+    syncFoundation?.recordStrokeAdded(descriptor, item);
+    return await persistSnapshot(descriptor, pageStrokes, false, targetStyle, targetImages);
+  } catch (err) {
+    console.warn('Voice Script: salvataggio pagina origine non riuscito', err);
+    return false;
+  }
+}
+
+function beginVoiceScriptPlacement(ev) {
+  if (activeTool !== 'voice') return false;
+  if (!ready || pageTurning || pageStyleBulkBusy) { ev.preventDefault?.(); return true; }
+  if (isUiControlTarget(ev.target)) return true;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return true;
+  rect = canvas.getBoundingClientRect();
+  if (!pointInsideWritableArea(ev)) { ev.preventDefault?.(); return true; }
+  const point = normalizeEvent(ev);
+  if (!pointAllowed(point)) { ev.preventDefault?.(); return true; }
+  const style = toolStrokeStyle('pen');
+  const started = voiceScript?.startAt?.({
+    x: point.x,
+    y: point.y,
+    descriptor: { ...pageDescriptor() },
+    penColor: style.color
+  });
+  if (started) {
+    if (ev.pointerType === 'touch') lastVoicePlacementTouchAt = performance.now();
+    activeTool = 'pen';
+    paper?.classList.remove('voice-script-armed');
+    updateToolUi();
+    updateStyleUi();
+  }
+  ev.preventDefault?.();
+  ev.stopPropagation?.();
+  return true;
+}
+
 function isUiControlTarget(target) {
   return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
@@ -5046,6 +5200,7 @@ function getUiButtonTarget(target) {
 
 function activateUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
+  if (button !== shapeToolButton && !button.matches('[data-shape-type]')) closeShapePalette();
   if (button === undoButton && !undoHistory.length) return;
   if (button === redoButton && !redoHistory.length) return;
   if (button === imageToolButton) {
@@ -5054,6 +5209,10 @@ function activateUiButton(button) {
   }
   if (button === shapeToolButton) {
     activateShapeTool();
+    return;
+  }
+  if (button === voiceScriptToolButton) {
+    activateVoiceScriptTool();
     return;
   }
   if (button.matches('.tool-button[data-tool]')) {
@@ -5905,6 +6064,13 @@ function handlePaperTouchStart(ev) {
   if (activeTool === 'shape') { ev.preventDefault(); return; }
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
+  if (performance.now() - lastVoicePlacementTouchAt < 500) { ev.preventDefault(); return; }
+  if (activeTool === 'voice') {
+    const touch = ev.touches[0];
+    beginVoiceScriptPlacement(nativeTouchProxy(touch, ev));
+    ev.preventDefault();
+    return;
+  }
   if (isUiControlTarget(ev.target)) return;
   if (!paper.contains(ev.target)) return;
 
@@ -6028,6 +6194,13 @@ const directUiButtons = [...new Set([
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
 
+// 0.1.77 — qualsiasi altro comando UI richiude la finestra Figure.
+document.addEventListener('pointerdown', (ev) => {
+  const button = getUiButtonTarget(ev.target);
+  if (!button || button === shapeToolButton || button.matches('[data-shape-type]')) return;
+  closeShapePalette();
+}, { passive:true, capture:true });
+
 // 0.1.19 — gestione delegata del pannello Stile. Pencil e dito applicano
 // l'opzione al pointerdown, risalendo dal target interno al relativo button.
 function handleStylePanelDirectPointer(ev) {
@@ -6110,6 +6283,7 @@ function routeGlobalPointerDown(ev) {
     ev.preventDefault();
     return;
   }
+  if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
@@ -6121,8 +6295,16 @@ function routeGlobalPointerMove(ev) {
   if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
-function routeGlobalPointerUp(ev) { if (endShapeGesture(ev, false)) return; handlePointerUp(ev); }
-function routeGlobalPointerCancel(ev) { if (endShapeGesture(ev, true)) return; handlePointerCancel(ev); }
+function routeGlobalPointerUp(ev) {
+  if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
+  handlePointerUp(ev);
+  voiceScript?.flushIfIdle?.();
+}
+function routeGlobalPointerCancel(ev) {
+  if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
+  handlePointerCancel(ev);
+  voiceScript?.flushIfIdle?.();
+}
 
 paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
 paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });
@@ -6301,6 +6483,7 @@ for (const button of toolButtons) {
     if (wasJustActivatedByPencil(button)) return;
     if (button === imageToolButton) activateImageTool();
     else if (button === shapeToolButton) activateShapeTool();
+    else if (button === voiceScriptToolButton) activateVoiceScriptTool();
     else selectTool(button.dataset.tool);
   });
 }
@@ -6635,8 +6818,25 @@ async function bootAgenda() {
       getPageDescriptor: () => ({ ...pageDescriptor() }),
       setAppStatus: (message) => { statusLabel.textContent = message; },
       isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
-      cloudBridge: backupFoundation?.cloudBridge || null
+      cloudBridge: backupFoundation?.cloudBridge || null,
+      onRecordingsChanged: (pageKey) => { if (pageKey === currentPageKey()) void refreshAudioPageIndicator(); }
     });
+    void refreshAudioPageIndicator();
+  }
+  if (!voiceScript) {
+    voiceScript = initVoiceScript({
+      getPageDescriptor: () => ({ ...pageDescriptor() }),
+      getPenColor: () => toolStrokeStyle('pen').color || PEN_COLOR,
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isAudioRecorderActive: () => Boolean(audioRecorder?.isRecording?.()),
+      onCommit: commitVoiceScriptText,
+      onStatus: (message) => { statusLabel.textContent = message; },
+      onStateChange: () => updateToolUi()
+    });
+    audioButton?.addEventListener('pointerdown', () => {
+      if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('registratore-audio');
+      if (activeTool === 'voice') selectTool('pen');
+    }, { capture:true, passive:true });
   }
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});

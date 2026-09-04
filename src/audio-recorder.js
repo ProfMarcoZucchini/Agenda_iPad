@@ -8,6 +8,7 @@ const MIN_FREE_RATIO = 0.05;
 const EMERGENCY_FREE_RATIO = 0.03;
 const CHUNK_MS = 10000;
 const AUDIO_OPEN_SETTINGS_KEY = 'agenda-ipad-audio-open-settings-v1';
+const AUDIO_QUICK_DOUBLE_TAP_MS = 350;
 
 const DEFAULT_AUDIO_CONFIG = Object.freeze({
   destination: 'local',
@@ -216,7 +217,7 @@ function pageLabel(descriptor) {
 export function initAudioRecorder(options = {}) {
   const {
     appVersion='0.0.0', getPageDescriptor=() => ({ key:'unknown', date:'', kind:'agenda' }),
-    setAppStatus=() => {}, isRealtimeBusy=() => false, cloudBridge=null
+    setAppStatus=() => {}, isRealtimeBusy=() => false, cloudBridge=null, onRecordingsChanged=() => {}
   } = options;
 
   const audioButton = document.getElementById('audioButton');
@@ -283,9 +284,13 @@ export function initAudioRecorder(options = {}) {
   let pendingRetryId = '';
   let retryTimer = 0;
   let directActivation = new WeakMap();
+  let audioTapTimer = 0;
+  let lastAudioTapAt = -Infinity;
+  let recordingStartPending = false;
 
   const setStatus = (message) => { if (audioStatus) audioStatus.textContent = message; };
   const setLibraryStatus = (message) => { if (libraryStatus) libraryStatus.textContent = message; };
+  const notifyRecordingsChanged = (pageKey) => { try { onRecordingsChanged?.(pageKey); } catch {} };
 
   function switchSettingsTab(name) {
     const audioActive = name === 'recording';
@@ -458,13 +463,15 @@ export function initAudioRecorder(options = {}) {
   function resumeAfterInk() { schedulePendingRetry(); }
 
   function updateControls() {
-    const recording = Boolean(activeSession);
-    if (recordButton) recordButton.disabled = recording;
-    if (stopButton) stopButton.disabled = !recording;
+    const sessionActive = Boolean(activeSession);
+    const capturing = Boolean(activeSession && !activeSession.stopping && activeSession.recorder?.state !== 'inactive');
+    if (recordButton) recordButton.disabled = sessionActive;
+    if (stopButton) stopButton.disabled = !capturing;
     const hasLoaded = Boolean(loadedRecordingId && player?.src);
-    for (const button of [startButton, backButton, playButton, forwardButton, endButton]) if (button) button.disabled = recording || !hasLoaded;
-    if (destinationSelect) destinationSelect.disabled = recording;
-    audioButton?.classList.toggle('recording', recording);
+    for (const button of [startButton, backButton, playButton, forwardButton, endButton]) if (button) button.disabled = sessionActive || !hasLoaded;
+    if (destinationSelect) destinationSelect.disabled = sessionActive;
+    // Rosso fino al consolidamento locale: l'eventuale upload Cloud non prolunga lo stato REC.
+    audioButton?.classList.toggle('recording', sessionActive);
     audioButton?.setAttribute('aria-pressed', panel && !panel.hidden ? 'true' : 'false');
   }
 
@@ -530,13 +537,15 @@ export function initAudioRecorder(options = {}) {
     clearTimeout(autoStopTimer); autoStopTimer = 0;
   }
 
-  async function startRecording() {
-    if (activeSession) return;
+  async function startRecording({ quick=false } = {}) {
+    if (activeSession || recordingStartPending) return;
+    recordingStartPending = true;
     try {
       if (!globalThis.MediaRecorder || !navigator.mediaDevices?.getUserMedia) throw new Error('Registrazione audio non supportata da questo browser');
       await ensureStorageHeadroom();
       const destination = destinationSelect?.value && DESTINATIONS[destinationSelect.value] ? destinationSelect.value : config.destination;
-      await ensureCloudReady(destination);
+      // Anche con destinazione Cloud la registrazione parte localmente: la rete viene verificata
+      // solo dopo lo Stop, così un Cloud temporaneamente offline non impedisce di registrare.
       const profile = resolveProfile(config.codecProfile);
       if (!profile) throw new Error('Codec selezionato non supportato su questo iPad');
       const descriptor = { ...getPageDescriptor() };
@@ -555,7 +564,7 @@ export function initAudioRecorder(options = {}) {
       const recorder = new MediaRecorder(stream, recorderOptions);
       const id = makeId('aud-session');
       activeSession = {
-        id, recorder, stream, descriptor, destination, profile,
+        id, recorder, stream, descriptor, destination, profile, quickMode:Boolean(quick),
         startedAt:new Date().toISOString(), startedAtMs:Date.now(), queue:[], nextChunkIndex:0,
         persisting:false, flushTimer:0, stopReason:'manuale'
       };
@@ -565,8 +574,11 @@ export function initAudioRecorder(options = {}) {
         stopRecording('errore').catch(() => {});
       });
       recorder.start(CHUNK_MS);
-      openPanel();
-      setStatus(`Registrazione in corso · ${pageLabel(descriptor)} · ${profile.label}`);
+      if (quick) {
+        if (panel) panel.hidden = true;
+        audioButton?.setAttribute('aria-pressed', 'false');
+      } else openPanel();
+      setStatus(`${quick ? 'Registrazione veloce' : 'Registrazione'} in corso · ${pageLabel(descriptor)} · ${profile.label}`);
       setAppStatus('registrazione audio');
       if (audioTime) audioTime.textContent = '0:00 · REC';
       startRecordingClock();
@@ -576,6 +588,8 @@ export function initAudioRecorder(options = {}) {
       setStatus(err.message || String(err));
       setAppStatus('registrazione non avviata');
       updateControls();
+    } finally {
+      recordingStartPending = false;
     }
   }
 
@@ -633,6 +647,7 @@ export function initAudioRecorder(options = {}) {
     const session = activeSession;
     if (!session || session.stopping) return;
     session.stopping = true;
+    updateControls();
     stopRecordingClock();
     session.stopReason = reason;
     setStatus('Finalizzo registrazione…');
@@ -660,7 +675,13 @@ export function initAudioRecorder(options = {}) {
         blob, appVersion
       };
       await dbPut(RECORDINGS_STORE, recording);
+      notifyRecordingsChanged(recording.pageKey);
       await deleteChunks(session.id);
+      // La registrazione è ormai definitivamente consolidata nell'archivio locale.
+      // Da questo punto l'icona microfono può tornare allo stato normale;
+      // l'eventuale upload Cloud resta una fase separata e subordinata alla Pencil.
+      if (activeSession === session) activeSession = null;
+      updateControls();
       const cloudMeta = destinationMeta(session.destination);
       if (cloudMeta.provider) {
         setStatus(`Registrazione salvata localmente · trasferimento ${cloudMeta.label}…`);
@@ -686,7 +707,7 @@ export function initAudioRecorder(options = {}) {
       setAppStatus('errore registrazione');
     } finally {
       clearTimeout(session.flushTimer);
-      activeSession = null;
+      if (activeSession === session) activeSession = null;
       updateControls();
       refreshStorageStatus();
     }
@@ -758,6 +779,7 @@ export function initAudioRecorder(options = {}) {
       } finally { finishNetworkOperation(controller); }
     }
     await dbDelete(RECORDINGS_STORE, recording.id);
+    notifyRecordingsChanged(recording.pageKey);
     if (loadedRecordingId === recording.id) clearPlayerUrl();
   }
 
@@ -851,6 +873,68 @@ export function initAudioRecorder(options = {}) {
     updatePlayerTime();
   }
 
+  function handleAudioButtonActivation(ev) {
+    const now = performance.now();
+    if (activeSession?.stopping) {
+      setStatus('Finalizzo e salvo la registrazione…');
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      return;
+    }
+    // Durante la registrazione veloce un singolo tap conclude e salva subito.
+    if (activeSession?.quickMode && !activeSession.stopping) {
+      clearTimeout(audioTapTimer);
+      audioTapTimer = 0;
+      lastAudioTapAt = -Infinity;
+      void stopRecording('registrazione veloce');
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      return;
+    }
+    // Durante una registrazione avviata dal pannello, il microfono riporta semplicemente al pannello.
+    if (activeSession && !activeSession.stopping) {
+      openPanel();
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      return;
+    }
+    if (recordingStartPending) {
+      ev?.preventDefault?.();
+      ev?.stopPropagation?.();
+      return;
+    }
+    if (now - lastAudioTapAt <= AUDIO_QUICK_DOUBLE_TAP_MS) {
+      clearTimeout(audioTapTimer);
+      audioTapTimer = 0;
+      lastAudioTapAt = -Infinity;
+      void startRecording({ quick:true });
+    } else {
+      lastAudioTapAt = now;
+      clearTimeout(audioTapTimer);
+      audioTapTimer = setTimeout(() => {
+        audioTapTimer = 0;
+        lastAudioTapAt = -Infinity;
+        if (!activeSession && !recordingStartPending) togglePanel();
+      }, AUDIO_QUICK_DOUBLE_TAP_MS);
+    }
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+  }
+
+  function bindAudioButtonQuickGesture() {
+    if (!(audioButton instanceof HTMLButtonElement)) return;
+    audioButton.addEventListener('pointerdown', (ev) => {
+      if (ev.pointerType === 'mouse') return;
+      directActivation.set(audioButton, performance.now());
+      handleAudioButtonActivation(ev);
+    }, { passive:false });
+    audioButton.addEventListener('click', (ev) => {
+      const last = directActivation.get(audioButton);
+      if (Number.isFinite(last) && performance.now()-last < 650) { ev.preventDefault(); return; }
+      handleAudioButtonActivation(ev);
+    });
+  }
+
   function bindButton(button, handler) {
     if (!(button instanceof HTMLButtonElement)) return;
     button.addEventListener('pointerdown', (ev) => {
@@ -866,7 +950,7 @@ export function initAudioRecorder(options = {}) {
     });
   }
 
-  bindButton(audioButton, togglePanel);
+  bindAudioButtonQuickGesture();
   bindButton(closePanelButton, closePanel);
   bindButton(recordButton, () => startRecording());
   bindButton(stopButton, () => stopRecording('manuale'));
@@ -962,9 +1046,12 @@ export function initAudioRecorder(options = {}) {
 
   return {
     openPanel, closePanel, openLibrary, refreshStorageStatus,
-    isRecording:() => Boolean(activeSession),
+    countForPage: async (pageKey) => (await listRecordingsForPage(pageKey)).length,
+    isRecording:() => Boolean(activeSession && !activeSession.stopping && activeSession.recorder?.state !== 'inactive'),
+    startQuickRecording:() => startRecording({ quick:true }),
+    stopQuickRecording:() => stopRecording('registrazione veloce'),
     suspendForInk,
     resumeAfterInk,
-    destroy:() => { clearInterval(emergencyTimer); clearTimeout(retryTimer); suspendForInk(); stopRecordingClock(); clearPlayerUrl(); }
+    destroy:() => { clearInterval(emergencyTimer); clearTimeout(retryTimer); clearTimeout(audioTapTimer); suspendForInk(); stopRecordingClock(); clearPlayerUrl(); }
   };
 }
