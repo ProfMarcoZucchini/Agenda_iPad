@@ -2715,7 +2715,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   white-space:normal;
   text-align:right;
 }
-/* 0.1.87 — livello input dedicato Lazo.
+/* 0.1.88 — livello input dedicato Lazo.
    È un bersaglio DOM reale per Pencil/touch e non condivide il canvas Ink. */
 .lasso-input-shield {
   position:absolute;
