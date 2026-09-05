@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.89';
+const APP_VERSION = '0.1.90';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -6962,7 +6962,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.89 — ingresso primario reale: livello trasparente dedicato.
+// 0.1.90 — ingresso primario reale: livello trasparente dedicato.
 // Questi listener NON dipendono dal target canvas né da activeTool già coerente.
 function handleLassoShieldPointerDown(ev) {
   if (!ensureLassoInputShieldRuntime()) return;
@@ -6995,7 +6995,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.89 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
+// 0.1.90 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointerup', (ev) => handleLassoShieldPointerUp(ev, false), { passive:false, capture:true });

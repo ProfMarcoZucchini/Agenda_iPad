@@ -72,6 +72,23 @@ function svgPath(points, width, height, close = false) {
   return chunks.join(' ');
 }
 
+function appendReleasePointIfNeeded(points, point, widthPx, heightPx) {
+  if (!Array.isArray(points) || !points.length || !point) return points;
+  const last = points.at(-1);
+  const dx = ((Number(point.x) || 0) - (Number(last?.x) || 0)) * Math.max(1, widthPx || 1);
+  const dy = ((Number(point.y) || 0) - (Number(last?.y) || 0)) * Math.max(1, heightPx || 1);
+  if (dx * dx + dy * dy >= 0.25) points.push(point);
+  else points[points.length - 1] = point;
+  return points;
+}
+
+function closeThresholdForEvent(ev) {
+  const type = String(ev?.pointerType || '').toLowerCase();
+  if (type === 'mouse') return 36;
+  if (type === 'pen') return 48;
+  return 52;
+}
+
 export function initLassoTool(options = {}) {
   const {
     button, overlay, path, boundsRect, inspector, cutButton, pasteButton, clearButton, hint,
@@ -137,7 +154,7 @@ export function initLassoTool(options = {}) {
       overlay.hidden = false;
       path.setAttribute('d', svgPath(gesture.points, r.width, r.height, false));
       path.classList.remove('closed');
-      path.classList.toggle('close-ready', isClosedLasso(gesture.points, r.width, r.height, 36));
+      path.classList.toggle('close-ready', isClosedLasso(gesture.points, r.width, r.height, gesture.closeThreshold || 48));
       boundsRect.hidden = true;
       return;
     }
@@ -286,7 +303,7 @@ export function initLassoTool(options = {}) {
     const p=normalizedPointFromEvent(ev,r,writable);
     if (selection && pointerInSelection(p)) return beginMove(ev,p);
     selection=null;
-    gesture={pointerId:ev.pointerId, points:[p]};
+    gesture={pointerId:ev.pointerId, points:[p], closeThreshold:closeThresholdForEvent(ev)};
     drawSelectionOverlay();
     updateUi();
     ev.preventDefault?.();
@@ -374,9 +391,12 @@ export function initLassoTool(options = {}) {
     }
     if (!gesture || ev.pointerId!==gesture.pointerId) return false;
     const r=pageRect();
+    const writable=writableBounds();
     const pts=gesture.points;
+    const closeThreshold = gesture.closeThreshold || closeThresholdForEvent(ev);
+    if (!cancelled) appendReleasePointIfNeeded(pts, normalizedPointFromEvent(ev,r,writable), r.width, r.height);
     gesture=null;
-    if (cancelled || !isClosedLasso(pts,r.width,r.height,36)) {
+    if (cancelled || !isClosedLasso(pts,r.width,r.height,closeThreshold)) {
       clearSelection(cancelled ? 'Lazo annullato' : 'Lazo non chiuso · selezione annullata');
       return true;
     }
