@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.29 — editor di ritaglio immagini isolato dal canvas Ink. */
+/* 0.1.95 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -1025,9 +1025,16 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  height: auto;
-  padding: 18px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding:
+    max(10px, env(safe-area-inset-top))
+    max(10px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom))
+    max(10px, env(safe-area-inset-left));
   border: 0;
   border-radius: 0;
   background: rgba(28, 25, 21, .72);
@@ -1042,8 +1049,12 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
+  width: fit-content;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px 14px 14px;
   border: 1px solid rgba(255,255,255,.22);
   border-radius: 14px;
@@ -1054,6 +1065,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .image-crop-heading {
   width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1064,9 +1077,11 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .image-crop-heading span { opacity: .72; font-size: 9px; }
 .image-crop-stage {
   position: relative;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   min-width: 1px;
   min-height: 1px;
+  max-width: 100%;
+  max-height: 100%;
   overflow: hidden;
   background: #161616;
   box-shadow: 0 0 0 1px rgba(0,0,0,.25);
@@ -1133,6 +1148,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .image-crop-handle.se { right: 2px; bottom: 2px; cursor: nwse-resize; }
 .image-crop-actions {
   width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -2748,7 +2765,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .lasso-overlay[hidden] { display:none !important; }
 .lasso-path {
-  fill:rgba(100,160,195,.055);
+  fill:none;
   stroke:#4b92b7;
   stroke-width:1.8;
   stroke-linecap:round;
@@ -2758,14 +2775,14 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .lasso-path:not(.closed) { fill:none; }
 .lasso-bounds {
-  fill:rgba(111,174,190,.045);
+  fill:none;
   stroke:#6faebc;
   stroke-width:1.4;
   stroke-dasharray:4 3;
   vector-effect:non-scaling-stroke;
 }
-.paper[data-paper-color="black"] .lasso-path { stroke:#9fd7ee; fill:rgba(159,215,238,.07); }
-.paper[data-paper-color="black"] .lasso-bounds { stroke:#b9dfec; fill:rgba(185,223,236,.05); }
+.paper[data-paper-color="black"] .lasso-path { stroke:#9fd7ee; fill:none; }
+.paper[data-paper-color="black"] .lasso-bounds { stroke:#b9dfec; fill:none; }
 .page-preview .lasso-overlay,
 .page-preview .lasso-inspector { display:none !important; }
 .tool-button[data-tool="lasso"].has-selection::after {
@@ -2817,12 +2834,13 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .password-vault-primary { background:#5f94a7 !important; color:white !important; border-color:#4d7887 !important; }
 .password-vault-editor button.danger { background:#a74f4d; color:white; border-color:#863f3d; }
 .password-vault-status { min-height:34px; border-radius:10px; background:rgba(255,255,255,.58); border:1px solid rgba(91,74,52,.14); padding:8px 11px; font-size:13px; white-space:pre-wrap; }
-.password-vault-auth-view { width:min(620px,100%); margin:auto; padding:22px; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(92,75,53,.15); }
+.password-vault-auth-view { width:min(620px,100%); max-width:100%; min-width:0; margin:auto; padding:22px; overflow-x:hidden; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(92,75,53,.15); }
 .password-vault-auth-view h3 { margin:0 0 8px; color:#435c68; }
 .password-vault-auth-view p { line-height:1.45; }
-.password-vault-pin-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
+.password-vault-pin-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:16px 0; }
 .password-vault-pin-grid label, .password-vault-pin-entry { display:grid; gap:5px; font-weight:700; color:#5d5143; }
 .password-vault-pin-grid input, .password-vault-pin-entry input {
+  width:100%; min-width:0; max-width:100%;
   min-height:48px; font-size:25px; letter-spacing:.5em; text-align:center; border:1px solid rgba(79,67,52,.28); border-radius:10px; background:#fffdfa; color:#2e2a25;
 }
 .password-vault-unlock-actions { display:grid; gap:10px; }
@@ -2875,3 +2893,10 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   stroke-width:2.2;
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
+
+/* 0.1.95 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+#passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
+#passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
+@media (orientation: landscape) {
+  #passwordVaultSetup.password-vault-auth-view { margin:auto; }
+}

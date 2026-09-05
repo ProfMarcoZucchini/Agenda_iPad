@@ -217,8 +217,11 @@ export function initLassoTool(options = {}) {
   }
 
   function selectFromPolygon(points) {
+    // La chiusura del Lazo è una operazione esclusivamente di selezione:
+    // non deve mai modificare né rimuovere stroke o immagini.
     const currentStrokes = getStrokes();
     const currentImages = getImages();
+    const imageIdsBefore = currentImages.map((item) => String(item?.id || ''));
     const selectedStrokes = currentStrokes.filter((item) => strokeIntersectsPolygon(item, points));
     const selectedImages = currentImages.filter((item) => imageIntersectsPolygon(item, points));
     if (!selectedStrokes.length && !selectedImages.length) {
@@ -235,6 +238,17 @@ export function initLassoTool(options = {}) {
     };
     drawSelectionOverlay();
     updateUi();
+
+    // Ripristino visivo difensivo del layer immagini dopo la composizione SVG
+    // della selezione. Su Safari/iPadOS evita che il cambio di compositing del
+    // layer Lazo faccia apparire le immagini come rimosse. I dati non cambiano.
+    renderImages?.();
+
+    const imageIdsAfter = getImages().map((item) => String(item?.id || ''));
+    if (imageIdsAfter.length !== imageIdsBefore.length || imageIdsAfter.some((id, i) => id !== imageIdsBefore[i])) {
+      console.error('Lazo invariant violation: la selezione ha alterato l’elenco immagini');
+    }
+
     if (statusLabel) statusLabel.textContent = `Lazo · ${selectedStrokes.length + selectedImages.length} elementi selezionati`;
     return true;
   }
@@ -418,7 +432,11 @@ export function initLassoTool(options = {}) {
     return true;
   }
 
-  async function cutSelection() {
+  async function cutSelection(userInitiated = false) {
+    // Protezione anti-rimozione: il solo completamento di un Lazo non può mai
+    // trasformarsi in Taglia. La rimozione è ammessa esclusivamente da una
+    // pressione esplicita del pulsante Taglia.
+    if (!userInitiated) return false;
     if (!selection || selection.pageKey!==getPageKey()) return false;
     const items=currentSelectionItems();
     if (!items.strokes.length && !items.images.length) return false;

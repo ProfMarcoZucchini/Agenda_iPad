@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Agenda iPad",
   "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.94 - Rubrica Password A-Z cifrata con Touch ID/biometria o PIN, Backup e Sync protetti",
+  "description": "Agenda iPad 0.1.95 - Rubrica Password A-Z cifrata con Touch ID/biometria o PIN, Backup e Sync protetti",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
