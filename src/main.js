@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.91';
+const APP_VERSION = '0.1.92';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -6454,7 +6454,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.91 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.92 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -6559,8 +6559,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.91 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.91 questi campioni venivano scartati perché il canale
+  // 0.1.92 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.92 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -6595,7 +6595,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.91 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.92 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -6663,6 +6663,19 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (!directSurface && isLassoInputSurfaceTarget(ev.target)) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
+
+  // 0.1.92 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
+  // logico già aperto nel controller Lazo.
+  if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
+    const touch = ev.touches[0];
+    lassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
+    lassoTool?.handlePointerMove?.(nativeTouchProxy(touch, ev, lassoPointerId));
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+
   if (lassoTouchId == null && lassoPointerId == null && ev.touches?.length === 1 && !isLassoUiControlTarget(ev.target)) {
     if (lassoHint) lassoHint.textContent = 'Touch recuperato dal movimento';
     handleLassoWindowTouchStart(ev, directSurface);
@@ -6681,7 +6694,28 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
 function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (!directSurface && isLassoInputSurfaceTarget(ev.target)) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
-  if (!isLassoUiArmed() || lassoTouchId == null) return;
+  if (!isLassoUiArmed()) return;
+
+  // 0.1.92 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  if (lassoTouchId == null && lassoPointerId != null) {
+    const id = lassoPointerId;
+    const ended = ev.changedTouches?.[0] || null;
+    const fallback = lassoLastTouch;
+    lassoPointerId = null;
+    lassoLastTouch = null;
+    const captureElement = lassoPointerCaptureElement;
+    lassoPointerCaptureElement = null;
+    try { if (captureElement?.hasPointerCapture?.(id)) captureElement.releasePointerCapture(id); } catch {}
+    if (ended || fallback) {
+      lassoTool?.handlePointerUp?.(nativeTouchProxy(ended || fallback, ev, id), cancelled);
+      voiceScript?.flushIfIdle?.();
+    }
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+
+  if (lassoTouchId == null) return;
   const ended = findNativeTouch(ev.changedTouches, lassoTouchId);
   const fallback = lassoLastTouch;
   lassoTouchId = null;
@@ -7010,7 +7044,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.91 — ingresso primario reale: livello trasparente dedicato.
+// 0.1.92 — ingresso primario reale: livello trasparente dedicato.
 // Questi listener NON dipendono dal target canvas né da activeTool già coerente.
 function handleLassoShieldPointerDown(ev) {
   if (!ensureLassoInputShieldRuntime()) return;
@@ -7043,7 +7077,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.91 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
+// 0.1.92 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointerup', (ev) => handleLassoShieldPointerUp(ev, false), { passive:false, capture:true });

@@ -89,6 +89,17 @@ function closeThresholdForEvent(ev) {
   return 52;
 }
 
+function setSvgHidden(element, hidden) {
+  if (!element) return;
+  if (hidden) {
+    if (typeof element.setAttribute === 'function') element.setAttribute('hidden', '');
+    else element.hidden = true;
+  } else {
+    if (typeof element.removeAttribute === 'function') element.removeAttribute('hidden');
+    else element.hidden = false;
+  }
+}
+
 export function initLassoTool(options = {}) {
   const {
     button, overlay, path, boundsRect, inspector, cutButton, pasteButton, clearButton, hint,
@@ -141,9 +152,9 @@ export function initLassoTool(options = {}) {
   }
 
   function hideOverlay() {
-    if (overlay) overlay.hidden = true;
+    setSvgHidden(overlay, true);
     if (path) path.setAttribute('d', '');
-    if (boundsRect) boundsRect.hidden = true;
+    setSvgHidden(boundsRect, true);
   }
 
   function drawSelectionOverlay() {
@@ -151,15 +162,15 @@ export function initLassoTool(options = {}) {
     const r = pageRect();
     overlay?.setAttribute('viewBox', `0 0 ${Math.max(1,r.width)} ${Math.max(1,r.height)}`);
     if (gesture?.points?.length) {
-      overlay.hidden = false;
+      setSvgHidden(overlay, false);
       path.setAttribute('d', svgPath(gesture.points, r.width, r.height, false));
       path.classList.remove('closed');
       path.classList.toggle('close-ready', isClosedLasso(gesture.points, r.width, r.height, gesture.closeThreshold || 48));
-      boundsRect.hidden = true;
+      setSvgHidden(boundsRect, true);
       return;
     }
     if (!selection || selection.pageKey !== getPageKey() || !selection.bounds) { hideOverlay(); return; }
-    overlay.hidden = false;
+    setSvgHidden(overlay, false);
     if (selection.polygon?.length) {
       path.setAttribute('d', svgPath(selection.polygon, r.width, r.height, true));
       path.classList.add('closed');
@@ -170,7 +181,7 @@ export function initLassoTool(options = {}) {
     boundsRect.setAttribute('y', String(b.y0 * r.height));
     boundsRect.setAttribute('width', String(Math.max(1, (b.x1 - b.x0) * r.width)));
     boundsRect.setAttribute('height', String(Math.max(1, (b.y1 - b.y0) * r.height)));
-    boundsRect.hidden = false;
+    setSvgHidden(boundsRect, false);
   }
 
   function setActive(value) {
@@ -326,6 +337,8 @@ export function initLassoTool(options = {}) {
     const dx=(p.x-last.x)*r.width, dy=(p.y-last.y)*r.height;
     if (dx*dx+dy*dy >= 2.25) gesture.points.push(p);
     drawSelectionOverlay();
+    if (hint && gesture?.points?.length) hint.textContent = `Contorno in corso · ${gesture.points.length} punti · torna al punto iniziale`;
+    if (statusLabel && gesture?.points?.length > 1) statusLabel.textContent = `lazo · ${gesture.points.length} punti acquisiti`;
     ev.preventDefault?.();
     return true;
   }
