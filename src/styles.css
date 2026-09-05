@@ -2715,6 +2715,28 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   white-space:normal;
   text-align:right;
 }
+/* 0.1.87 — livello input dedicato Lazo.
+   È un bersaglio DOM reale per Pencil/touch e non condivide il canvas Ink. */
+.lasso-input-shield {
+  position:absolute;
+  left:0; right:0;
+  top:var(--header-h);
+  bottom:var(--footer-h);
+  z-index:7;
+  background:transparent;
+  pointer-events:none;
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+}
+.lasso-input-shield[hidden] { display:none !important; }
+.paper.lasso-mode .lasso-input-shield:not([hidden]) {
+  pointer-events:auto !important;
+  touch-action:none !important;
+  cursor:crosshair;
+}
+.page-preview .lasso-input-shield { display:none !important; }
+
 .lasso-overlay {
   position:absolute;
   inset:0;

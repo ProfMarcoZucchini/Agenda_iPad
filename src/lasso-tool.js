@@ -113,9 +113,11 @@ export function initLassoTool(options = {}) {
     if (pasteButton) pasteButton.disabled = !clipboard || (!(clipboard.strokes?.length) && !(clipboard.images?.length));
     if (clearButton) clearButton.disabled = !validSelection;
     if (hint) {
-      hint.textContent = validSelection
-        ? `${selection.strokeIds.length + selection.imageIds.length} elementi · trascina per spostare`
-        : clipboard ? 'Disegna un contorno chiuso · Incolla disponibile' : 'Disegna un contorno chiuso';
+      hint.textContent = gesture?.points?.length
+        ? 'Contorno in corso · torna al punto iniziale'
+        : validSelection
+          ? `${selection.strokeIds.length + selection.imageIds.length} elementi · trascina per spostare`
+          : clipboard ? 'Disegna un contorno chiuso · Incolla disponibile' : 'Disegna un contorno chiuso';
     }
     button?.classList.toggle('has-selection', Boolean(validSelection));
     onSelectionChanged?.(selection);
