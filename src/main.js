@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.88';
+const APP_VERSION = '0.1.89';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -284,6 +284,7 @@ let pageTurning = false;
 let previewPage = null;
 let nativeTouchGestureId = null;
 let lassoPointerId = null;
+let lassoPointerCaptureElement = null;
 let lassoTouchId = null;
 let lassoLastTouch = null;
 let lastLassoPointerDownAt = -Infinity;
@@ -4498,15 +4499,28 @@ function activateShapeTool() {
 // 0.1.88 — il Lazo dispone di un vero livello input sopra l'area scrivibile.
 // Lo stato del livello è anche una seconda sorgente di verità: se Safari/UI
 // desincronizzano activeTool, il primo contatto sullo shield riallinea il Lazo.
+function syncLassoInputShieldBounds() {
+  if (!lassoInputShield) return;
+  // Usa gli stessi limiti reali dell'Ink: evita disallineamenti quando l'altezza
+  // dell'intestazione cambia (Agenda/Planner/Orario o layout iPad compatto).
+  lassoInputShield.style.top = `${Math.max(0, protectedTop)}px`;
+  lassoInputShield.style.bottom = `${Math.max(0, FOOTER_PX)}px`;
+}
+
 function setLassoInputShieldActive(value) {
   if (!lassoInputShield) return;
   const enabled = Boolean(value);
+  if (enabled) syncLassoInputShieldBounds();
   lassoInputShield.hidden = !enabled;
   lassoInputShield.setAttribute('aria-hidden', enabled ? 'false' : 'true');
 }
 
 function isLassoInputShieldArmed() {
   return Boolean(lassoInputShield && !lassoInputShield.hidden);
+}
+
+function isLassoInputSurfaceTarget(target) {
+  return Boolean(lassoInputShield && target instanceof Element && (target === lassoInputShield || lassoInputShield.contains(target)));
 }
 
 // 0.1.88 — sorgente di verità robusta del Lazo.
@@ -4527,7 +4541,7 @@ function isLassoUiArmed() {
 function ensureLassoInputShieldRuntime() {
   if (!isLassoUiArmed()) return false;
   if (activeTool !== 'lasso') activeTool = 'lasso';
-  lassoTool?.setActive?.(true);
+  if (!lassoTool?.isActive?.()) lassoTool?.setActive?.(true);
   setLassoInputShieldActive(true);
   paper?.classList.add('lasso-mode');
   lassoToolButton?.classList.add('active');
@@ -5106,6 +5120,7 @@ function resizeCanvas() {
   protectedTop = Math.max(0, Math.min(r.height, hr.bottom - r.top));
   rect = canvas.getBoundingClientRect();
   syncShapeOverlayBounds();
+  if (isLassoInputShieldArmed()) syncLassoInputShieldBounds();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderAll();
 }
@@ -6446,11 +6461,17 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
 function resetLassoInputCapture() {
   if (lassoPointerId != null) {
     try {
-      if (paper?.hasPointerCapture?.(lassoPointerId)) paper.releasePointerCapture(lassoPointerId);
-      else if (canvas?.hasPointerCapture?.(lassoPointerId)) canvas.releasePointerCapture(lassoPointerId);
+      if (lassoPointerCaptureElement?.hasPointerCapture?.(lassoPointerId)) {
+        lassoPointerCaptureElement.releasePointerCapture(lassoPointerId);
+      } else if (paper?.hasPointerCapture?.(lassoPointerId)) {
+        paper.releasePointerCapture(lassoPointerId);
+      } else if (canvas?.hasPointerCapture?.(lassoPointerId)) {
+        canvas.releasePointerCapture(lassoPointerId);
+      }
     } catch {}
   }
   lassoPointerId = null;
+  lassoPointerCaptureElement = null;
   lassoTouchId = null;
   lassoLastTouch = null;
 }
@@ -6467,7 +6488,7 @@ function lassoBlockedStatus() {
   return 'lazo · input temporaneamente non disponibile';
 }
 
-function handleLassoGlobalPointerDown(ev) {
+function handleLassoGlobalPointerDown(ev, captureElement = paper) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed() || isLassoUiControlTarget(ev.target)) return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return false;
@@ -6501,8 +6522,12 @@ function handleLassoGlobalPointerDown(ev) {
 
   lassoPointerId = ev.pointerId;
   lastLassoPointerDownAt = performance.now();
-  try { paper?.setPointerCapture?.(ev.pointerId); }
-  catch { try { canvas?.setPointerCapture?.(ev.pointerId); } catch {} }
+  lassoPointerCaptureElement = captureElement || paper || canvas || null;
+  try { lassoPointerCaptureElement?.setPointerCapture?.(ev.pointerId); }
+  catch {
+    lassoPointerCaptureElement = paper || canvas || null;
+    try { lassoPointerCaptureElement?.setPointerCapture?.(ev.pointerId); } catch {}
+  }
   statusLabel.textContent = 'lazo · contorno in corso · torna al punto iniziale';
   if (lassoHint) lassoHint.textContent = 'Contorno in corso · torna al punto iniziale';
   ev.preventDefault();
@@ -6518,7 +6543,7 @@ function handleLassoGlobalPointerMove(ev) {
     const mouseIsDown = ev.pointerType === 'mouse' && (ev.buttons & 1) === 1;
     if (penIsDown || mouseIsDown) {
       if (lassoHint) lassoHint.textContent = 'Contatto recuperato dal movimento';
-      return handleLassoGlobalPointerDown(ev);
+      return handleLassoGlobalPointerDown(ev, isLassoInputSurfaceTarget(ev.target) ? lassoInputShield : paper);
     }
   }
   if (lassoPointerId == null || ev.pointerId !== lassoPointerId) {
@@ -6538,8 +6563,11 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (lassoPointerId == null || ev.pointerId !== lassoPointerId) return true;
   const id = lassoPointerId;
   lassoPointerId = null;
+  const captureElement = lassoPointerCaptureElement;
+  lassoPointerCaptureElement = null;
   try {
-    if (paper?.hasPointerCapture?.(id)) paper.releasePointerCapture(id);
+    if (captureElement?.hasPointerCapture?.(id)) captureElement.releasePointerCapture(id);
+    else if (paper?.hasPointerCapture?.(id)) paper.releasePointerCapture(id);
     else if (canvas?.hasPointerCapture?.(id)) canvas.releasePointerCapture(id);
   } catch {}
   lassoTool?.handlePointerUp?.(ev, cancelled);
@@ -6551,7 +6579,8 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
 
 // Fallback Touch nativo, anch'esso su Window: copre i percorsi Safari/iPadOS
 // nei quali il gesto lungo a dito/Pencil di compatibilità non raggiunge il canvas.
-function handleLassoWindowTouchStart(ev) {
+function handleLassoWindowTouchStart(ev, directSurface = false) {
+  if (!directSurface && isLassoInputSurfaceTarget(ev.target)) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed() || isLassoUiControlTarget(ev.target)) return;
   if (lassoHint) lassoHint.textContent = 'Contatto Touch ricevuto · avvio Lazo';
@@ -6582,12 +6611,13 @@ function handleLassoWindowTouchStart(ev) {
   ev.stopPropagation();
 }
 
-function handleLassoWindowTouchMove(ev) {
+function handleLassoWindowTouchMove(ev, directSurface = false) {
+  if (!directSurface && isLassoInputSurfaceTarget(ev.target)) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
   if (lassoTouchId == null && lassoPointerId == null && ev.touches?.length === 1 && !isLassoUiControlTarget(ev.target)) {
     if (lassoHint) lassoHint.textContent = 'Touch recuperato dal movimento';
-    handleLassoWindowTouchStart(ev);
+    handleLassoWindowTouchStart(ev, directSurface);
     if (lassoTouchId == null) return;
   }
   if (lassoTouchId == null) return;
@@ -6600,7 +6630,8 @@ function handleLassoWindowTouchMove(ev) {
   ev.stopPropagation();
 }
 
-function finishLassoWindowTouch(ev, cancelled = false) {
+function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
+  if (!directSurface && isLassoInputSurfaceTarget(ev.target)) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed() || lassoTouchId == null) return;
   const ended = findNativeTouch(ev.changedTouches, lassoTouchId);
@@ -6884,13 +6915,23 @@ function routeGlobalPointerDown(ev) {
     ev.preventDefault();
     return;
   }
-  if (isLassoUiArmed()) { ensureLassoInputShieldRuntime(); handleLassoGlobalPointerDown(ev); return; }
+  if (isLassoUiArmed()) {
+    ensureLassoInputShieldRuntime();
+    if (isLassoInputSurfaceTarget(ev.target)) return; // lascia arrivare l'evento allo shield
+    handleLassoGlobalPointerDown(ev);
+    return;
+  }
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
 function routeGlobalPointerMove(ev) {
-  if (isLassoUiArmed()) { ensureLassoInputShieldRuntime(); handleLassoGlobalPointerMove(ev); return; }
+  if (isLassoUiArmed()) {
+    ensureLassoInputShieldRuntime();
+    if (isLassoInputSurfaceTarget(ev.target)) return;
+    handleLassoGlobalPointerMove(ev);
+    return;
+  }
   if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture) {
     ev.preventDefault();
     return;
@@ -6899,23 +6940,35 @@ function routeGlobalPointerMove(ev) {
   handlePointerMove(ev);
 }
 function routeGlobalPointerUp(ev) {
-  if (isLassoUiArmed()) { ensureLassoInputShieldRuntime(); finishLassoGlobalPointer(ev, false); return; }
+  if (isLassoUiArmed()) {
+    ensureLassoInputShieldRuntime();
+    if (isLassoInputSurfaceTarget(ev.target)) return;
+    finishLassoGlobalPointer(ev, false);
+    return;
+  }
   if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerUp(ev);
   voiceScript?.flushIfIdle?.();
 }
 function routeGlobalPointerCancel(ev) {
-  if (isLassoUiArmed()) { ensureLassoInputShieldRuntime(); finishLassoGlobalPointer(ev, true); return; }
+  if (isLassoUiArmed()) {
+    ensureLassoInputShieldRuntime();
+    if (isLassoInputSurfaceTarget(ev.target)) return;
+    finishLassoGlobalPointer(ev, true);
+    return;
+  }
   if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerCancel(ev);
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.88 — ingresso primario: livello trasparente dedicato.
+// 0.1.89 — ingresso primario reale: livello trasparente dedicato.
 // Questi listener NON dipendono dal target canvas né da activeTool già coerente.
 function handleLassoShieldPointerDown(ev) {
   if (!ensureLassoInputShieldRuntime()) return;
-  handleLassoGlobalPointerDown(ev);
+  // Percorso primario reale: l'evento raggiunge lo shield e il capture resta
+  // sullo shield per tutta la durata del gesto.
+  handleLassoGlobalPointerDown(ev, lassoInputShield);
 }
 function handleLassoShieldPointerMove(ev) {
   if (!isLassoUiArmed()) return;
@@ -6929,20 +6982,20 @@ function handleLassoShieldPointerUp(ev, cancelled = false) {
 }
 function handleLassoShieldTouchStart(ev) {
   if (!ensureLassoInputShieldRuntime()) return;
-  handleLassoWindowTouchStart(ev);
+  handleLassoWindowTouchStart(ev, true);
 }
 function handleLassoShieldTouchMove(ev) {
   if (!isLassoUiArmed()) return;
   ensureLassoInputShieldRuntime();
-  handleLassoWindowTouchMove(ev);
+  handleLassoWindowTouchMove(ev, true);
 }
 function handleLassoShieldTouchEnd(ev, cancelled = false) {
   if (!isLassoUiArmed()) return;
   ensureLassoInputShieldRuntime();
-  finishLassoWindowTouch(ev, cancelled);
+  finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.88 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
+// 0.1.89 — listener DIRETTI sullo shield: percorso primario iPad/Pencil/dito.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointerup', (ev) => handleLassoShieldPointerUp(ev, false), { passive:false, capture:true });
