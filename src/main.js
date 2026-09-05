@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.85';
+const APP_VERSION = '0.1.86';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -5510,6 +5510,16 @@ function isUiControlTarget(target) {
   return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
 }
 
+// Il Lazo deve poter iniziare anche sopra immagini, Figure e altri contenuti pagina.
+// Per questo NON usa isUiControlTarget(), che correttamente blocca tali layer per l'Ink.
+// Qui vengono esclusi soltanto i controlli UI reali.
+function isLassoUiControlTarget(target) {
+  if (!(target instanceof Element) || !paper?.contains(target)) return true;
+  return Boolean(target.closest(
+    'button, input, select, textarea, .style-panel, .shape-palette, .lasso-inspector, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-inspector, .baseline-footer, .quick-toolbar, .planner-mode-bar'
+  ));
+}
+
 function getUiButtonTarget(target) {
   return target instanceof Element ? target.closest('button') : null;
 }
@@ -6384,12 +6394,15 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.85 — percorso input dedicato del Lazo.
-// Non usa il router Ink globale: Pointer/Touch vengono catturati direttamente dal canvas.
+// 0.1.86 — Lazo intercettato a livello Window in capture phase.
+// Motivo: su iPadOS il target reale del contatto può essere canvas, immagine,
+// layer Planner o un elemento di compatibilità Safari. Il Lazo non dipende più
+// dal fatto che l'evento raggiunga fisicamente #inkCanvas.
 function resetLassoInputCapture() {
   if (lassoPointerId != null) {
     try {
-      if (canvas?.hasPointerCapture?.(lassoPointerId)) canvas.releasePointerCapture(lassoPointerId);
+      if (paper?.hasPointerCapture?.(lassoPointerId)) paper.releasePointerCapture(lassoPointerId);
+      else if (canvas?.hasPointerCapture?.(lassoPointerId)) canvas.releasePointerCapture(lassoPointerId);
     } catch {}
   }
   lassoPointerId = null;
@@ -6398,48 +6411,99 @@ function resetLassoInputCapture() {
 }
 
 function lassoInputAllowed() {
-  return activeTool === 'lasso' && ready && !drawing && !pageTurning && !pageStyleBulkBusy && reportPanel.hidden !== false;
+  return activeTool === 'lasso' && ready && !pageTurning && !pageStyleBulkBusy && reportPanel.hidden !== false;
 }
 
-function handleLassoCanvasPointerDown(ev) {
-  if (activeTool !== 'lasso' || isUiControlTarget(ev.target)) return;
-  if (!lassoInputAllowed()) { ev.preventDefault(); return; }
-  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-  if (lassoPointerId != null || lassoTouchId != null) { ev.preventDefault(); return; }
+function lassoBlockedStatus() {
+  if (!ready) return 'lazo · pagina non ancora pronta';
+  if (pageTurning) return 'lazo · attendi fine cambio pagina';
+  if (pageStyleBulkBusy) return 'lazo · attendi applicazione stile pagina';
+  if (reportPanel.hidden === false) return 'lazo · chiudi prima la diagnostica';
+  return 'lazo · input temporaneamente non disponibile';
+}
+
+function handleLassoGlobalPointerDown(ev) {
+  if (activeTool !== 'lasso' || isLassoUiControlTarget(ev.target)) return false;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return false;
+
+  // Recupera in modo difensivo un eventuale tratto Penna rimasto aperto prima
+  // dell'attivazione del Lazo. Non entra mai nel pointermove Ink.
+  if (drawing) finalizeStroke('lasso-global-input-recovery');
+  if (!lassoInputAllowed()) {
+    statusLabel.textContent = lassoBlockedStatus();
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
+
+  // Un solo canale per gesto: Pointer è autorevole se è arrivato per primo.
+  if (lassoPointerId != null || lassoTouchId != null) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
+
   const handled = lassoTool?.handlePointerDown?.(ev);
-  if (!handled) { statusLabel.textContent = 'lazo · inizia nell’area scrivibile'; return; }
+  if (!handled) {
+    statusLabel.textContent = 'lazo · inizia nell’area scrivibile';
+    ev.preventDefault();
+    ev.stopPropagation();
+    return true;
+  }
+
   lassoPointerId = ev.pointerId;
   lastLassoPointerDownAt = performance.now();
-  try { canvas?.setPointerCapture?.(ev.pointerId); } catch {}
+  try { paper?.setPointerCapture?.(ev.pointerId); }
+  catch { try { canvas?.setPointerCapture?.(ev.pointerId); } catch {} }
   statusLabel.textContent = 'lazo · contorno in corso · torna al punto iniziale';
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
-function handleLassoCanvasPointerMove(ev) {
-  if (activeTool !== 'lasso' || lassoPointerId == null || ev.pointerId !== lassoPointerId) return;
+function handleLassoGlobalPointerMove(ev) {
+  if (activeTool !== 'lasso') return false;
+  if (lassoPointerId == null || ev.pointerId !== lassoPointerId) {
+    // Impedisce comunque che un Pointer secondario cada nel router Ink.
+    if (!isLassoUiControlTarget(ev.target)) ev.preventDefault();
+    return true;
+  }
   lassoTool?.handlePointerMove?.(ev);
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
-function finishLassoCanvasPointer(ev, cancelled = false) {
-  if (activeTool !== 'lasso' || lassoPointerId == null || ev.pointerId !== lassoPointerId) return;
+function finishLassoGlobalPointer(ev, cancelled = false) {
+  if (activeTool !== 'lasso') return false;
+  if (lassoPointerId == null || ev.pointerId !== lassoPointerId) return true;
   const id = lassoPointerId;
   lassoPointerId = null;
-  try { if (canvas?.hasPointerCapture?.(id)) canvas.releasePointerCapture(id); } catch {}
+  try {
+    if (paper?.hasPointerCapture?.(id)) paper.releasePointerCapture(id);
+    else if (canvas?.hasPointerCapture?.(id)) canvas.releasePointerCapture(id);
+  } catch {}
   lassoTool?.handlePointerUp?.(ev, cancelled);
   voiceScript?.flushIfIdle?.();
   ev.preventDefault();
   ev.stopPropagation();
+  return true;
 }
 
-function handleLassoCanvasTouchStart(ev) {
-  if (activeTool !== 'lasso') return;
-  if (!lassoInputAllowed() || ev.touches.length !== 1) { ev.preventDefault(); return; }
-  // Se Safari ha già fornito Pointer Events, il percorso Pointer è autorevole.
-  if (lassoPointerId != null || performance.now() - lastLassoPointerDownAt < 220) {
+// Fallback Touch nativo, anch'esso su Window: copre i percorsi Safari/iPadOS
+// nei quali il gesto lungo a dito/Pencil di compatibilità non raggiunge il canvas.
+function handleLassoWindowTouchStart(ev) {
+  if (activeTool !== 'lasso' || isLassoUiControlTarget(ev.target)) return;
+  if (drawing) finalizeStroke('lasso-global-touch-recovery');
+  if (!lassoInputAllowed() || ev.touches.length !== 1) {
+    if (!lassoInputAllowed()) statusLabel.textContent = lassoBlockedStatus();
     ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  if (lassoPointerId != null || lassoTouchId != null || performance.now() - lastLassoPointerDownAt < 280) {
+    ev.preventDefault();
+    ev.stopPropagation();
     return;
   }
   const touch = ev.touches[0];
@@ -6448,12 +6512,14 @@ function handleLassoCanvasTouchStart(ev) {
     lassoTouchId = touch.identifier;
     lassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
     statusLabel.textContent = 'lazo · contorno in corso · torna al punto iniziale';
+  } else {
+    statusLabel.textContent = 'lazo · inizia nell’area scrivibile';
   }
   ev.preventDefault();
   ev.stopPropagation();
 }
 
-function handleLassoCanvasTouchMove(ev) {
+function handleLassoWindowTouchMove(ev) {
   if (activeTool !== 'lasso' || lassoTouchId == null) return;
   const touch = findNativeTouch(ev.touches, lassoTouchId);
   if (touch) {
@@ -6464,7 +6530,7 @@ function handleLassoCanvasTouchMove(ev) {
   ev.stopPropagation();
 }
 
-function finishLassoCanvasTouch(ev, cancelled = false) {
+function finishLassoWindowTouch(ev, cancelled = false) {
   if (activeTool !== 'lasso' || lassoTouchId == null) return;
   const ended = findNativeTouch(ev.changedTouches, lassoTouchId);
   const fallback = lassoLastTouch;
@@ -6480,8 +6546,8 @@ function finishLassoCanvasTouch(ev, cancelled = false) {
 
 function handlePaperTouchStart(ev) {
   if (activeTool === 'shape') { ev.preventDefault(); return; }
-  // 0.1.85: il Lazo usa listener dedicati sul canvas. Il listener del paper
-  // non deve intercettare né bloccare il gesto prima che arrivi al canvas.
+  // 0.1.86: il Lazo viene catturato a livello Window prima dei gesti pagina.
+  // Il listener del paper non deve duplicare o reinterpretare quel contatto.
   if (activeTool === 'lasso') return;
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
@@ -6747,47 +6813,39 @@ function routeGlobalPointerDown(ev) {
     ev.preventDefault();
     return;
   }
+  if (activeTool === 'lasso') { handleLassoGlobalPointerDown(ev); return; }
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
-  // 0.1.85: quando Lazo è attivo il router globale NON tocca il gesto pagina.
-  // Il canvas lo gestisce con listener dedicati e pointer capture.
-  if (activeTool === 'lasso' && !isUiControlTarget(ev.target)) return;
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
 }
 function routeGlobalPointerMove(ev) {
+  if (activeTool === 'lasso') { handleLassoGlobalPointerMove(ev); return; }
   if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture) {
     ev.preventDefault();
     return;
   }
-  if (activeTool === 'lasso') return;
   if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
 function routeGlobalPointerUp(ev) {
-  if (activeTool === 'lasso') return;
+  if (activeTool === 'lasso') { finishLassoGlobalPointer(ev, false); return; }
   if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerUp(ev);
   voiceScript?.flushIfIdle?.();
 }
 function routeGlobalPointerCancel(ev) {
-  if (activeTool === 'lasso') return;
+  if (activeTool === 'lasso') { finishLassoGlobalPointer(ev, true); return; }
   if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerCancel(ev);
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.85 — Lazo isolato dal router Ink globale.
-canvas.addEventListener('pointerdown', handleLassoCanvasPointerDown, { passive:false, capture:true });
-canvas.addEventListener('pointermove', handleLassoCanvasPointerMove, { passive:false, capture:true });
-canvas.addEventListener('pointerup', (ev) => finishLassoCanvasPointer(ev, false), { passive:false, capture:true });
-canvas.addEventListener('pointercancel', (ev) => finishLassoCanvasPointer(ev, true), { passive:false, capture:true });
-canvas.addEventListener('lostpointercapture', (ev) => {
-  if (activeTool === 'lasso' && lassoPointerId != null && ev.pointerId === lassoPointerId) finishLassoCanvasPointer(ev, true);
-}, { passive:false });
-canvas.addEventListener('touchstart', handleLassoCanvasTouchStart, { passive:false, capture:true });
-canvas.addEventListener('touchmove', handleLassoCanvasTouchMove, { passive:false, capture:true });
-canvas.addEventListener('touchend', (ev) => finishLassoCanvasTouch(ev, false), { passive:false, capture:true });
-canvas.addEventListener('touchcancel', (ev) => finishLassoCanvasTouch(ev, true), { passive:false, capture:true });
+// 0.1.86 — fallback Touch del Lazo in capture phase su Window.
+// Non dipende dal target DOM del contatto e viene eseguito prima dei gesti pagina.
+window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
+window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
+window.addEventListener('touchend', (ev) => finishLassoWindowTouch(ev, false), { passive:false, capture:true });
+window.addEventListener('touchcancel', (ev) => finishLassoWindowTouch(ev, true), { passive:false, capture:true });
 
 paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
 paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });

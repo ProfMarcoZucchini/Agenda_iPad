@@ -2835,8 +2835,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .password-vault-footer-button { color:#9fcad2; }
 
-/* 0.1.85 — Lazo: il canvas è il target input esclusivo del gesto.
-   Neutralizza eventuali modalità residue di Immagini/Figure senza toccare l'Ink core. */
+/* 0.1.86 — Lazo: input intercettato globalmente in capture phase.
+   Il canvas resta interattivo e i layer contenuto non devono sottrarre il gesto. */
 .paper.lasso-mode #inkCanvas {
   pointer-events: auto !important;
   touch-action: none !important;
