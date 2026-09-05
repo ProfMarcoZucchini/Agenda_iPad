@@ -135,6 +135,7 @@ export function initLassoTool(options = {}) {
       overlay.hidden = false;
       path.setAttribute('d', svgPath(gesture.points, r.width, r.height, false));
       path.classList.remove('closed');
+      path.classList.toggle('close-ready', isClosedLasso(gesture.points, r.width, r.height, 36));
       boundsRect.hidden = true;
       return;
     }
@@ -144,6 +145,7 @@ export function initLassoTool(options = {}) {
       path.setAttribute('d', svgPath(selection.polygon, r.width, r.height, true));
       path.classList.add('closed');
     } else path.setAttribute('d','');
+    path.classList.remove('close-ready');
     const b = selection.bounds;
     boundsRect.setAttribute('x', String(b.x0 * r.width));
     boundsRect.setAttribute('y', String(b.y0 * r.height));
@@ -372,7 +374,7 @@ export function initLassoTool(options = {}) {
     const r=pageRect();
     const pts=gesture.points;
     gesture=null;
-    if (cancelled || !isClosedLasso(pts,r.width,r.height,30)) {
+    if (cancelled || !isClosedLasso(pts,r.width,r.height,36)) {
       clearSelection(cancelled ? 'Lazo annullato' : 'Lazo non chiuso · selezione annullata');
       return true;
     }
@@ -527,6 +529,7 @@ export function initLassoTool(options = {}) {
     handlePointerDown, handlePointerMove, handlePointerUp,
     cutSelection, pasteClipboard, applyHistory,
     hasSelection:()=>Boolean(selection && selection.pageKey===getPageKey()),
-    hasClipboard:()=>Boolean(clipboard)
+    hasClipboard:()=>Boolean(clipboard),
+    isActive:()=>active
   };
 }

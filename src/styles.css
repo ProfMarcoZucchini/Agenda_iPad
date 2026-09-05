@@ -2834,3 +2834,22 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .password-vault-head h2 { font-size:20px; }
 }
 .paper[data-paper-color="black"] .password-vault-footer-button { color:#9fcad2; }
+
+/* 0.1.85 — Lazo: il canvas è il target input esclusivo del gesto.
+   Neutralizza eventuali modalità residue di Immagini/Figure senza toccare l'Ink core. */
+.paper.lasso-mode #inkCanvas {
+  pointer-events: auto !important;
+  touch-action: none !important;
+  cursor: crosshair;
+}
+.paper.lasso-mode .image-layer,
+.paper.lasso-mode .shape-overlay,
+.paper.lasso-mode .voice-script-overlay {
+  pointer-events: none !important;
+}
+.lasso-path.close-ready {
+  stroke:#3d9863;
+  stroke-dasharray:none;
+  stroke-width:2.2;
+}
+.paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
