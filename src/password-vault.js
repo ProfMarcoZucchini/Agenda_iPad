@@ -352,6 +352,25 @@ export function initPasswordVault(options = {}) {
   let activeLetter = 'TUTTE';
   let autoLockTimer = 0;
   let destroyed = false;
+  let lastKeyDirectOpenAt = -Infinity;
+
+  function sanitizePinControl(control) {
+    if (!control) return;
+    const filtered = String(control.value || '').replace(/\D+/g, '').slice(0, 4);
+    if (control.value !== filtered) control.value = filtered;
+  }
+
+  function bindFullKeyboardPin(control) {
+    if (!control) return;
+    // iPadOS: inputmode=numeric/pattern=[0-9]* richiama la tastiera numerica compatta.
+    // Usiamo la tastiera testuale estesa e filtriamo comunque il valore a 4 sole cifre.
+    control.setAttribute('inputmode', 'text');
+    control.removeAttribute('pattern');
+    control.setAttribute('autocapitalize', 'off');
+    control.setAttribute('autocorrect', 'off');
+    control.setAttribute('spellcheck', 'false');
+    control.addEventListener('input', () => sanitizePinControl(control));
+  }
 
   function setStatus(message) {
     if (vaultStatus) vaultStatus.textContent = String(message || '');
@@ -663,7 +682,41 @@ export function initPasswordVault(options = {}) {
     setStatus('Rubrica aggiornata dal Sync. Sblocca nuovamente per visualizzare i dati ricevuti.');
   }
 
-  keyButton?.addEventListener('click', (ev) => { ev.preventDefault(); void open(); });
+  bindFullKeyboardPin(setupPin);
+  bindFullKeyboardPin(setupPinConfirm);
+  bindFullKeyboardPin(pinInput);
+
+  // 0.1.96 — l'icona Chiave deve rispondere immediatamente anche ad Apple Pencil.
+  // Il click resta per mouse/tastiera; pointerdown/touchstart coprono iPadOS senza
+  // dipendere dalla sintesi del click dopo il contatto Pencil.
+  keyButton?.addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType === 'mouse') return;
+    lastKeyDirectOpenAt = performance.now();
+    ev.preventDefault();
+    ev.stopPropagation();
+    void open();
+  }, { passive:false });
+  keyButton?.addEventListener('pointerup', (ev) => {
+    if (ev.pointerType === 'mouse') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { passive:false });
+  keyButton?.addEventListener('touchstart', (ev) => {
+    if (performance.now() - lastKeyDirectOpenAt < 220) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    lastKeyDirectOpenAt = performance.now();
+    ev.preventDefault();
+    ev.stopPropagation();
+    void open();
+  }, { passive:false });
+  keyButton?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (performance.now() - lastKeyDirectOpenAt < 650) return;
+    void open();
+  });
   closeButton?.addEventListener('click', close);
   lockButton?.addEventListener('click', () => lock('manual'));
   createButton?.addEventListener('click', () => void setupVault());

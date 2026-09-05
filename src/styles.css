@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.95 — editor ritaglio vincolato al viewport visibile iPad. */
+/* 0.1.96 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -2894,9 +2894,27 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
 
-/* 0.1.95 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+/* 0.1.96 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
 #passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
 #passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
 @media (orientation: landscape) {
   #passwordVaultSetup.password-vault-auth-view { margin:auto; }
+}
+
+
+/* 0.1.96 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
+.password-vault-panel input,
+.password-vault-panel textarea {
+  font-size:16px;
+  touch-action:manipulation;
+  -webkit-user-select:text;
+  user-select:text;
+}
+.password-vault-pin-grid input,
+.password-vault-pin-entry input {
+  font-size:25px;
+}
+.password-vault-footer-button {
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
 }
