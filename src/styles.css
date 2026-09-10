@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.96 — editor ritaglio vincolato al viewport visibile iPad. */
+/* 0.1.97 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -2894,7 +2894,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
 
-/* 0.1.96 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+/* 0.1.97 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
 #passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
 #passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
 @media (orientation: landscape) {
@@ -2902,7 +2902,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.96 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
+/* 0.1.97 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
 .password-vault-panel input,
 .password-vault-panel textarea {
   font-size:16px;
@@ -2917,4 +2917,203 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .password-vault-footer-button {
   touch-action:manipulation;
   -webkit-tap-highlight-color:transparent;
+}
+
+/* 0.1.97 — Rubrica manoscritta A-Z */
+.password-vault-panel {
+  place-items:stretch;
+  padding:max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  background:rgba(31,28,24,.20);
+}
+.password-vault-notebook-card {
+  position:relative;
+  width:100%;
+  height:100%;
+  max-width:none;
+  max-height:none;
+  min-width:0;
+  min-height:0;
+  padding:0;
+  gap:0;
+  border-radius:16px;
+  overflow:hidden;
+  background:#fbf7ed;
+  border:1px solid rgba(98,77,50,.22);
+  box-shadow:0 18px 60px rgba(46,37,25,.24);
+}
+.password-vault-notebook-head {
+  flex:0 0 54px;
+  min-height:54px;
+  padding:0 14px 0 22px;
+  border-bottom:1px solid rgba(98,77,50,.20);
+  background:#f4eddf;
+}
+.password-vault-notebook-head h2 {
+  margin:0;
+  font-family:Georgia, 'Times New Roman', serif;
+  font-size:25px;
+  font-weight:700;
+  color:#42382d;
+}
+.password-vault-notebook-head .password-vault-head-actions {
+  margin-left:auto;
+}
+.password-vault-notebook-head .password-vault-head-actions button {
+  width:38px;
+  height:38px;
+  min-width:38px;
+  padding:0;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  font-size:18px;
+}
+#passwordVaultCloseButton { font-size:25px; }
+.password-vault-toast {
+  position:absolute;
+  z-index:6;
+  left:50%;
+  top:66px;
+  transform:translateX(-50%) translateY(-5px);
+  width:auto;
+  max-width:min(620px,80vw);
+  min-height:0;
+  margin:0;
+  padding:7px 12px;
+  opacity:0;
+  pointer-events:none;
+  white-space:normal;
+  text-align:center;
+  transition:opacity .15s ease, transform .15s ease;
+  box-shadow:0 5px 18px rgba(42,34,24,.10);
+}
+.password-vault-toast.visible {
+  opacity:1;
+  transform:translateX(-50%) translateY(0);
+}
+.password-vault-auth-page {
+  width:min(520px, calc(100% - 36px));
+  max-width:520px;
+  margin:auto;
+  padding:28px 30px 30px;
+  box-sizing:border-box;
+  border-radius:14px;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(102,137,164,.20) 32px, transparent 33px),
+    #fffdf7;
+  border:1px solid rgba(99,77,50,.16);
+  box-shadow:0 10px 26px rgba(55,44,30,.08);
+}
+.password-vault-auth-page h3 { color:#42382d; }
+.password-vault-notebook {
+  position:relative;
+  flex:1 1 auto;
+  min-width:0;
+  min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) clamp(34px,4.2vw,46px);
+  gap:0;
+  overflow:hidden;
+  background:#fffdf7;
+}
+.password-vault-page {
+  position:relative;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+  background:
+    linear-gradient(to right, transparent 0, transparent 54px, rgba(210,98,88,.20) 55px, transparent 56px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(92,132,164,.22) 32px, transparent 33px),
+    #fffdf7;
+}
+.password-vault-canvas {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+  cursor:crosshair;
+}
+.password-vault-tabs {
+  position:relative;
+  z-index:4;
+  min-height:0;
+  display:grid;
+  grid-template-rows:repeat(26, minmax(0,1fr));
+  align-items:stretch;
+  border-left:1px solid rgba(92,71,47,.20);
+  background:#efe4d1;
+  overflow:hidden;
+}
+.password-vault-tabs button {
+  appearance:none;
+  width:100%;
+  min-width:0;
+  min-height:0;
+  padding:0;
+  border:0;
+  border-bottom:1px solid rgba(90,70,48,.14);
+  border-radius:0;
+  background:#f3ead9;
+  color:#544738;
+  font:700 clamp(9px,1.25vh,13px)/1 Georgia, serif;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+}
+.password-vault-tabs button:nth-child(4n+2) { background:#eee1cd; }
+.password-vault-tabs button:nth-child(4n+3) { background:#f6edde; }
+.password-vault-tabs button:nth-child(4n+4) { background:#eadbc4; }
+.password-vault-tabs button.active {
+  position:relative;
+  z-index:2;
+  background:#d7bea0;
+  color:#2f2821;
+  box-shadow:inset 4px 0 0 #8e6747;
+  font-weight:800;
+}
+.password-vault-page-tools {
+  position:absolute;
+  z-index:5;
+  left:12px;
+  bottom:10px;
+  display:flex;
+  gap:8px;
+  pointer-events:auto;
+}
+.password-vault-page-tools button,
+.password-vault-biometric-setup {
+  appearance:none;
+  border:1px solid rgba(79,64,47,.20);
+  background:rgba(255,253,247,.88);
+  color:#4b4034;
+  border-radius:10px;
+  min-width:42px;
+  min-height:38px;
+  padding:6px 10px;
+  font-weight:700;
+  touch-action:manipulation;
+  box-shadow:0 3px 10px rgba(49,38,25,.08);
+}
+.password-vault-biometric-setup {
+  position:absolute;
+  z-index:6;
+  right:calc(clamp(34px,4.2vw,46px) + 12px);
+  bottom:10px;
+  font-size:12px;
+}
+.password-vault-biometric-setup[hidden] { display:none !important; }
+.password-vault-panel input { font-size:16px; }
+.password-vault-pin-grid input,
+.password-vault-pin-entry input { font-size:25px; }
+@media (max-height:700px) {
+  .password-vault-notebook-head { flex-basis:48px; min-height:48px; }
+  .password-vault-notebook-head h2 { font-size:22px; }
+  .password-vault-tabs button { font-size:9px; }
+  .password-vault-page { background:
+    linear-gradient(to right, transparent 0, transparent 48px, rgba(210,98,88,.20) 49px, transparent 50px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(92,132,164,.22) 28px, transparent 29px),
+    #fffdf7; }
 }

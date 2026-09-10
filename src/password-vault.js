@@ -310,6 +310,7 @@ export function initPasswordVault(options = {}) {
   const onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
   const onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
 
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
   const keyButton = document.getElementById('passwordVaultButton');
   const panel = document.getElementById('passwordVaultPanel');
   const closeButton = document.getElementById('passwordVaultCloseButton');
@@ -324,35 +325,85 @@ export function initPasswordVault(options = {}) {
   const pinUnlockButton = document.getElementById('passwordVaultPinUnlockButton');
   const biometricUnlockButton = document.getElementById('passwordVaultBiometricUnlockButton');
   const biometricSetupButton = document.getElementById('passwordVaultBiometricSetupButton');
-  const changePinButton = document.getElementById('passwordVaultChangePinButton');
   const securityStatus = document.getElementById('passwordVaultSecurityStatus');
   const vaultStatus = document.getElementById('passwordVaultStatus');
-  const searchInput = document.getElementById('passwordVaultSearch');
   const azBar = document.getElementById('passwordVaultAz');
-  const entryList = document.getElementById('passwordVaultList');
-  const newButton = document.getElementById('passwordVaultNewButton');
-  const editor = document.getElementById('passwordVaultEditor');
-  const serviceInput = document.getElementById('passwordVaultService');
-  const usernameInput = document.getElementById('passwordVaultUsername');
-  const passwordInput = document.getElementById('passwordVaultPassword');
-  const notesInput = document.getElementById('passwordVaultNotes');
-  const saveButton = document.getElementById('passwordVaultSaveButton');
-  const deleteButton = document.getElementById('passwordVaultDeleteButton');
-  const cancelEditButton = document.getElementById('passwordVaultCancelEditButton');
-  const revealButton = document.getElementById('passwordVaultRevealButton');
-  const copyUserButton = document.getElementById('passwordVaultCopyUserButton');
-  const copyPasswordButton = document.getElementById('passwordVaultCopyPasswordButton');
+  const page = document.getElementById('passwordVaultPage');
+  const canvas = document.getElementById('passwordVaultCanvas');
+  const undoButton = document.getElementById('passwordVaultUndoButton');
+  const ctx = canvas?.getContext?.('2d', { alpha:true, desynchronized:true }) || null;
 
   let configRow = null;
   let dataRow = null;
   let localAuthRow = null;
   let masterKeyBytes = null;
-  let entries = [];
-  let selectedId = '';
-  let activeLetter = 'TUTTE';
+  let notebook = emptyNotebook();
+  let legacyEntries = [];
+  let activeLetter = 'A';
+  let activeStroke = null;
+  let activeTouchId = null;
   let autoLockTimer = 0;
   let destroyed = false;
   let lastKeyDirectOpenAt = -Infinity;
+  let lastPenPointerAt = -Infinity;
+  let resizeObserver = null;
+  let saveChain = Promise.resolve();
+  let toastTimer = 0;
+
+  function emptyNotebook() {
+    return { version:1, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])) };
+  }
+
+  function sanitizePoint(point = {}) {
+    return {
+      x:Math.max(0, Math.min(1, Number(point.x) || 0)),
+      y:Math.max(0, Math.min(1, Number(point.y) || 0)),
+      p:Math.max(0, Math.min(1, Number(point.p) || 0.5))
+    };
+  }
+
+  function sanitizeStroke(stroke = {}) {
+    const points = Array.isArray(stroke.points) ? stroke.points.slice(0, 30000).map(sanitizePoint) : [];
+    return {
+      id:String(stroke.id || crypto.randomUUID?.() || `rv-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      points,
+      createdAt:String(stroke.createdAt || new Date().toISOString())
+    };
+  }
+
+  function sanitizeNotebook(value) {
+    const out = emptyNotebook();
+    const pages = value?.pages && typeof value.pages === 'object' ? value.pages : {};
+    for (const letter of LETTERS) {
+      const strokes = Array.isArray(pages[letter]) ? pages[letter] : [];
+      out.pages[letter] = strokes.slice(0, 10000).map(sanitizeStroke).filter((stroke) => stroke.points.length > 0);
+    }
+    return out;
+  }
+
+  async function decryptPayload(rawKey, row) {
+    if (!isPortableVaultRow(row) || row.key !== VAULT_DATA_KEY) throw new Error('Archivio rubrica non valido');
+    const key = await importAesKey(rawKey);
+    const plain = await aesDecryptBytes(key, row.envelope, wrapAad(row.vaultId, `data:${row.revision}`));
+    const parsed = JSON.parse(td.decode(plain));
+    if (Number(parsed?.schemaVersion) !== VAULT_SCHEMA_VERSION) throw new Error('Contenuto rubrica non compatibile');
+    return parsed;
+  }
+
+  async function encryptPayload(rawKey, vaultId, payload, revision) {
+    const key = await importAesKey(rawKey);
+    const rev = Math.max(1, Number(revision) || 1);
+    const body = te.encode(JSON.stringify({ schemaVersion:VAULT_SCHEMA_VERSION, ...payload }));
+    const envelope = await aesEncryptBytes(key, body, wrapAad(vaultId, `data:${rev}`));
+    return {
+      key:VAULT_DATA_KEY,
+      schemaVersion:VAULT_SCHEMA_VERSION,
+      vaultId:String(vaultId || ''),
+      revision:rev,
+      envelope,
+      modifiedAt:new Date().toISOString()
+    };
+  }
 
   function sanitizePinControl(control) {
     if (!control) return;
@@ -362,8 +413,6 @@ export function initPasswordVault(options = {}) {
 
   function bindFullKeyboardPin(control) {
     if (!control) return;
-    // iPadOS: inputmode=numeric/pattern=[0-9]* richiama la tastiera numerica compatta.
-    // Usiamo la tastiera testuale estesa e filtriamo comunque il valore a 4 sole cifre.
     control.setAttribute('inputmode', 'text');
     control.removeAttribute('pattern');
     control.setAttribute('autocapitalize', 'off');
@@ -372,25 +421,27 @@ export function initPasswordVault(options = {}) {
     control.addEventListener('input', () => sanitizePinControl(control));
   }
 
-  function setStatus(message) {
-    if (vaultStatus) vaultStatus.textContent = String(message || '');
-    try { onStatus(String(message || '')); } catch {}
+  function setStatus(message, transient = false) {
+    const text = String(message || '');
+    if (vaultStatus) {
+      vaultStatus.textContent = text;
+      vaultStatus.classList.toggle('visible', Boolean(text));
+      clearTimeout(toastTimer);
+      if (transient && masterKeyBytes) toastTimer = setTimeout(() => vaultStatus.classList.remove('visible'), 1800);
+    }
+    try { onStatus(text); } catch {}
   }
 
   function clearSecretInputs() {
     if (pinInput) pinInput.value = '';
     if (setupPin) setupPin.value = '';
     if (setupPinConfirm) setupPinConfirm.value = '';
-    if (passwordInput) { passwordInput.value = ''; passwordInput.type = 'password'; }
-    if (usernameInput) usernameInput.value = '';
-    if (notesInput) notesInput.value = '';
-    if (serviceInput) serviceInput.value = '';
   }
 
   function armAutoLock() {
     clearTimeout(autoLockTimer);
     if (!masterKeyBytes) return;
-    autoLockTimer = setTimeout(() => lock('timeout'), AUTO_LOCK_MS);
+    autoLockTimer = setTimeout(() => void lock('timeout'), AUTO_LOCK_MS);
   }
 
   async function refreshRows() {
@@ -414,77 +465,240 @@ export function initPasswordVault(options = {}) {
     if (biometricSetupButton) biometricSetupButton.hidden = !unlocked || Boolean(localAuthRow);
     if (securityStatus) {
       securityStatus.textContent = localAuthRow
-        ? 'Biometria dispositivo configurata · PIN 4 cifre disponibile come recupero'
-        : initialized ? 'PIN 4 cifre attivo · biometria non ancora associata a questo dispositivo' : 'Crea prima il PIN di 4 cifre';
+        ? 'Impronta digitale / biometria già associata · PIN disponibile come alternativa.'
+        : initialized ? 'PIN attivo · biometria non associata a questo dispositivo.' : '';
+    }
+    if (unlocked) {
+      updateTabs();
+      requestAnimationFrame(() => resizeCanvas(true));
     }
   }
 
-  function entryInitial(entry) {
-    const s = String(entry?.service || '').trim();
-    const ch = s ? s[0].toLocaleUpperCase('it-IT') : '#';
-    return /^[A-ZÀ-ÖØ-Ý]$/i.test(ch) ? ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase() : '#';
+  function updateTabs() {
+    if (!azBar) return;
+    for (const button of azBar.querySelectorAll('[data-vault-letter]')) {
+      const selected = button.dataset.vaultLetter === activeLetter;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-current', selected ? 'page' : 'false');
+    }
   }
 
-  function renderEntries() {
-    if (!entryList) return;
-    const q = String(searchInput?.value || '').trim().toLocaleLowerCase('it-IT');
-    const filtered = sortEntries(entries).filter((entry) => {
-      if (activeLetter !== 'TUTTE' && entryInitial(entry) !== activeLetter) return false;
-      if (!q) return true;
-      return `${entry.service}\n${entry.username}\n${entry.notes}`.toLocaleLowerCase('it-IT').includes(q);
-    });
-    entryList.innerHTML = '';
-    if (!filtered.length) {
-      const empty = document.createElement('div');
-      empty.className = 'password-vault-empty';
-      empty.textContent = entries.length ? 'Nessuna voce corrispondente.' : 'Rubrica vuota. Tocca “Nuova voce”.';
-      entryList.appendChild(empty);
+  function canvasMetrics() {
+    const rect = canvas?.getBoundingClientRect?.();
+    return rect && rect.width > 0 && rect.height > 0 ? rect : { left:0, top:0, width:1, height:1 };
+  }
+
+  function drawStroke(stroke) {
+    if (!ctx || !stroke?.points?.length) return;
+    const width = canvas.width;
+    const height = canvas.height;
+    const dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
+    const pts = stroke.points;
+    ctx.save();
+    ctx.strokeStyle = '#24303a';
+    ctx.fillStyle = '#24303a';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (pts.length === 1) {
+      const p = pts[0];
+      const r = Math.max(1.05, 1.7 * (0.7 + p.p * 0.55)) * dpr;
+      ctx.beginPath();
+      ctx.arc(p.x * width, p.y * height, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
       return;
     }
-    for (const entry of filtered) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `password-vault-entry${entry.id === selectedId ? ' selected' : ''}`;
-      button.dataset.vaultEntryId = entry.id;
-      const strong = document.createElement('strong'); strong.textContent = entry.service || '(senza nome)';
-      const small = document.createElement('small'); small.textContent = entry.username || '—';
-      button.append(strong, small);
-      entryList.appendChild(button);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      ctx.lineWidth = Math.max(1.4, 2.2 * (0.72 + ((a.p + b.p) * 0.5) * 0.5)) * dpr;
+      ctx.beginPath();
+      ctx.moveTo(a.x * width, a.y * height);
+      ctx.lineTo(b.x * width, b.y * height);
+      ctx.stroke();
     }
+    ctx.restore();
   }
 
-  function hideEditor() {
-    selectedId = '';
-    if (editor) editor.hidden = true;
-    clearSecretInputs();
-    renderEntries();
+  function renderPage() {
+    if (!ctx || !canvas) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const stroke of notebook.pages[activeLetter] || []) drawStroke(stroke);
   }
 
-  function editEntry(id = '') {
-    const found = entries.find((entry) => entry.id === id) || null;
-    selectedId = found?.id || '';
-    if (editor) editor.hidden = false;
-    if (serviceInput) serviceInput.value = found?.service || '';
-    if (usernameInput) usernameInput.value = found?.username || '';
-    if (passwordInput) { passwordInput.value = found?.password || ''; passwordInput.type = 'password'; }
-    if (notesInput) notesInput.value = found?.notes || '';
-    if (deleteButton) deleteButton.hidden = !found;
-    renderEntries();
-    setTimeout(() => serviceInput?.focus?.({ preventScroll: true }), 0);
+  function resizeCanvas(force = false) {
+    if (!canvas || !ctx || unlockedView?.hidden) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (!force && canvas.width === w && canvas.height === h) return;
+    canvas.width = w;
+    canvas.height = h;
+    renderPage();
   }
 
-  async function persistEntries(nextEntries) {
-    if (!masterKeyBytes || !configRow || !dataRow) throw new Error('Rubrica bloccata');
-    const nextRevision = Math.max(1, Number(dataRow.revision) || 1) + 1;
-    const encrypted = await encryptVaultEntries(masterKeyBytes, configRow.vaultId, nextEntries.map(sanitizeEntry), nextRevision);
-    await commitPortableRows([encrypted]);
-    dataRow = { ...encrypted };
-    entries = nextEntries.map(sanitizeEntry);
+  function pointFromClient(clientX, clientY, pressure = 0.5) {
+    const rect = canvasMetrics();
+    return sanitizePoint({
+      x:(clientX - rect.left) / Math.max(1, rect.width),
+      y:(clientY - rect.top) / Math.max(1, rect.height),
+      p:Number.isFinite(pressure) && pressure > 0 ? pressure : 0.5
+    });
+  }
+
+  function appendPoint(clientX, clientY, pressure = 0.5) {
+    if (!activeStroke) return;
+    const point = pointFromClient(clientX, clientY, pressure);
+    const last = activeStroke.points.at(-1);
+    const rect = canvasMetrics();
+    if (last) {
+      const dx = (point.x - last.x) * rect.width;
+      const dy = (point.y - last.y) * rect.height;
+      if (dx * dx + dy * dy < 0.20) return;
+    }
+    activeStroke.points.push(point);
+    if (activeStroke.points.length === 1) drawStroke(activeStroke);
+    else drawStroke({ points:[activeStroke.points.at(-2), activeStroke.points.at(-1)] });
+  }
+
+  function beginStroke(pointerId, clientX, clientY, pressure = 0.5, source = 'pointer') {
+    if (!masterKeyBytes || activeStroke) return false;
+    activeStroke = {
+      id:String(crypto.randomUUID?.() || `rv-${Date.now()}-${Math.random().toString(16).slice(2)}`),
+      pointerId,
+      source,
+      points:[],
+      createdAt:new Date().toISOString()
+    };
+    appendPoint(clientX, clientY, pressure);
+    armAutoLock();
+    return true;
+  }
+
+  async function persistNotebookSnapshot(snapshot) {
+    if (!masterKeyBytes || !configRow || !dataRow) return;
+    const keyCopy = new Uint8Array(masterKeyBytes);
+    const baseRevision = Math.max(1, Number(dataRow.revision) || 1);
+    saveChain = saveChain.then(async () => {
+      try {
+        const revision = Math.max(baseRevision + 1, Math.max(1, Number(dataRow?.revision) || 1) + 1);
+        const encrypted = await encryptPayload(keyCopy, configRow.vaultId, {
+          entries:clone(legacyEntries),
+          notebook:snapshot
+        }, revision);
+        await commitPortableRows([encrypted]);
+        dataRow = { ...encrypted };
+      } finally {
+        keyCopy.fill(0);
+      }
+    }).catch((err) => setStatus(`Salvataggio Rubrica non riuscito: ${err?.message || err}`));
+    return saveChain;
+  }
+
+  function finishStroke(cancelled = false) {
+    const stroke = activeStroke;
+    activeStroke = null;
+    activeTouchId = null;
+    if (!stroke) return;
+    if (cancelled || stroke.points.length < 1) {
+      renderPage();
+      return;
+    }
+    notebook.pages[activeLetter].push(sanitizeStroke(stroke));
+    const snapshot = sanitizeNotebook(notebook);
+    void persistNotebookSnapshot(snapshot);
+    armAutoLock();
+  }
+
+  function handleCanvasPointerDown(ev) {
+    if (!masterKeyBytes) return;
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    if (ev.pointerType === 'touch') return;
+    if (ev.pointerType === 'pen') lastPenPointerAt = performance.now();
+    if (!beginStroke(ev.pointerId, ev.clientX, ev.clientY, ev.pressure, 'pointer')) return;
+    try { canvas?.setPointerCapture?.(ev.pointerId); } catch {}
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function handleCanvasPointerMove(ev) {
+    if (!activeStroke) return;
+    const compatible = activeStroke.source === 'touch' ? ev.pointerType === 'pen' : ev.pointerId === activeStroke.pointerId;
+    if (!compatible) return;
+    const samples = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [ev];
+    for (const sample of samples.length ? samples : [ev]) appendPoint(sample.clientX, sample.clientY, sample.pressure);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function handleCanvasPointerUp(ev, cancelled = false) {
+    if (!activeStroke) return;
+    const compatible = activeStroke.source === 'touch' ? ev.pointerType === 'pen' : ev.pointerId === activeStroke.pointerId;
+    if (!compatible) return;
+    appendPoint(ev.clientX, ev.clientY, ev.pressure);
+    try { if (canvas?.hasPointerCapture?.(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
+    finishStroke(cancelled);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function findTouch(list, id) {
+    if (!list) return null;
+    for (const touch of list) if (touch.identifier === id) return touch;
+    return null;
+  }
+
+  function handleCanvasTouchStart(ev) {
+    if (!masterKeyBytes || activeStroke || performance.now() - lastPenPointerAt < 180 || ev.touches?.length !== 1) return;
+    const touch = ev.touches[0];
+    if (touch.touchType && touch.touchType !== 'stylus') return;
+    activeTouchId = touch.identifier;
+    if (!beginStroke(`touch-${touch.identifier}`, touch.clientX, touch.clientY, touch.force, 'touch')) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function handleCanvasTouchMove(ev) {
+    if (!activeStroke || activeTouchId == null) return;
+    const touch = findTouch(ev.touches, activeTouchId);
+    if (!touch) return;
+    appendPoint(touch.clientX, touch.clientY, touch.force);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function handleCanvasTouchEnd(ev, cancelled = false) {
+    if (!activeStroke || activeTouchId == null) return;
+    const touch = findTouch(ev.changedTouches, activeTouchId);
+    if (touch) appendPoint(touch.clientX, touch.clientY, touch.force);
+    finishStroke(cancelled);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  function selectLetter(letter) {
+    if (!LETTERS.includes(letter) || letter === activeLetter) return;
+    if (activeStroke) finishStroke(false);
+    activeLetter = letter;
+    updateTabs();
+    renderPage();
+    armAutoLock();
+  }
+
+  function undoLastStroke() {
+    if (!masterKeyBytes) return;
+    const pageStrokes = notebook.pages[activeLetter] || [];
+    if (!pageStrokes.length) return setStatus(`Pagina ${activeLetter} già vuota.`, true);
+    pageStrokes.pop();
+    renderPage();
+    void persistNotebookSnapshot(sanitizeNotebook(notebook));
+    setStatus('Ultimo tratto annullato.', true);
     armAutoLock();
   }
 
   async function readLocalSecurityState() {
-    return await getRow(VAULT_LOCAL_STATE_KEY).catch(() => null) || { key: VAULT_LOCAL_STATE_KEY, failedAttempts: 0, lockedUntil: 0 };
+    return await getRow(VAULT_LOCAL_STATE_KEY).catch(() => null) || { key:VAULT_LOCAL_STATE_KEY, failedAttempts:0, lockedUntil:0 };
   }
 
   async function notePinFailure() {
@@ -493,35 +707,31 @@ export function initPasswordVault(options = {}) {
     let waitMs = 0;
     if (failedAttempts >= 8) waitMs = 5 * 60 * 1000;
     else if (failedAttempts >= 5) waitMs = 30 * 1000;
-    const row = { key: VAULT_LOCAL_STATE_KEY, failedAttempts, lockedUntil: waitMs ? Date.now() + waitMs : 0, modifiedAt: new Date().toISOString() };
+    const row = { key:VAULT_LOCAL_STATE_KEY, failedAttempts, lockedUntil:waitMs ? Date.now() + waitMs : 0, modifiedAt:new Date().toISOString() };
     await putLocalRow(row).catch(() => {});
     return row;
   }
 
   async function clearPinFailures() {
-    await putLocalRow({ key: VAULT_LOCAL_STATE_KEY, failedAttempts: 0, lockedUntil: 0, modifiedAt: new Date().toISOString() }).catch(() => {});
+    await putLocalRow({ key:VAULT_LOCAL_STATE_KEY, failedAttempts:0, lockedUntil:0, modifiedAt:new Date().toISOString() }).catch(() => {});
   }
 
   async function ensurePinAllowed() {
     const state = await readLocalSecurityState();
     const until = Math.max(0, Number(state.lockedUntil) || 0);
-    if (until > Date.now()) {
-      const seconds = Math.ceil((until - Date.now()) / 1000);
-      throw new Error(`Troppi tentativi errati. Riprova tra ${seconds} s.`);
-    }
+    if (until > Date.now()) throw new Error(`Troppi tentativi errati. Riprova tra ${Math.ceil((until - Date.now()) / 1000)} s.`);
   }
 
   async function unlockWithMasterKey(rawKey, method) {
-    const loadedEntries = await decryptVaultEntries(rawKey, dataRow);
+    const payload = await decryptPayload(rawKey, dataRow);
     if (masterKeyBytes) masterKeyBytes.fill(0);
     masterKeyBytes = new Uint8Array(rawKey);
-    entries = loadedEntries.map(sanitizeEntry);
-    selectedId = '';
+    legacyEntries = Array.isArray(payload.entries) ? clone(payload.entries) : [];
+    notebook = sanitizeNotebook(payload.notebook);
+    activeLetter = 'A';
     renderMode();
-    renderEntries();
-    hideEditor();
     armAutoLock();
-    setStatus(`Rubrica sbloccata · ${method} · ${entries.length} ${entries.length === 1 ? 'voce' : 'voci'}`);
+    setStatus(`Rubrica sbloccata con ${method}.`, true);
   }
 
   async function unlockPin() {
@@ -544,7 +754,7 @@ export function initPasswordVault(options = {}) {
     try {
       if (!localAuthRow) throw new Error('Biometria non configurata su questo dispositivo');
       const raw = await unwrapMasterKeyWithBiometric(configRow, localAuthRow);
-      await unlockWithMasterKey(raw, 'Touch ID / biometria');
+      await unlockWithMasterKey(raw, 'biometria');
       raw.fill(0);
     } catch (err) {
       if (err?.name === 'NotAllowedError') setStatus('Accesso biometrico annullato. Puoi usare il PIN.');
@@ -565,97 +775,38 @@ export function initPasswordVault(options = {}) {
       await unlockWithMasterKey(material.masterKeyBytes, 'nuovo PIN');
       material.masterKeyBytes.fill(0);
       clearSecretInputs();
-      setStatus('Rubrica creata e cifrata. Puoi ora associare Touch ID / biometria.');
-    } catch (err) { setStatus(`Creazione rubrica non riuscita: ${err?.message || err}`); }
+    } catch (err) { setStatus(`Creazione Rubrica non riuscita: ${err?.message || err}`); }
   }
 
   async function enableBiometric() {
     try {
-      if (!masterKeyBytes || !configRow) throw new Error('Sblocca prima la rubrica con il PIN');
+      if (!masterKeyBytes || !configRow) throw new Error('Sblocca prima la Rubrica con il PIN');
       setStatus('Conferma l’autenticazione biometrica di iPadOS…');
       const row = await createBiometricWrapper(masterKeyBytes, configRow.vaultId);
       await putLocalRow(row);
       localAuthRow = row;
       renderMode();
-      setStatus('Touch ID / biometria associata a questo dispositivo ✓');
+      setStatus('Impronta digitale / biometria associata.', true);
     } catch (err) {
       if (err?.name === 'NotAllowedError') setStatus('Configurazione biometrica annullata.');
       else setStatus(`Biometria non configurata: ${err?.message || err}`);
     }
   }
 
-  async function changePin() {
-    if (!masterKeyBytes || !configRow) return;
-    const first = window.prompt('Nuovo PIN della Rubrica Password (4 cifre):');
-    if (first === null) return;
-    const second = window.prompt('Ripeti il nuovo PIN (4 cifre):');
-    if (second === null) return;
-    if (!/^\d{4}$/.test(first) || first !== second) return setStatus('Cambio PIN annullato: inserire due PIN identici di 4 cifre.');
-    try {
-      const nextConfig = await rewrapMasterKeyWithPin(configRow, masterKeyBytes, first);
-      await commitPortableRows([nextConfig]);
-      configRow = nextConfig;
-      setStatus('PIN aggiornato ✓ · Backup e Sync useranno solo la nuova chiave avvolta.');
-    } catch (err) { setStatus(`Cambio PIN non riuscito: ${err?.message || err}`); }
-  }
-
-  async function saveEditor() {
-    if (!masterKeyBytes) return;
-    const service = String(serviceInput?.value || '').trim();
-    if (!service) return setStatus('Inserisci almeno il nome del servizio/sito.');
-    const now = new Date().toISOString();
-    const existing = entries.find((entry) => entry.id === selectedId) || null;
-    const entry = sanitizeEntry({
-      id: existing?.id,
-      service,
-      username: usernameInput?.value || '',
-      password: passwordInput?.value || '',
-      notes: notesInput?.value || '',
-      createdAt: existing?.createdAt || now,
-      modifiedAt: now
-    });
-    const next = existing ? entries.map((item) => item.id === existing.id ? entry : item) : [...entries, entry];
-    try {
-      await persistEntries(next);
-      hideEditor();
-      setStatus(`Voce “${entry.service}” salvata in forma cifrata ✓`);
-    } catch (err) { setStatus(`Salvataggio non riuscito: ${err?.message || err}`); }
-  }
-
-  async function deleteEditorEntry() {
-    const existing = entries.find((entry) => entry.id === selectedId);
-    if (!existing) return;
-    if (!window.confirm(`Eliminare “${existing.service}” dalla Rubrica Password?`)) return;
-    try {
-      await persistEntries(entries.filter((item) => item.id !== existing.id));
-      hideEditor();
-      setStatus('Voce eliminata ✓');
-    } catch (err) { setStatus(`Eliminazione non riuscita: ${err?.message || err}`); }
-  }
-
-  async function copyValue(value, label) {
-    const text = String(value || '');
-    if (!text) return setStatus(`${label}: campo vuoto.`);
-    try {
-      await navigator.clipboard.writeText(text);
-      setStatus(`${label} copiato negli appunti.`);
-    } catch { setStatus(`Copia ${label.toLowerCase()} non disponibile automaticamente.`); }
-    armAutoLock();
-  }
-
-  function lock(reason = 'manual') {
+  async function lock(reason = 'manual') {
     clearTimeout(autoLockTimer);
+    if (activeStroke) finishStroke(false);
+    const pending = saveChain;
     if (masterKeyBytes) masterKeyBytes.fill(0);
     masterKeyBytes = null;
-    entries = [];
-    selectedId = '';
+    notebook = emptyNotebook();
+    legacyEntries = [];
     clearSecretInputs();
-    if (editor) editor.hidden = true;
     renderMode();
-    renderEntries();
-    if (reason === 'timeout') setStatus('Rubrica bloccata automaticamente per inattività.');
-    else if (reason === 'background') setStatus('Rubrica bloccata perché Agenda è passata in background.');
-    else setStatus('Rubrica bloccata.');
+    try { await pending; } catch {}
+    if (reason === 'timeout') setStatus('Rubrica bloccata automaticamente.');
+    else if (reason === 'background') setStatus('Rubrica bloccata.');
+    else setStatus('Rubrica protetta.');
   }
 
   async function open() {
@@ -664,13 +815,18 @@ export function initPasswordVault(options = {}) {
     try { onOpen(); } catch {}
     panel.hidden = false;
     renderMode();
-    if (masterKeyBytes) { renderEntries(); armAutoLock(); }
-    else setStatus(configRow && dataRow ? 'Rubrica protetta: usa Touch ID / biometria oppure PIN di 4 cifre.' : 'Prima configurazione: crea il PIN di 4 cifre.');
+    if (masterKeyBytes) {
+      armAutoLock();
+      requestAnimationFrame(() => resizeCanvas(true));
+    } else {
+      setStatus(configRow && dataRow ? 'Accedi con impronta digitale / biometria oppure PIN.' : 'Prima configurazione: crea il PIN di 4 cifre.');
+      setTimeout(() => (configRow && dataRow ? pinInput : setupPin)?.focus?.({ preventScroll:true }), 50);
+    }
   }
 
-  function close() {
+  async function close() {
     if (!panel) return;
-    lock('manual');
+    await lock('manual');
     panel.hidden = true;
     try { onClose(); } catch {}
   }
@@ -678,17 +834,31 @@ export function initPasswordVault(options = {}) {
   async function handleRemoteUpdate(key) {
     if (key !== VAULT_CONFIG_KEY && key !== VAULT_DATA_KEY) return;
     await refreshRows();
-    if (masterKeyBytes) lock('remote');
-    setStatus('Rubrica aggiornata dal Sync. Sblocca nuovamente per visualizzare i dati ricevuti.');
+    if (masterKeyBytes) await lock('remote');
+    setStatus('Rubrica aggiornata dal Sync. Accedi nuovamente.');
+  }
+
+  function bindDirectAction(element, action) {
+    if (!element) return;
+    let lastDirect = -Infinity;
+    element.addEventListener('pointerdown', (ev) => {
+      if (ev.pointerType === 'mouse') return;
+      lastDirect = performance.now();
+      ev.preventDefault();
+      ev.stopPropagation();
+      action(ev);
+    }, { passive:false });
+    element.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      if (performance.now() - lastDirect < 650) return;
+      action(ev);
+    });
   }
 
   bindFullKeyboardPin(setupPin);
   bindFullKeyboardPin(setupPinConfirm);
   bindFullKeyboardPin(pinInput);
 
-  // 0.1.96 — l'icona Chiave deve rispondere immediatamente anche ad Apple Pencil.
-  // Il click resta per mouse/tastiera; pointerdown/touchstart coprono iPadOS senza
-  // dipendere dalla sintesi del click dopo il contatto Pencil.
   keyButton?.addEventListener('pointerdown', (ev) => {
     if (ev.pointerType === 'mouse') return;
     lastKeyDirectOpenAt = performance.now();
@@ -702,11 +872,7 @@ export function initPasswordVault(options = {}) {
     ev.stopPropagation();
   }, { passive:false });
   keyButton?.addEventListener('touchstart', (ev) => {
-    if (performance.now() - lastKeyDirectOpenAt < 220) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      return;
-    }
+    if (performance.now() - lastKeyDirectOpenAt < 220) { ev.preventDefault(); ev.stopPropagation(); return; }
     lastKeyDirectOpenAt = performance.now();
     ev.preventDefault();
     ev.stopPropagation();
@@ -717,44 +883,39 @@ export function initPasswordVault(options = {}) {
     if (performance.now() - lastKeyDirectOpenAt < 650) return;
     void open();
   });
-  closeButton?.addEventListener('click', close);
-  lockButton?.addEventListener('click', () => lock('manual'));
-  createButton?.addEventListener('click', () => void setupVault());
-  pinUnlockButton?.addEventListener('click', () => void unlockPin());
+
+  bindDirectAction(closeButton, () => void close());
+  bindDirectAction(lockButton, () => void lock('manual'));
+  bindDirectAction(createButton, () => void setupVault());
+  bindDirectAction(pinUnlockButton, () => void unlockPin());
+  bindDirectAction(biometricUnlockButton, () => void unlockBiometric());
+  bindDirectAction(biometricSetupButton, () => void enableBiometric());
+  bindDirectAction(undoButton, () => undoLastStroke());
   pinInput?.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); void unlockPin(); } });
-  biometricUnlockButton?.addEventListener('click', () => void unlockBiometric());
-  biometricSetupButton?.addEventListener('click', () => void enableBiometric());
-  changePinButton?.addEventListener('click', () => void changePin());
-  newButton?.addEventListener('click', () => editEntry(''));
-  cancelEditButton?.addEventListener('click', hideEditor);
-  saveButton?.addEventListener('click', () => void saveEditor());
-  deleteButton?.addEventListener('click', () => void deleteEditorEntry());
-  revealButton?.addEventListener('click', () => {
-    if (!passwordInput) return;
-    passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password';
-    revealButton.setAttribute('aria-pressed', passwordInput.type === 'text' ? 'true' : 'false');
-    armAutoLock();
-  });
-  copyUserButton?.addEventListener('click', () => void copyValue(usernameInput?.value, 'Utente'));
-  copyPasswordButton?.addEventListener('click', () => void copyValue(passwordInput?.value, 'Password'));
-  searchInput?.addEventListener('input', () => { renderEntries(); armAutoLock(); });
-  entryList?.addEventListener('click', (ev) => {
-    const button = ev.target instanceof Element ? ev.target.closest('[data-vault-entry-id]') : null;
-    if (!button) return;
-    editEntry(button.dataset.vaultEntryId || '');
-    armAutoLock();
-  });
-  azBar?.addEventListener('click', (ev) => {
-    const button = ev.target instanceof Element ? ev.target.closest('[data-vault-letter]') : null;
-    if (!button) return;
-    activeLetter = String(button.dataset.vaultLetter || 'TUTTE');
-    for (const item of azBar.querySelectorAll('[data-vault-letter]')) item.classList.toggle('active', item === button);
-    renderEntries();
-    armAutoLock();
-  });
-  panel?.addEventListener('pointerdown', armAutoLock, { passive: true });
-  panel?.addEventListener('keydown', armAutoLock, { passive: true });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && masterKeyBytes) lock('background'); });
+
+  if (azBar) for (const button of azBar.querySelectorAll('[data-vault-letter]')) {
+    bindDirectAction(button, () => selectLetter(String(button.dataset.vaultLetter || 'A')));
+  }
+
+  canvas?.addEventListener('pointerdown', handleCanvasPointerDown, { passive:false });
+  canvas?.addEventListener('pointermove', handleCanvasPointerMove, { passive:false });
+  canvas?.addEventListener('pointerup', (ev) => handleCanvasPointerUp(ev, false), { passive:false });
+  canvas?.addEventListener('pointercancel', (ev) => handleCanvasPointerUp(ev, true), { passive:false });
+  canvas?.addEventListener('touchstart', handleCanvasTouchStart, { passive:false });
+  canvas?.addEventListener('touchmove', handleCanvasTouchMove, { passive:false });
+  canvas?.addEventListener('touchend', (ev) => handleCanvasTouchEnd(ev, false), { passive:false });
+  canvas?.addEventListener('touchcancel', (ev) => handleCanvasTouchEnd(ev, true), { passive:false });
+
+  panel?.addEventListener('pointerdown', armAutoLock, { passive:true });
+  panel?.addEventListener('keydown', armAutoLock, { passive:true });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && masterKeyBytes) void lock('background'); });
+
+  if (typeof ResizeObserver !== 'undefined' && page) {
+    resizeObserver = new ResizeObserver(() => resizeCanvas());
+    resizeObserver.observe(page);
+  }
+  globalThis.visualViewport?.addEventListener?.('resize', () => resizeCanvas());
+  globalThis.addEventListener?.('orientationchange', () => setTimeout(() => resizeCanvas(true), 60));
 
   void refreshRows().then(renderMode);
 
@@ -762,9 +923,10 @@ export function initPasswordVault(options = {}) {
     open,
     close,
     lock,
-    isUnlocked: () => Boolean(masterKeyBytes),
+    isUnlocked:() => Boolean(masterKeyBytes),
+    isWriting:() => Boolean(activeStroke),
     handleRemoteUpdate,
-    refresh: async () => { await refreshRows(); renderMode(); },
-    destroy: () => { destroyed = true; lock('manual'); }
+    refresh:async () => { await refreshRows(); renderMode(); },
+    destroy:() => { destroyed = true; resizeObserver?.disconnect?.(); void lock('manual'); }
   };
 }
