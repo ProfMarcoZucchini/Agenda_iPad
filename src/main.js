@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.97';
+const APP_VERSION = '0.1.98';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -78,6 +78,7 @@ const MAX_DATE = '2028-12-31';
 const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
+const FREE_NOTE_KEY_PREFIX = '::free-note::';
 const GLOBAL_PAGE_STYLE_KEY = '::global-page-style';
 const PLANNER_MODES = Object.freeze(['daily', 'weekly', 'monthly', 'yearly']);
 const PAPER_TOOL_DEFAULTS = Object.freeze({
@@ -124,6 +125,7 @@ const shapePreviewPath = document.getElementById('shapePreviewPath');
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
+const freeNotesButton = document.getElementById('freeNotesButton');
 const miniCalendar = document.getElementById('miniCalendar');
 const styleButton = document.getElementById('styleButton');
 const stylePanel = document.getElementById('stylePanel');
@@ -209,6 +211,9 @@ let currentDate = localISODate(new Date());
 let currentPageKind = 'agenda';
 let currentNoteIndex = 0;
 let currentNoteTotal = 0;
+let currentFreeNoteIndex = 1;
+let currentFreeNoteTotal = 1;
+let freeNoteCountLoaded = false;
 const notesCountCache = new Map();
 let strokes = [];
 let images = [];
@@ -1479,7 +1484,7 @@ function principalSaintName(payload) {
 function setSaintLabel(root, dateString, state = 'cached', pageKind = currentPageKind) {
   const label = root?.querySelector?.('.saint-name');
   if (!label) return;
-  const hiddenForNotes = pageKind === 'note';
+  const hiddenForNotes = pageKind === 'note' || pageKind === 'free-note';
   label.hidden = hiddenForNotes;
   if (hiddenForNotes) return;
   const name = cachedSaintName(dateString);
@@ -1698,7 +1703,7 @@ function plannerPeriodKey(dateString, mode, timetableIndex = currentTimetableInd
   return `planner::year::${dateString.slice(0, 4)}`;
 }
 
-function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0) {
+function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal) {
   const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
   const monthName = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
@@ -1713,7 +1718,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
   if (kindLabel) {
-    if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
+    if (pageKind === 'free-note') kindLabel.textContent = 'Note libere';
+    else if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
     else if (isPlannerKind(pageKind)) {
       const mode = plannerModeFromKind(pageKind);
       const plannerDate = new Date(`${dateString}T12:00:00`);
@@ -1727,8 +1733,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
       else kindLabel.textContent = plannerModeTitle('yearly', dateString);
     } else kindLabel.textContent = '';
   }
-  if (noteCounter) noteCounter.textContent = '';
-  if (hours) hours.hidden = pageKind === 'note' || isPlannerKind(pageKind);
+  if (noteCounter) noteCounter.textContent = pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '';
+  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || isPlannerKind(pageKind);
   if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
   else if (kindLabel) kindLabel.style.removeProperty('left');
 }
@@ -2139,6 +2145,7 @@ function configurePageRoot(root, descriptor) {
   const mode = planner ? plannerModeFromKind(descriptor.kind) : null;
   root.classList.toggle('planner-view', planner);
   root.classList.toggle('note-view', descriptor.kind === 'note');
+  root.classList.toggle('free-note-view', descriptor.kind === 'free-note');
   for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
   root.classList.toggle('planner-timetable', planner && mode === 'timetable');
   const layer = root.querySelector('.planner-layer');
@@ -2156,7 +2163,7 @@ function configurePageRoot(root, descriptor) {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
   const hours = root.querySelector('.hours');
-  if (hours) hours.hidden = descriptor.kind === 'note' || planner;
+  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || planner;
 }
 
 let audioIndicatorSerial = 0;
@@ -2176,7 +2183,7 @@ async function refreshAudioPageIndicator() {
 }
 
 function updateHeader() {
-  setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
+  setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal, currentFreeNoteIndex, currentFreeNoteTotal);
   configurePageRoot(paper, pageDescriptor());
   if (currentPageKind === 'agenda') {
     scheduleSaintRefresh();
@@ -2192,10 +2199,12 @@ function updateHeader() {
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
   if (baselineLabel) {
-    if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
+    if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
+    else if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
     else baselineLabel.textContent = 'AGENDA · PLANNER · INK STABILE';
   }
+  freeNotesButton?.setAttribute('aria-pressed', currentPageKind === 'free-note' ? 'true' : 'false');
   void refreshAudioPageIndicator();
 }
 
@@ -2207,13 +2216,18 @@ function noteKey(dateString, noteIndex) {
   return `${dateString}::note::${String(noteIndex).padStart(4, '0')}`;
 }
 
-function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex) {
+function freeNoteKey(index) {
+  return `${FREE_NOTE_KEY_PREFIX}${String(Math.max(1, Number(index) || 1)).padStart(4, '0')}`;
+}
+
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex) {
+  if (pageKind === 'free-note') return freeNoteKey(freeNoteIndex);
   if (pageKind === 'note') return noteKey(dateString, noteIndex);
   if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind), timetableIndex);
   return dateString;
 }
 
-function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex) {
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal) {
   const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
   return {
     date: dateString,
@@ -2224,13 +2238,22 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
       : 0,
     noteIndex: pageKind === 'note' ? noteIndex : 0,
     noteTotal: pageKind === 'note' ? noteTotal : 0,
-    key: pageKey(dateString, pageKind, noteIndex, timetableIndex),
-    createNote: false
+    freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(freeNoteIndex) || 1) : 0,
+    freeNoteTotal: pageKind === 'free-note' ? Math.max(1, Number(freeNoteTotal) || 1) : 0,
+    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex),
+    createNote: false,
+    createFreeNote: false
   };
 }
 
+function freeNoteDescriptor(index = currentFreeNoteIndex, total = currentFreeNoteTotal) {
+  const safeIndex = Math.max(1, Number(index) || 1);
+  const safeTotal = Math.max(safeIndex, Number(total) || 1);
+  return pageDescriptor(currentDate, 'free-note', 0, 0, currentTimetableIndex, safeIndex, safeTotal);
+}
+
 function currentPageKey() {
-  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex);
+  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex);
 }
 
 function addDays(dateString, delta) {
@@ -2594,7 +2617,8 @@ function buildEmptyPageRecord(descriptor) {
   const d = descriptor || {};
   return {
     date: String(d.key || d.date || ''),
-    kind: d.kind === 'note' ? 'day-note-ink'
+    kind: d.kind === 'free-note' ? 'free-note-ink'
+      : d.kind === 'note' ? 'day-note-ink'
       : d.kind === 'planner-daily' ? 'planner-day-ink'
       : d.kind === 'planner-weekly' ? 'planner-week-ink'
       : d.kind === 'planner-monthly' ? 'planner-month-ink'
@@ -2604,6 +2628,7 @@ function buildEmptyPageRecord(descriptor) {
     referenceDate: String(d.date || ''),
     plannerMode: d.plannerMode ?? null,
     noteIndex: d.kind === 'note' ? (Number(d.noteIndex) || 0) : 0,
+    freeNoteIndex: d.kind === 'free-note' ? (Number(d.freeNoteIndex) || 1) : 0,
     version: APP_VERSION,
     pipeline: 'coalesced-retina-storage-sync-v1',
     strokes: [],
@@ -2618,7 +2643,8 @@ function descriptorFromStoredRecord(record) {
   const kind = String(record?.kind || '');
   const referenceDate = String(record?.referenceDate || (key.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || currentDate));
   let pageKind = 'agenda';
-  if (kind === 'day-note-ink') pageKind = 'note';
+  if (kind === 'free-note-ink') pageKind = 'free-note';
+  else if (kind === 'day-note-ink') pageKind = 'note';
   else if (kind === 'planner-day-ink') pageKind = 'planner-daily';
   else if (kind === 'planner-week-ink') pageKind = 'planner-weekly';
   else if (kind === 'planner-month-ink') pageKind = 'planner-monthly';
@@ -2631,7 +2657,11 @@ function descriptorFromStoredRecord(record) {
     plannerMode: pageKind.startsWith('planner-') ? plannerModeFromKind(pageKind) : null,
     timetableIndex,
     noteIndex: pageKind === 'note' ? Math.max(1, Number(record?.noteIndex) || Number(key.match(/::note::(\d+)$/)?.[1]) || 1) : 0,
-    noteTotal: 0, createNote: false
+    noteTotal: 0,
+    freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(record?.freeNoteIndex) || Number(key.match(/::free-note::(\d+)$/)?.[1]) || 1) : 0,
+    freeNoteTotal: 0,
+    createNote: false,
+    createFreeNote: false
   };
 }
 
@@ -3782,6 +3812,30 @@ async function persistNotesCount(dateString, count) {
   }
 }
 
+async function ensureFreeNoteCount(force = false) {
+  if (freeNoteCountLoaded && !force) return currentFreeNoteTotal;
+  try {
+    await openDb();
+    const records = await readAllMainRecords();
+    let maxIndex = 0;
+    for (const row of records) {
+      const key = String(row?.date || '');
+      if (row?.kind !== 'free-note-ink' && !key.startsWith(FREE_NOTE_KEY_PREFIX)) continue;
+      const index = Math.max(0, Number(row?.freeNoteIndex) || Number(key.match(/::free-note::(\d+)$/)?.[1]) || 0);
+      maxIndex = Math.max(maxIndex, index);
+    }
+    currentFreeNoteTotal = Math.max(1, maxIndex || currentFreeNoteTotal || 1);
+    currentFreeNoteIndex = Math.min(currentFreeNoteTotal, Math.max(1, currentFreeNoteIndex || 1));
+    freeNoteCountLoaded = true;
+    return currentFreeNoteTotal;
+  } catch (err) {
+    console.warn('Conteggio Note libere non disponibile', err);
+    currentFreeNoteTotal = Math.max(1, currentFreeNoteTotal || 1);
+    freeNoteCountLoaded = true;
+    return currentFreeNoteTotal;
+  }
+}
+
 function setupStrokeStyle(stroke, targetCtx = ctx) {
   const tool = stroke?.tool ?? 'pen';
   targetCtx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
@@ -4257,7 +4311,7 @@ function sizeImageCropStage() {
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
 
-  // 0.1.97 — usa il viewport realmente visibile su iPadOS e riserva spazio
+  // 0.1.98 — usa il viewport realmente visibile su iPadOS e riserva spazio
   // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
   // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
   const viewport = cropViewportSize();
@@ -5260,7 +5314,8 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     const putStart = performance.now();
     const promise = putRecordWithSync({
       date: descriptor.key,
-      kind: descriptor.kind === 'note' ? 'day-note-ink'
+      kind: descriptor.kind === 'free-note' ? 'free-note-ink'
+        : descriptor.kind === 'note' ? 'day-note-ink'
         : descriptor.kind === 'planner-daily' ? 'planner-day-ink'
         : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
         : descriptor.kind === 'planner-monthly' ? 'planner-month-ink'
@@ -5270,6 +5325,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
       referenceDate: descriptor.date,
       plannerMode: descriptor.plannerMode ?? null,
       noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
+      freeNoteIndex: descriptor.kind === 'free-note' ? descriptor.freeNoteIndex : 0,
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage-sync-v1',
       strokes: pageStrokes,
@@ -5644,6 +5700,10 @@ function activateUiButton(button) {
     toggleCalendar();
     return;
   }
+  if (button === freeNotesButton) {
+    void toggleFreeNotes();
+    return;
+  }
   if (button === styleButton) {
     toggleStylePanel();
     return;
@@ -5797,7 +5857,7 @@ function buildReport() {
   return [
     `Agenda iPad CLOUD SYNC v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
-    `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
+    `Tipo pagina: ${currentPageKind === 'free-note' ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
     `Chiave pagina: ${currentPageKey()}`,
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
@@ -5888,8 +5948,9 @@ async function clearCurrentPage(options = {}) {
     statusLabel.textContent = 'pagina già vuota';
     return false;
   }
-  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (indipendente da Agenda)' : ''}` : 'pagina Agenda';
-  if (requireConfirmation && !window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return false;
+  const label = currentPageKind === 'free-note' ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (indipendente da Agenda)' : ''}` : 'pagina Agenda';
+  const scopeLabel = currentPageKind === 'free-note' ? label : `${label} del ${currentDate}`;
+  if (requireConfirmation && !window.confirm(`Cancellare soltanto ${scopeLabel}?`)) return false;
   eraserClearBusy = true;
   cancelPendingSave();
   const clearedDescriptor = pageDescriptor();
@@ -5989,6 +6050,7 @@ function drawPreviewInk(preview, previewStrokes) {
 }
 
 function footerTextFor(descriptor) {
+  if (descriptor.kind === 'free-note') return `NOTE LIBERE · ${descriptor.freeNoteIndex}/${Math.max(1, descriptor.freeNoteTotal)}`;
   if (descriptor.kind === 'note') return `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`;
   if (isPlannerKind(descriptor.kind)) return `PLANNER · ${String(descriptor.plannerMode ?? 'daily').toUpperCase()}`;
   return 'AGENDA · ANTEPRIMA';
@@ -6006,7 +6068,7 @@ function createPreview(descriptor) {
   if (previewImageLayer) previewImageLayer.replaceChildren();
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
   clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
-  setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
+  setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal, descriptor.freeNoteIndex, descriptor.freeNoteTotal);
   configurePageRoot(clone, descriptor);
   const footer = clone.querySelector('.baseline-footer');
   if (footer) {
@@ -6054,7 +6116,9 @@ async function loadPageForPreview(descriptor, preview) {
       images: imagesFromRecord(record),
       pageStyle: descriptor.kind === 'planner-timetable'
         ? { color:'black', template:'blank' }
-        : pageStyleFromRecord(record)
+        : descriptor.kind === 'free-note' && !record
+          ? { color:globalPageStyle.color, template:'ruled' }
+          : pageStyleFromRecord(record)
     };
     if (preview?.isConnected) {
       applyPageStyle(preview, targetPage.pageStyle);
@@ -6083,6 +6147,7 @@ function resetTurnStyles() {
 }
 
 function horizontalTarget(direction) {
+  if (currentPageKind === 'free-note') return null;
   if (currentPageKind === 'planner-timetable') {
     const nextIndex = currentTimetableIndex + direction;
     if (nextIndex < 1 || nextIndex > WEEKLY_TIMETABLE_MAX_PAGES) return null;
@@ -6095,6 +6160,19 @@ function horizontalTarget(direction) {
 }
 
 function verticalTarget(direction) {
+  if (currentPageKind === 'free-note') {
+    if (direction < 0) {
+      if (currentFreeNoteIndex <= 1) return null;
+      return freeNoteDescriptor(currentFreeNoteIndex - 1, currentFreeNoteTotal);
+    }
+    const nextIndex = currentFreeNoteIndex + 1;
+    const createFreeNote = nextIndex > currentFreeNoteTotal;
+    if (createFreeNote && isSyncRestorePending()) return null;
+    const target = freeNoteDescriptor(nextIndex, createFreeNote ? nextIndex : currentFreeNoteTotal);
+    target.createFreeNote = createFreeNote;
+    return target;
+  }
+
   const count = notesCountCache.get(currentDate) ?? currentNoteTotal ?? 0;
 
   // 0.1.53 — Orario settimanale raggiungibile con swipe verso il basso
@@ -6242,11 +6320,83 @@ function movePageSwipe(ev) {
     else if (target.kind === 'planner-daily') statusLabel.textContent = 'apri Planner giornaliero';
     else if (target.kind === 'planner-timetable') statusLabel.textContent = 'apri Orario settimanale';
     else if (target.kind === 'planner-weekly') statusLabel.textContent = 'torna al Planning settimanale';
+    else if (target.kind === 'free-note') statusLabel.textContent = `Nota libera ${target.freeNoteIndex}/${target.freeNoteTotal}`;
     else statusLabel.textContent = `Nota ${target.noteIndex}/${target.noteTotal}`;
   }
 
   applySwipeVisual(dx, dy);
   ev.preventDefault();
+}
+
+async function toggleFreeNotes() {
+  if (!ready || drawing || pageTurning || pageStyleBulkBusy || storageBusy) return;
+  const leavingFreeNotes = currentPageKind === 'free-note';
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('note-libere');
+  if (activeTool !== 'pen') {
+    deactivatePageTool();
+    selectTool('pen');
+  }
+  pageTurning = true;
+  closeStylePanel();
+  closeShapePalette();
+  cancelPendingSave();
+  const oldDescriptor = pageDescriptor();
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle, images) : true;
+  if (!saveOk) {
+    pageTurning = false;
+    statusLabel.textContent = 'salvataggio non riuscito';
+    if (dirty) scheduleSave();
+    return;
+  }
+
+  try {
+    await openDb();
+    let target;
+    if (leavingFreeNotes) {
+      target = pageDescriptor(currentDate, 'agenda', 0, 0);
+    } else {
+      await ensureFreeNoteCount(true);
+      target = freeNoteDescriptor(currentFreeNoteIndex, currentFreeNoteTotal);
+    }
+    const record = await getRecord(target.key);
+    session.storageReads++;
+
+    currentPageKind = target.kind;
+    currentNoteIndex = 0;
+    currentNoteTotal = 0;
+    if (target.kind === 'free-note') {
+      currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
+      currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || 1);
+      freeNoteCountLoaded = true;
+    }
+    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    images = imagesFromRecord(record);
+    selectedImageId = null;
+    const previousPaperColor = pageStyle.color;
+    pageStyle = target.kind === 'free-note' && !record
+      ? normalizePageStyle({ color:globalPageStyle.color, template:'ruled' })
+      : pageStyleFromRecord(record);
+    applyPageStyle();
+    updatePageStyleUi();
+    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
+    resetUndoHistory();
+    dirty = false;
+    await migrateLegacyErasersOnCurrentPage();
+    updateHeader();
+    resizeCanvas();
+    renderAll();
+    renderImages();
+    statusLabel.textContent = target.kind === 'free-note'
+      ? ((strokes.length || images.length) ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal} · nuova`)
+      : ((strokes.length || images.length) ? 'Agenda caricata' : 'pagina Agenda');
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Apertura Note libere non riuscita', err);
+    statusLabel.textContent = 'Note libere non disponibili';
+  } finally {
+    pageTurning = false;
+    updateToolUi();
+  }
 }
 
 async function switchPlannerMode(mode) {
@@ -6372,6 +6522,23 @@ async function commitPageTurn() {
     if (dirty) scheduleSave();
     return;
   }
+  if (target.createFreeNote) {
+    const freeCreateOk = await persistSnapshot(
+      target,
+      Array.isArray(targetPage?.strokes) ? targetPage.strokes : [],
+      false,
+      targetPage?.pageStyle ?? { color:globalPageStyle.color, template:'ruled' },
+      Array.isArray(targetPage?.images) ? targetPage.images : []
+    );
+    if (!freeCreateOk) {
+      resetTurnStyles();
+      removePreview();
+      pageSwipe = null;
+      pageTurning = false;
+      statusLabel.textContent = 'creazione Nota libera non riuscita';
+      return;
+    }
+  }
 
   currentDate = target.date;
   if (target.kind === 'agenda') calendarViewDate = target.date;
@@ -6389,13 +6556,20 @@ async function commitPageTurn() {
   }
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
+  if (target.kind === 'free-note') {
+    currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
+    currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || currentFreeNoteTotal || 1);
+    freeNoteCountLoaded = true;
+  }
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
   images = Array.isArray(targetPage?.images) ? targetPage.images.map(normalizeImageObject).filter(Boolean) : [];
   selectedImageId = null;
   const previousPaperColor = pageStyle.color;
   pageStyle = target.kind === 'planner-timetable'
     ? normalizePageStyle({ color:'black', template:'blank' })
-    : normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
+    : target.kind === 'free-note'
+      ? normalizePageStyle(targetPage?.pageStyle ?? { color:globalPageStyle.color, template:'ruled' })
+      : normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
   applyPageStyle();
   updatePageStyleUi();
   if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
@@ -6422,7 +6596,7 @@ async function commitPageTurn() {
     session.noteTurns++;
   }
   pageTurning = false;
-  statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : (currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
+  statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : (currentPageKind === 'free-note' ? 'nota libera nuova' : currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
 }
 
 function endPageSwipe(ev, cancelled = false) {
@@ -6475,7 +6649,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.97 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.98 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -6580,8 +6754,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.97 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.97 questi campioni venivano scartati perché il canale
+  // 0.1.98 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.98 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -6616,7 +6790,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.97 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.98 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -6683,7 +6857,7 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.97 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // 0.1.98 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
   // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
   // logico già aperto nel controller Lazo.
   if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
@@ -6714,7 +6888,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.97 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  // 0.1.98 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
   if (lassoTouchId == null && lassoPointerId != null) {
     const id = lassoPointerId;
     const ended = ev.changedTouches?.[0] || null;
@@ -6914,6 +7088,7 @@ lassoTool = initLassoTool({
 
 const directUiButtons = [...new Set([
   calendarButton,
+  freeNotesButton,
   ...toolButtons,
   ...shapeChoiceButtons,
   undoButton,
@@ -7058,7 +7233,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.97 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
+// 0.1.98 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
 // del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
 // shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
 function handleLassoShieldPointerDown(ev) {
@@ -7092,7 +7267,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.97 — listener diretti sullo shield mantenuti solo come fallback.
+// 0.1.98 — listener diretti sullo shield mantenuti solo come fallback.
 // Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
@@ -7103,7 +7278,7 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.97 — Window capture è il percorso primario iPad/Pencil/dito.
+// 0.1.98 — Window capture è il percorso primario iPad/Pencil/dito.
 // Non viene più saltato quando event.target è lo shield.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
@@ -7309,6 +7484,10 @@ for (const button of shapeChoiceButtons) {
 calendarButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(calendarButton)) return;
   toggleCalendar();
+});
+freeNotesButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(freeNotesButton)) return;
+  void toggleFreeNotes();
 });
 styleButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(styleButton)) return;

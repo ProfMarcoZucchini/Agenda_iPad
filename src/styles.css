@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.97 — editor ritaglio vincolato al viewport visibile iPad. */
+/* 0.1.98 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -2894,7 +2894,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
 
-/* 0.1.97 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+/* 0.1.98 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
 #passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
 #passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
 @media (orientation: landscape) {
@@ -2902,7 +2902,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.97 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
+/* 0.1.98 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
 .password-vault-panel input,
 .password-vault-panel textarea {
   font-size:16px;
@@ -2919,7 +2919,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   -webkit-tap-highlight-color:transparent;
 }
 
-/* 0.1.97 — Rubrica manoscritta A-Z */
+/* 0.1.98 — Rubrica manoscritta A-Z */
 .password-vault-panel {
   place-items:stretch;
   padding:max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
@@ -3117,3 +3117,81 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
     repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(92,132,164,.22) 28px, transparent 29px),
     #fffdf7; }
 }
+
+
+/* 0.1.98 — Copertina, crediti full-screen e accesso Note libere. */
+.cover-card { overflow:hidden; }
+/* L'anno e' incorporato nell'immagine storica: lo copriamo con una placchetta decorativa,
+   senza modificare il file sorgente della copertina. */
+.cover-card::after {
+  content:"";
+  position:absolute;
+  left:38.5%;
+  width:23%;
+  height:3.7%;
+  bottom:4%;
+  border-radius:999px;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(224,153,77,.16), transparent 56%),
+    linear-gradient(180deg,#a63f3d 0%,#8f302f 100%);
+  box-shadow:inset 0 0 0 1px rgba(229,173,86,.34);
+  pointer-events:none;
+}
+@media (orientation: landscape) {
+  .cover-card { transform:rotate(180deg); transform-origin:50% 50%; }
+}
+
+.credits-screen img,
+.info-credits-screen img {
+  width:100vw !important;
+  height:100dvh !important;
+  max-width:none !important;
+  max-height:none !important;
+  object-fit:contain !important;
+  object-position:center center;
+}
+.info-credits-overlay { padding:0 !important; }
+.info-credits-screen { width:100vw; height:100dvh; overflow:hidden; }
+
+.free-notes-footer-button { color:#6d8db1; }
+.free-notes-icon { width:28px; height:28px; overflow:visible; }
+.free-notes-footer-button[aria-pressed="true"] {
+  background:rgba(91,128,170,.16);
+  box-shadow:inset 0 0 0 1px rgba(91,128,170,.22);
+}
+.paper[data-paper-color="black"] .free-notes-footer-button { color:#a9c8ef; }
+.paper[data-paper-color="black"] .free-notes-footer-button[aria-pressed="true"] { background:rgba(169,200,239,.15); }
+
+/* Note libere: pagina manoscritta indipendente dalla data, senza scala oraria. */
+.paper.free-note-view .hours { display:none !important; }
+.paper.free-note-view .weather-badge,
+.paper.free-note-view .date-block { display:none !important; }
+.paper.free-note-view .page-header {
+  justify-content:center;
+  align-items:center;
+}
+.paper.free-note-view .page-kind-label {
+  position:static !important;
+  margin:0;
+  min-height:0;
+  font-family:Georgia, "Times New Roman", serif;
+  font-size:clamp(20px,2.2vw,28px);
+  letter-spacing:.03em;
+  color:rgba(67,55,43,.88);
+  text-transform:none;
+}
+.paper.free-note-view .page-meta {
+  position:absolute;
+  right:18px;
+  top:50%;
+  transform:translateY(-50%);
+  min-width:0;
+}
+.paper.free-note-view .note-counter {
+  font-size:clamp(13px,1.45vw,17px);
+  color:rgba(88,72,55,.62);
+}
+.paper.free-note-view .planner-mode-bar,
+.paper.free-note-view .planner-layer { display:none !important; }
+.paper[data-paper-color="black"].free-note-view .page-kind-label,
+.paper[data-paper-color="black"].free-note-view .note-counter { color:rgba(255,255,255,.82); }
