@@ -1,3 +1,10 @@
+import { buildShapePoints as buildBaseShapePoints, SHAPE_TYPES as BASE_SHAPE_TYPES, SHAPE_LABELS as BASE_SHAPE_LABELS } from './shapes.js';
+import { buildExtraShapePoints, EXTRA_SHAPE_TYPES, EXTRA_SHAPE_LABELS } from './extra-shapes.js';
+
+const SHAPE_TYPES = Object.freeze([...BASE_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
+const SHAPE_LABELS = Object.freeze({ ...BASE_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
+const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildBaseShapePoints(type, bounds);
+
 const te = new TextEncoder();
 const td = new TextDecoder();
 
@@ -330,7 +337,11 @@ export function initPasswordVault(options = {}) {
   const azBar = document.getElementById('passwordVaultAz');
   const page = document.getElementById('passwordVaultPage');
   const canvas = document.getElementById('passwordVaultCanvas');
-  const undoButton = document.getElementById('passwordVaultUndoButton');
+  const toolbar = document.getElementById('passwordVaultToolbar');
+  const toolPopover = document.getElementById('passwordVaultToolPopover');
+  const shapePalette = document.getElementById('passwordVaultShapePalette');
+  const stylePalette = document.getElementById('passwordVaultStylePalette');
+  const imageInput = document.getElementById('passwordVaultImageInput');
   const ctx = canvas?.getContext?.('2d', { alpha:true, desynchronized:true }) || null;
 
   let configRow = null;
@@ -340,7 +351,7 @@ export function initPasswordVault(options = {}) {
   let notebook = emptyNotebook();
   let legacyEntries = [];
   let activeLetter = 'A';
-  let activeStroke = null;
+  let activeGesture = null;
   let activeTouchId = null;
   let autoLockTimer = 0;
   let destroyed = false;
@@ -349,9 +360,27 @@ export function initPasswordVault(options = {}) {
   let resizeObserver = null;
   let saveChain = Promise.resolve();
   let toastTimer = 0;
+  let notebookDirty = false;
+  let changeSerial = 0;
+  let biometricOpening = false;
+  let activeTool = 'pen';
+  let lastInkTool = 'pen';
+  let activeShapeType = 'rectangle';
+  let toolStyle = {
+    pen:{ color:'#24303a', width:2.2 },
+    highlighter:{ color:'#f0d84f', width:15 },
+    eraser:{ width:22 },
+    shape:{ color:'#24303a', width:2.2 },
+    text:{ color:'#24303a', size:24 }
+  };
+  let selectionIds = new Set();
+  let lassoPoints = [];
+  let undoByLetter = Object.fromEntries(LETTERS.map((l) => [l, []]));
+  let redoByLetter = Object.fromEntries(LETTERS.map((l) => [l, []]));
+  const imageCache = new Map();
 
   function emptyNotebook() {
-    return { version:1, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])) };
+    return { version:2, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])) };
   }
 
   function sanitizePoint(point = {}) {
@@ -362,12 +391,45 @@ export function initPasswordVault(options = {}) {
     };
   }
 
-  function sanitizeStroke(stroke = {}) {
-    const points = Array.isArray(stroke.points) ? stroke.points.slice(0, 30000).map(sanitizePoint) : [];
+  function newId(prefix = 'rv') {
+    return String(crypto.randomUUID?.() || `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  }
+
+  function sanitizeItem(item = {}) {
+    const kind = String(item.kind || (Array.isArray(item.points) ? 'stroke' : 'stroke'));
+    const base = {
+      id:String(item.id || newId('rv')),
+      kind,
+      createdAt:String(item.createdAt || new Date().toISOString()),
+      modifiedAt:String(item.modifiedAt || item.createdAt || new Date().toISOString())
+    };
+    if (kind === 'image') {
+      return {
+        ...base, src:String(item.src || '').slice(0, 14000000),
+        x:Math.max(0, Math.min(1, Number(item.x) || 0)), y:Math.max(0, Math.min(1, Number(item.y) || 0)),
+        w:Math.max(.02, Math.min(1, Number(item.w) || .32)), h:Math.max(.02, Math.min(1, Number(item.h) || .24))
+      };
+    }
+    if (kind === 'text') {
+      return {
+        ...base, text:String(item.text || '').slice(0, 4000),
+        x:Math.max(0, Math.min(1, Number(item.x) || .12)), y:Math.max(0, Math.min(1, Number(item.y) || .14)),
+        color:String(item.color || '#24303a'), size:Math.max(12, Math.min(72, Number(item.size) || 24))
+      };
+    }
+    if (kind === 'shape') {
+      return {
+        ...base, shapeType:SHAPE_TYPES.includes(item.shapeType) ? item.shapeType : 'rectangle',
+        x:Math.max(0, Math.min(1, Number(item.x) || 0)), y:Math.max(0, Math.min(1, Number(item.y) || 0)),
+        w:Math.max(.005, Math.min(1, Number(item.w) || .2)), h:Math.max(.005, Math.min(1, Number(item.h) || .15)),
+        color:String(item.color || '#24303a'), width:Math.max(.8, Math.min(40, Number(item.width) || 2.2))
+      };
+    }
+    const points = Array.isArray(item.points) ? item.points.slice(0, 30000).map(sanitizePoint) : [];
     return {
-      id:String(stroke.id || crypto.randomUUID?.() || `rv-${Date.now()}-${Math.random().toString(16).slice(2)}`),
-      points,
-      createdAt:String(stroke.createdAt || new Date().toISOString())
+      ...base, kind:'stroke', tool:item.tool === 'highlighter' ? 'highlighter' : 'pen', points,
+      color:String(item.color || (item.tool === 'highlighter' ? '#f0d84f' : '#24303a')),
+      width:Math.max(.8, Math.min(50, Number(item.width) || (item.tool === 'highlighter' ? 15 : 2.2)))
     };
   }
 
@@ -375,8 +437,8 @@ export function initPasswordVault(options = {}) {
     const out = emptyNotebook();
     const pages = value?.pages && typeof value.pages === 'object' ? value.pages : {};
     for (const letter of LETTERS) {
-      const strokes = Array.isArray(pages[letter]) ? pages[letter] : [];
-      out.pages[letter] = strokes.slice(0, 10000).map(sanitizeStroke).filter((stroke) => stroke.points.length > 0);
+      const items = Array.isArray(pages[letter]) ? pages[letter] : [];
+      out.pages[letter] = items.slice(0, 12000).map(sanitizeItem).filter((item) => item.kind !== 'stroke' || item.points.length > 0);
     }
     return out;
   }
@@ -396,12 +458,8 @@ export function initPasswordVault(options = {}) {
     const body = te.encode(JSON.stringify({ schemaVersion:VAULT_SCHEMA_VERSION, ...payload }));
     const envelope = await aesEncryptBytes(key, body, wrapAad(vaultId, `data:${rev}`));
     return {
-      key:VAULT_DATA_KEY,
-      schemaVersion:VAULT_SCHEMA_VERSION,
-      vaultId:String(vaultId || ''),
-      revision:rev,
-      envelope,
-      modifiedAt:new Date().toISOString()
+      key:VAULT_DATA_KEY, schemaVersion:VAULT_SCHEMA_VERSION, vaultId:String(vaultId || ''),
+      revision:rev, envelope, modifiedAt:new Date().toISOString()
     };
   }
 
@@ -465,11 +523,13 @@ export function initPasswordVault(options = {}) {
     if (biometricSetupButton) biometricSetupButton.hidden = !unlocked || Boolean(localAuthRow);
     if (securityStatus) {
       securityStatus.textContent = localAuthRow
-        ? 'Impronta digitale / biometria già associata · PIN disponibile come alternativa.'
+        ? 'Biometria predefinita · PIN disponibile come accesso alternativo.'
         : initialized ? 'PIN attivo · biometria non associata a questo dispositivo.' : '';
     }
     if (unlocked) {
+      ensureToolbar();
       updateTabs();
+      updateToolbarUi();
       requestAnimationFrame(() => resizeCanvas(true));
     }
   }
@@ -483,59 +543,63 @@ export function initPasswordVault(options = {}) {
     }
   }
 
+  function currentItems() { return notebook.pages[activeLetter] || (notebook.pages[activeLetter] = []); }
+  function pageSnapshot() { return clone(currentItems()); }
+
+  function pushHistory(before) {
+    const stack = undoByLetter[activeLetter];
+    stack.push(clone(before));
+    if (stack.length > 80) stack.shift();
+    redoByLetter[activeLetter] = [];
+  }
+
+  function markChanged(before, message = '') {
+    pushHistory(before);
+    notebookDirty = true;
+    changeSerial += 1;
+    selectionIds.clear();
+    if (message) setStatus(message, true);
+    renderPage();
+    void saveCurrentNotebook();
+    armAutoLock();
+  }
+
+  async function persistNotebookSnapshot(snapshot, serialAtStart = changeSerial) {
+    if (!masterKeyBytes || !configRow || !dataRow) return;
+    const keyCopy = new Uint8Array(masterKeyBytes);
+    saveChain = saveChain.then(async () => {
+      try {
+        const revision = Math.max(1, Number(dataRow?.revision) || 1) + 1;
+        const encrypted = await encryptPayload(keyCopy, configRow.vaultId, {
+          entries:clone(legacyEntries), notebook:snapshot
+        }, revision);
+        await commitPortableRows([encrypted]);
+        dataRow = { ...encrypted };
+        if (serialAtStart === changeSerial) notebookDirty = false;
+      } finally { keyCopy.fill(0); }
+    }).catch((err) => {
+      notebookDirty = true;
+      setStatus(`Salvataggio Rubrica non riuscito: ${err?.message || err}`);
+    });
+    return saveChain;
+  }
+
+  async function saveCurrentNotebook(force = false) {
+    if (!masterKeyBytes || (!notebookDirty && !force)) return saveChain;
+    const serial = changeSerial;
+    const snapshot = sanitizeNotebook(notebook);
+    return persistNotebookSnapshot(snapshot, serial);
+  }
+
+  async function flushNotebookBeforeExit() {
+    if (activeGesture) finishGesture(null, false, true);
+    if (notebookDirty) await saveCurrentNotebook(true);
+    try { await saveChain; } catch {}
+  }
+
   function canvasMetrics() {
     const rect = canvas?.getBoundingClientRect?.();
     return rect && rect.width > 0 && rect.height > 0 ? rect : { left:0, top:0, width:1, height:1 };
-  }
-
-  function drawStroke(stroke) {
-    if (!ctx || !stroke?.points?.length) return;
-    const width = canvas.width;
-    const height = canvas.height;
-    const dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
-    const pts = stroke.points;
-    ctx.save();
-    ctx.strokeStyle = '#24303a';
-    ctx.fillStyle = '#24303a';
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    if (pts.length === 1) {
-      const p = pts[0];
-      const r = Math.max(1.05, 1.7 * (0.7 + p.p * 0.55)) * dpr;
-      ctx.beginPath();
-      ctx.arc(p.x * width, p.y * height, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-      return;
-    }
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1], b = pts[i];
-      ctx.lineWidth = Math.max(1.4, 2.2 * (0.72 + ((a.p + b.p) * 0.5) * 0.5)) * dpr;
-      ctx.beginPath();
-      ctx.moveTo(a.x * width, a.y * height);
-      ctx.lineTo(b.x * width, b.y * height);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  function renderPage() {
-    if (!ctx || !canvas) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    for (const stroke of notebook.pages[activeLetter] || []) drawStroke(stroke);
-  }
-
-  function resizeCanvas(force = false) {
-    if (!canvas || !ctx || unlockedView?.hidden) return;
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return;
-    const dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
-    const w = Math.max(1, Math.round(rect.width * dpr));
-    const h = Math.max(1, Math.round(rect.height * dpr));
-    if (!force && canvas.width === w && canvas.height === h) return;
-    canvas.width = w;
-    canvas.height = h;
-    renderPage();
   }
 
   function pointFromClient(clientX, clientY, pressure = 0.5) {
@@ -547,386 +611,302 @@ export function initPasswordVault(options = {}) {
     });
   }
 
-  function appendPoint(clientX, clientY, pressure = 0.5) {
-    if (!activeStroke) return;
-    const point = pointFromClient(clientX, clientY, pressure);
-    const last = activeStroke.points.at(-1);
-    const rect = canvasMetrics();
-    if (last) {
-      const dx = (point.x - last.x) * rect.width;
-      const dy = (point.y - last.y) * rect.height;
-      if (dx * dx + dy * dy < 0.20) return;
+  function drawStroke(item) {
+    if (!ctx || !item?.points?.length) return;
+    const width = canvas.width, height = canvas.height;
+    const dpr = Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
+    const pts = item.points;
+    ctx.save();
+    ctx.strokeStyle = item.color || '#24303a';
+    ctx.fillStyle = item.color || '#24303a';
+    ctx.globalAlpha = item.tool === 'highlighter' ? .34 : 1;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const baseWidth = Math.max(.8, Number(item.width) || 2.2) * dpr;
+    if (pts.length === 1) {
+      const p = pts[0]; ctx.beginPath(); ctx.arc(p.x * width, p.y * height, Math.max(1, baseWidth / 2), 0, Math.PI * 2); ctx.fill(); ctx.restore(); return;
     }
-    activeStroke.points.push(point);
-    if (activeStroke.points.length === 1) drawStroke(activeStroke);
-    else drawStroke({ points:[activeStroke.points.at(-2), activeStroke.points.at(-1)] });
+    ctx.lineWidth = baseWidth;
+    ctx.beginPath(); ctx.moveTo(pts[0].x * width, pts[0].y * height);
+    for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i].x * width, pts[i].y * height);
+    ctx.stroke(); ctx.restore();
   }
 
-  function beginStroke(pointerId, clientX, clientY, pressure = 0.5, source = 'pointer') {
-    if (!masterKeyBytes || activeStroke) return false;
-    activeStroke = {
-      id:String(crypto.randomUUID?.() || `rv-${Date.now()}-${Math.random().toString(16).slice(2)}`),
-      pointerId,
-      source,
-      points:[],
-      createdAt:new Date().toISOString()
-    };
-    appendPoint(clientX, clientY, pressure);
-    armAutoLock();
-    return true;
+  function drawShape(item) {
+    const bounds = { left:item.x, top:item.y, right:item.x + item.w, bottom:item.y + item.h };
+    const points = buildShapePoints(item.shapeType, bounds);
+    if (!points?.length) return;
+    ctx.save();
+    ctx.strokeStyle = item.color || '#24303a';
+    ctx.lineWidth = Math.max(.8, Number(item.width) || 2.2) * Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
+    points.forEach((p,i) => i ? ctx.lineTo(p.x*canvas.width,p.y*canvas.height) : ctx.moveTo(p.x*canvas.width,p.y*canvas.height));
+    ctx.stroke(); ctx.restore();
   }
 
-  async function persistNotebookSnapshot(snapshot) {
-    if (!masterKeyBytes || !configRow || !dataRow) return;
-    const keyCopy = new Uint8Array(masterKeyBytes);
-    const baseRevision = Math.max(1, Number(dataRow.revision) || 1);
-    saveChain = saveChain.then(async () => {
-      try {
-        const revision = Math.max(baseRevision + 1, Math.max(1, Number(dataRow?.revision) || 1) + 1);
-        const encrypted = await encryptPayload(keyCopy, configRow.vaultId, {
-          entries:clone(legacyEntries),
-          notebook:snapshot
-        }, revision);
-        await commitPortableRows([encrypted]);
-        dataRow = { ...encrypted };
-      } finally {
-        keyCopy.fill(0);
-      }
-    }).catch((err) => setStatus(`Salvataggio Rubrica non riuscito: ${err?.message || err}`));
-    return saveChain;
+  function drawText(item) {
+    ctx.save();
+    const dpr=Math.max(1,Math.min(3,globalThis.devicePixelRatio||1));
+    ctx.fillStyle=item.color||'#24303a'; ctx.globalAlpha=1;
+    ctx.font=`${Math.max(12,Number(item.size)||24)*dpr}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
+    ctx.textBaseline='top';
+    const maxWidth=Math.max(40, canvas.width*(1-item.x)-20*dpr);
+    const words=String(item.text||'').split(/\s+/); let line='', y=item.y*canvas.height;
+    const lh=Math.max(16,(Number(item.size)||24)*1.22)*dpr;
+    for(const word of words){ const test=line?`${line} ${word}`:word; if(ctx.measureText(test).width>maxWidth && line){ctx.fillText(line,item.x*canvas.width,y);line=word;y+=lh;} else line=test; }
+    if(line) ctx.fillText(line,item.x*canvas.width,y);
+    ctx.restore();
   }
 
-  function finishStroke(cancelled = false) {
-    const stroke = activeStroke;
-    activeStroke = null;
-    activeTouchId = null;
-    if (!stroke) return;
-    if (cancelled || stroke.points.length < 1) {
-      renderPage();
-      return;
+  function drawImage(item) {
+    if (!item.src) return;
+    let img=imageCache.get(item.src);
+    if(!img){ img=new Image(); imageCache.set(item.src,img); img.onload=()=>renderPage(); img.src=item.src; }
+    if(!img.complete || !img.naturalWidth) return;
+    ctx.drawImage(img,item.x*canvas.width,item.y*canvas.height,item.w*canvas.width,item.h*canvas.height);
+  }
+
+  function itemBounds(item) {
+    if (item.kind === 'image' || item.kind === 'shape') return {x0:item.x,y0:item.y,x1:item.x+item.w,y1:item.y+item.h};
+    if (item.kind === 'text') return {x0:item.x,y0:item.y,x1:Math.min(1,item.x+.34),y1:Math.min(1,item.y+.10)};
+    const pts=item.points||[]; if(!pts.length) return {x0:0,y0:0,x1:0,y1:0};
+    const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y); return {x0:Math.min(...xs),y0:Math.min(...ys),x1:Math.max(...xs),y1:Math.max(...ys)};
+  }
+
+  function selectionBounds() {
+    const selected=currentItems().filter(i=>selectionIds.has(i.id)); if(!selected.length) return null;
+    const bb=selected.map(itemBounds); return {x0:Math.min(...bb.map(b=>b.x0)),y0:Math.min(...bb.map(b=>b.y0)),x1:Math.max(...bb.map(b=>b.x1)),y1:Math.max(...bb.map(b=>b.y1))};
+  }
+
+  function drawOverlays() {
+    const dpr=Math.max(1,Math.min(3,globalThis.devicePixelRatio||1));
+    if(lassoPoints.length){ ctx.save();ctx.strokeStyle='#6d5238';ctx.lineWidth=1.8*dpr;ctx.setLineDash([6*dpr,5*dpr]);ctx.beginPath();lassoPoints.forEach((p,i)=>i?ctx.lineTo(p.x*canvas.width,p.y*canvas.height):ctx.moveTo(p.x*canvas.width,p.y*canvas.height));ctx.stroke();ctx.restore(); }
+    const b=selectionBounds();
+    if(b){ctx.save();ctx.strokeStyle='#4f7fa1';ctx.lineWidth=1.7*dpr;ctx.setLineDash([5*dpr,4*dpr]);ctx.strokeRect(b.x0*canvas.width,b.y0*canvas.height,Math.max(1,(b.x1-b.x0)*canvas.width),Math.max(1,(b.y1-b.y0)*canvas.height));ctx.restore();}
+  }
+
+  function renderPage() {
+    if (!ctx || !canvas) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    for(const item of currentItems()){
+      if(item.kind==='stroke') drawStroke(item); else if(item.kind==='shape') drawShape(item); else if(item.kind==='image') drawImage(item); else if(item.kind==='text') drawText(item);
     }
-    notebook.pages[activeLetter].push(sanitizeStroke(stroke));
-    const snapshot = sanitizeNotebook(notebook);
-    void persistNotebookSnapshot(snapshot);
-    armAutoLock();
+    if(activeGesture?.previewItem){ const p=activeGesture.previewItem; if(p.kind==='shape') drawShape(p); }
+    drawOverlays();
   }
 
-  function handleCanvasPointerDown(ev) {
-    if (!masterKeyBytes) return;
-    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-    if (ev.pointerType === 'touch') return;
-    if (ev.pointerType === 'pen') lastPenPointerAt = performance.now();
-    if (!beginStroke(ev.pointerId, ev.clientX, ev.clientY, ev.pressure, 'pointer')) return;
-    try { canvas?.setPointerCapture?.(ev.pointerId); } catch {}
-    ev.preventDefault();
-    ev.stopPropagation();
+  function resizeCanvas(force = false) {
+    if (!canvas || !ctx || unlockedView?.hidden) return;
+    const rect = canvas.getBoundingClientRect(); if(!rect.width||!rect.height)return;
+    const dpr=Math.max(1,Math.min(3,globalThis.devicePixelRatio||1)); const w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));
+    if(!force&&canvas.width===w&&canvas.height===h)return; canvas.width=w;canvas.height=h;renderPage();
   }
 
-  function handleCanvasPointerMove(ev) {
-    if (!activeStroke) return;
-    const compatible = activeStroke.source === 'touch' ? ev.pointerType === 'pen' : ev.pointerId === activeStroke.pointerId;
-    if (!compatible) return;
-    const samples = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [ev];
-    for (const sample of samples.length ? samples : [ev]) appendPoint(sample.clientX, sample.clientY, sample.pressure);
-    ev.preventDefault();
-    ev.stopPropagation();
+  function pointInPolygon(p, poly) {
+    let inside=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+      const a=poly[i],b=poly[j]; const cross=((a.y>p.y)!==(b.y>p.y))&&(p.x<(b.x-a.x)*(p.y-a.y)/((b.y-a.y)||Number.EPSILON)+a.x); if(cross)inside=!inside;
+    } return inside;
   }
 
-  function handleCanvasPointerUp(ev, cancelled = false) {
-    if (!activeStroke) return;
-    const compatible = activeStroke.source === 'touch' ? ev.pointerType === 'pen' : ev.pointerId === activeStroke.pointerId;
-    if (!compatible) return;
-    appendPoint(ev.clientX, ev.clientY, ev.pressure);
-    try { if (canvas?.hasPointerCapture?.(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId); } catch {}
-    finishStroke(cancelled);
-    ev.preventDefault();
-    ev.stopPropagation();
+  function hitItem(item, p, pxRadius = 18) {
+    const r=canvasMetrics(); const rx=pxRadius/Math.max(1,r.width), ry=pxRadius/Math.max(1,r.height);
+    if(item.kind==='stroke') return (item.points||[]).some(q=>Math.abs(q.x-p.x)<=rx&&Math.abs(q.y-p.y)<=ry&&Math.hypot((q.x-p.x)*r.width,(q.y-p.y)*r.height)<=pxRadius);
+    const b=itemBounds(item); return p.x>=b.x0-rx&&p.x<=b.x1+rx&&p.y>=b.y0-ry&&p.y<=b.y1+ry;
   }
 
-  function findTouch(list, id) {
-    if (!list) return null;
-    for (const touch of list) if (touch.identifier === id) return touch;
-    return null;
+  function selectedContainsPoint(p) { const b=selectionBounds(); return Boolean(b&&p.x>=b.x0&&p.x<=b.x1&&p.y>=b.y0&&p.y<=b.y1); }
+
+  function translateItem(item, dx, dy) {
+    const out=clone(item); const b=itemBounds(out); dx=Math.max(-b.x0,Math.min(1-b.x1,dx));dy=Math.max(-b.y0,Math.min(1-b.y1,dy));
+    if(out.kind==='stroke') out.points=out.points.map(p=>({...p,x:p.x+dx,y:p.y+dy})); else {out.x+=dx;out.y+=dy;}
+    out.modifiedAt=new Date().toISOString(); return out;
   }
 
-  function handleCanvasTouchStart(ev) {
-    if (!masterKeyBytes || activeStroke || performance.now() - lastPenPointerAt < 180 || ev.touches?.length !== 1) return;
-    const touch = ev.touches[0];
-    if (touch.touchType && touch.touchType !== 'stylus') return;
-    activeTouchId = touch.identifier;
-    if (!beginStroke(`touch-${touch.identifier}`, touch.clientX, touch.clientY, touch.force, 'touch')) return;
-    ev.preventDefault();
-    ev.stopPropagation();
+  function appendGesturePoint(clientX,clientY,pressure=.5){
+    if(!activeGesture)return; const p=pointFromClient(clientX,clientY,pressure); const pts=activeGesture.points||(activeGesture.points=[]); const last=pts.at(-1); const r=canvasMetrics();
+    if(last&&Math.hypot((p.x-last.x)*r.width,(p.y-last.y)*r.height)<.7)return; pts.push(p);
+    if(activeGesture.type==='ink') activeGesture.item.points=pts;
+    if(activeGesture.type==='lasso') lassoPoints=pts;
   }
 
-  function handleCanvasTouchMove(ev) {
-    if (!activeStroke || activeTouchId == null) return;
-    const touch = findTouch(ev.touches, activeTouchId);
-    if (!touch) return;
-    appendPoint(touch.clientX, touch.clientY, touch.force);
-    ev.preventDefault();
-    ev.stopPropagation();
+  function beginGesture(pointerId,clientX,clientY,pressure=.5,source='pointer'){
+    if(!masterKeyBytes||activeGesture)return false; const p=pointFromClient(clientX,clientY,pressure); armAutoLock();
+    if(activeTool==='image'){ imageInput?.click?.(); return false; }
+    if(activeTool==='voice'){ startVoiceAt(p); return false; }
+    if(activeTool==='lasso'){
+      if(selectionIds.size&&selectedContainsPoint(p)){activeGesture={type:'move-selection',pointerId,source,start:p,before:pageSnapshot(),original:pageSnapshot()};return true;}
+      selectionIds.clear();lassoPoints=[];activeGesture={type:'lasso',pointerId,source,points:[]};appendGesturePoint(clientX,clientY,pressure);renderPage();return true;
+    }
+    if(activeTool==='eraser'){activeGesture={type:'eraser',pointerId,source,before:pageSnapshot(),changed:false};eraseAt(p);return true;}
+    if(activeTool==='shape'){activeGesture={type:'shape',pointerId,source,start:p,before:pageSnapshot(),previewItem:null};return true;}
+    const tool=activeTool==='highlighter'?'highlighter':'pen'; lastInkTool=tool;
+    const item=sanitizeItem({kind:'stroke',tool,color:toolStyle[tool].color,width:toolStyle[tool].width,points:[],createdAt:new Date().toISOString()});
+    activeGesture={type:'ink',pointerId,source,item,points:item.points,before:pageSnapshot()};appendGesturePoint(clientX,clientY,pressure);renderPage();return true;
   }
 
-  function handleCanvasTouchEnd(ev, cancelled = false) {
-    if (!activeStroke || activeTouchId == null) return;
-    const touch = findTouch(ev.changedTouches, activeTouchId);
-    if (touch) appendPoint(touch.clientX, touch.clientY, touch.force);
-    finishStroke(cancelled);
-    ev.preventDefault();
-    ev.stopPropagation();
+  function eraseAt(p){
+    if(!activeGesture||activeGesture.type!=='eraser')return; const radius=Math.max(8,Number(toolStyle.eraser.width)||22); const beforeCount=currentItems().length;
+    notebook.pages[activeLetter]=currentItems().filter(item=>!hitItem(item,p,radius)); if(currentItems().length!==beforeCount){activeGesture.changed=true;selectionIds.clear();renderPage();}
   }
 
-  function selectLetter(letter) {
-    if (!LETTERS.includes(letter) || letter === activeLetter) return;
-    if (activeStroke) finishStroke(false);
-    activeLetter = letter;
-    updateTabs();
-    renderPage();
-    armAutoLock();
+  function updateGesture(clientX,clientY,pressure=.5){
+    if(!activeGesture)return; const p=pointFromClient(clientX,clientY,pressure);
+    if(activeGesture.type==='ink'||activeGesture.type==='lasso'){appendGesturePoint(clientX,clientY,pressure);renderPage();return;}
+    if(activeGesture.type==='eraser'){eraseAt(p);return;}
+    if(activeGesture.type==='shape'){
+      const s=activeGesture.start; const x=Math.min(s.x,p.x),y=Math.min(s.y,p.y),w=Math.max(.003,Math.abs(p.x-s.x)),h=Math.max(.003,Math.abs(p.y-s.y));
+      activeGesture.previewItem=sanitizeItem({kind:'shape',shapeType:activeShapeType,x,y,w,h,color:toolStyle.shape.color,width:toolStyle.shape.width});renderPage();return;
+    }
+    if(activeGesture.type==='move-selection'){
+      const dx=p.x-activeGesture.start.x,dy=p.y-activeGesture.start.y; const selected=new Set(selectionIds);
+      notebook.pages[activeLetter]=activeGesture.original.map(item=>selected.has(item.id)?translateItem(item,dx,dy):clone(item));renderPage();
+    }
   }
 
-  function undoLastStroke() {
-    if (!masterKeyBytes) return;
-    const pageStrokes = notebook.pages[activeLetter] || [];
-    if (!pageStrokes.length) return setStatus(`Pagina ${activeLetter} già vuota.`, true);
-    pageStrokes.pop();
-    renderPage();
-    void persistNotebookSnapshot(sanitizeNotebook(notebook));
-    setStatus('Ultimo tratto annullato.', true);
-    armAutoLock();
+  function closeEnough(poly){if(poly.length<6)return false;const r=canvasMetrics(),a=poly[0],b=poly.at(-1);return Math.hypot((a.x-b.x)*r.width,(a.y-b.y)*r.height)<=52;}
+
+  function finishGesture(ev,cancelled=false,internal=false){
+    const g=activeGesture; if(!g)return; activeGesture=null;activeTouchId=null;
+    if(cancelled){ if(g.before) notebook.pages[activeLetter]=clone(g.before); lassoPoints=[];renderPage();return; }
+    if(g.type==='ink'){
+      if(ev) appendGesturePoint(ev.clientX,ev.clientY,ev.pressure); if(g.item.points.length){notebook.pages[activeLetter].push(sanitizeItem(g.item));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+    } else if(g.type==='eraser'){
+      if(g.changed){notebookDirty=true;changeSerial++;pushHistory(g.before);setStatus('Cancellazione salvata.',true);void saveCurrentNotebook();} renderPage();
+    } else if(g.type==='shape'){
+      if(g.previewItem){notebook.pages[activeLetter].push(sanitizeItem(g.previewItem));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+    } else if(g.type==='lasso'){
+      const poly=[...g.points]; lassoPoints=[];
+      if(closeEnough(poly)){selectionIds=new Set(currentItems().filter(item=>{if(item.kind==='stroke')return item.points.some(p=>pointInPolygon(p,poly));const b=itemBounds(item);return pointInPolygon({x:(b.x0+b.x1)/2,y:(b.y0+b.y1)/2},poly);}).map(i=>i.id));setStatus(`Lazo · ${selectionIds.size} elementi selezionati`,true);} else {selectionIds.clear();setStatus('Lazo non chiuso.',true);} renderPage();
+    } else if(g.type==='move-selection'){
+      const after=JSON.stringify(currentItems()); const before=JSON.stringify(g.before); if(after!==before){notebookDirty=true;changeSerial++;pushHistory(g.before);void saveCurrentNotebook();setStatus('Selezione spostata.',true);} renderPage();
+    }
+    if(!internal)armAutoLock();
   }
 
-  async function readLocalSecurityState() {
-    return await getRow(VAULT_LOCAL_STATE_KEY).catch(() => null) || { key:VAULT_LOCAL_STATE_KEY, failedAttempts:0, lockedUntil:0 };
+  function compatibleGesture(ev){return activeGesture&&(activeGesture.source==='touch'?ev.pointerType==='pen':ev.pointerId===activeGesture.pointerId);}
+
+  function handleCanvasPointerDown(ev){
+    if(!masterKeyBytes)return;if(ev.pointerType==='mouse'&&ev.button!==0)return;if(ev.pointerType==='touch')return;if(ev.pointerType==='pen')lastPenPointerAt=performance.now();
+    if(!beginGesture(ev.pointerId,ev.clientX,ev.clientY,ev.pressure,'pointer'))return;try{canvas?.setPointerCapture?.(ev.pointerId);}catch{}ev.preventDefault();ev.stopPropagation();
+  }
+  function handleCanvasPointerMove(ev){if(!compatibleGesture(ev))return;const samples=typeof ev.getCoalescedEvents==='function'?ev.getCoalescedEvents():[ev];for(const s of samples.length?samples:[ev])updateGesture(s.clientX,s.clientY,s.pressure);ev.preventDefault();ev.stopPropagation();}
+  function handleCanvasPointerUp(ev,cancelled=false){if(!compatibleGesture(ev))return;updateGesture(ev.clientX,ev.clientY,ev.pressure);try{if(canvas?.hasPointerCapture?.(ev.pointerId))canvas.releasePointerCapture(ev.pointerId);}catch{}finishGesture(ev,cancelled);ev.preventDefault();ev.stopPropagation();}
+  function findTouch(list,id){if(!list)return null;for(const t of list)if(t.identifier===id)return t;return null;}
+  function handleCanvasTouchStart(ev){if(!masterKeyBytes||activeGesture||performance.now()-lastPenPointerAt<180||ev.touches?.length!==1)return;const t=ev.touches[0];if(t.touchType&&t.touchType!=='stylus')return;activeTouchId=t.identifier;if(!beginGesture(`touch-${t.identifier}`,t.clientX,t.clientY,t.force,'touch'))return;ev.preventDefault();ev.stopPropagation();}
+  function handleCanvasTouchMove(ev){if(!activeGesture||activeTouchId==null)return;const t=findTouch(ev.touches,activeTouchId);if(!t)return;updateGesture(t.clientX,t.clientY,t.force);ev.preventDefault();ev.stopPropagation();}
+  function handleCanvasTouchEnd(ev,cancelled=false){if(!activeGesture||activeTouchId==null)return;const t=findTouch(ev.changedTouches,activeTouchId);if(t)updateGesture(t.clientX,t.clientY,t.force);finishGesture(t||null,cancelled);ev.preventDefault();ev.stopPropagation();}
+
+  function selectLetter(letter){
+    if(!LETTERS.includes(letter)||letter===activeLetter)return;if(activeGesture)finishGesture(null,false,true);selectionIds.clear();lassoPoints=[];activeLetter=letter;updateTabs();renderPage();armAutoLock();
   }
 
-  async function notePinFailure() {
-    const state = await readLocalSecurityState();
-    const failedAttempts = Math.max(0, Number(state.failedAttempts) || 0) + 1;
-    let waitMs = 0;
-    if (failedAttempts >= 8) waitMs = 5 * 60 * 1000;
-    else if (failedAttempts >= 5) waitMs = 30 * 1000;
-    const row = { key:VAULT_LOCAL_STATE_KEY, failedAttempts, lockedUntil:waitMs ? Date.now() + waitMs : 0, modifiedAt:new Date().toISOString() };
-    await putLocalRow(row).catch(() => {});
-    return row;
+  function undo(){
+    const stack=undoByLetter[activeLetter];if(!stack.length)return setStatus('Niente da annullare.',true);redoByLetter[activeLetter].push(pageSnapshot());notebook.pages[activeLetter]=stack.pop();selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Annullato.',true);
+  }
+  function redo(){
+    const stack=redoByLetter[activeLetter];if(!stack.length)return setStatus('Niente da ripristinare.',true);undoByLetter[activeLetter].push(pageSnapshot());notebook.pages[activeLetter]=stack.pop();selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Ripristinato.',true);
   }
 
-  async function clearPinFailures() {
-    await putLocalRow({ key:VAULT_LOCAL_STATE_KEY, failedAttempts:0, lockedUntil:0, modifiedAt:new Date().toISOString() }).catch(() => {});
+  function setActiveTool(tool){
+    if(['pen','highlighter','eraser','lasso','shape','voice'].includes(tool)){activeTool=tool;if(tool==='pen'||tool==='highlighter')lastInkTool=tool;selectionIds.clear();lassoPoints=[];hideToolPopovers();updateToolbarUi();renderPage();setStatus(`Rubrica · ${toolLabel(tool)}`,true);}
+  }
+  function toolLabel(tool){return ({pen:'Penna',highlighter:'Evidenziatore',eraser:'Gomma',lasso:'Lazo',shape:'Figure',voice:'Voce'})[tool]||tool;}
+
+  function toolbarSourceButton(id){return document.getElementById(id);}
+  function cloneToolbarButton(id,tool){const source=toolbarSourceButton(id);if(!source)return null;const b=source.cloneNode(true);b.removeAttribute('id');b.dataset.vaultTool=tool;b.classList.remove('active');b.setAttribute('aria-pressed','false');return b;}
+  function ensureToolbar(){
+    if(!toolbar||toolbar.dataset.ready==='1')return; const specs=[['voiceScriptToolButton','voice'],['penToolButton','pen'],['highlighterToolButton','highlighter'],['eraserToolButton','eraser'],['lassoToolButton','lasso'],['shapeToolButton','shape'],['imageToolButton','image'],['undoButton','undo'],['redoButton','redo'],['styleButton','style']];
+    for(const [id,tool] of specs){const b=cloneToolbarButton(id,tool);if(!b)continue;toolbar.appendChild(b);bindDirectAction(b,()=>toolbarAction(tool));}
+    toolbar.dataset.ready='1'; buildShapePalette(); buildStylePalette(); updateToolbarUi();
   }
 
-  async function ensurePinAllowed() {
-    const state = await readLocalSecurityState();
-    const until = Math.max(0, Number(state.lockedUntil) || 0);
-    if (until > Date.now()) throw new Error(`Troppi tentativi errati. Riprova tra ${Math.ceil((until - Date.now()) / 1000)} s.`);
+  function updateToolbarUi(){if(!toolbar)return;for(const b of toolbar.querySelectorAll('[data-vault-tool]')){const t=b.dataset.vaultTool;const selected=t===activeTool||(t==='image'&&activeTool==='image');b.classList.toggle('active',selected);b.setAttribute('aria-pressed',selected?'true':'false');}}
+  function hideToolPopovers(){if(toolPopover)toolPopover.hidden=true;if(shapePalette)shapePalette.hidden=true;if(stylePalette)stylePalette.hidden=true;}
+  function showPopover(kind){if(!toolPopover)return;toolPopover.hidden=false;if(shapePalette)shapePalette.hidden=kind!=='shape';if(stylePalette)stylePalette.hidden=kind!=='style';}
+
+  function toolbarAction(tool){
+    if(tool==='undo')return undo();if(tool==='redo')return redo();if(tool==='image'){activeTool='image';updateToolbarUi();hideToolPopovers();imageInput?.click?.();return;}
+    if(tool==='shape'){activeTool='shape';updateToolbarUi();showPopover('shape');return;}
+    if(tool==='style'){showPopover('style');return;}
+    setActiveTool(tool);
   }
 
-  async function unlockWithMasterKey(rawKey, method) {
-    const payload = await decryptPayload(rawKey, dataRow);
-    if (masterKeyBytes) masterKeyBytes.fill(0);
-    masterKeyBytes = new Uint8Array(rawKey);
-    legacyEntries = Array.isArray(payload.entries) ? clone(payload.entries) : [];
-    notebook = sanitizeNotebook(payload.notebook);
-    activeLetter = 'A';
+  function buildShapePalette(){
+    if(!shapePalette||shapePalette.dataset.ready==='1')return;for(const type of SHAPE_TYPES){const b=document.createElement('button');b.type='button';b.dataset.vaultShape=type;b.textContent=SHAPE_LABELS[type]||type;b.classList.toggle('active',type===activeShapeType);bindDirectAction(b,()=>{activeShapeType=type;activeTool='shape';for(const x of shapePalette.querySelectorAll('[data-vault-shape]'))x.classList.toggle('active',x===b);hideToolPopovers();updateToolbarUi();setStatus(`Figura · ${SHAPE_LABELS[type]||type}`,true);});shapePalette.appendChild(b);}shapePalette.dataset.ready='1';
+  }
+
+  function buildStylePalette(){
+    if(!stylePalette||stylePalette.dataset.ready==='1')return;const colors=['#111111','#8e8e8e','#a52b2b','#f03b43','#f3a65a','#f0d84f','#7fd38b','#38c286','#7fc8e8','#8b77d8','#f5f3eb','#bd845f','#ef91b2'];
+    const title=document.createElement('div');title.className='password-vault-style-title';title.textContent='Colore';stylePalette.appendChild(title);const row=document.createElement('div');row.className='password-vault-style-colors';stylePalette.appendChild(row);
+    for(const color of colors){const b=document.createElement('button');b.type='button';b.className='color-swatch';b.style.setProperty('--swatch',color);b.title=color;bindDirectAction(b,()=>{const target=lastInkTool==='highlighter'?'highlighter':activeTool==='shape'?'shape':'pen';toolStyle[target].color=color;hideToolPopovers();setStatus(`Colore ${target} aggiornato.`,true);});row.appendChild(b);}
+    const wt=document.createElement('div');wt.className='password-vault-style-title';wt.textContent='Spessore';stylePalette.appendChild(wt);const widths=document.createElement('div');widths.className='password-vault-style-widths';stylePalette.appendChild(widths);
+    for(const [label,width] of [['XS',2],['S',4],['M',8],['L',15],['XL',26]]){const b=document.createElement('button');b.type='button';b.textContent=label;bindDirectAction(b,()=>{const target=activeTool==='eraser'?'eraser':lastInkTool==='highlighter'?'highlighter':activeTool==='shape'?'shape':'pen';toolStyle[target].width=target==='highlighter'?Math.max(8,width):target==='eraser'?Math.max(12,width*1.5):width;hideToolPopovers();setStatus(`Spessore ${target} aggiornato.`,true);});widths.appendChild(b);}stylePalette.dataset.ready='1';
+  }
+
+  function fileToDataUrl(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result||''));r.onerror=()=>reject(r.error||new Error('Lettura immagine non riuscita'));r.readAsDataURL(file);});}
+  async function addImageFile(file){
+    if(!file||!masterKeyBytes)return;try{const before=pageSnapshot();const src=await fileToDataUrl(file);const probe=new Image();await new Promise((res,rej)=>{probe.onload=res;probe.onerror=rej;probe.src=src;});const aspect=Math.max(.2,Math.min(5,probe.naturalWidth/Math.max(1,probe.naturalHeight)));let w=.34,h=w/aspect;if(h>.42){h=.42;w=h*aspect;}const item=sanitizeItem({kind:'image',src,x:.12,y:.16,w,h});notebook.pages[activeLetter].push(item);notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Immagine inserita nella Rubrica.',true);}catch(err){setStatus(`Immagine non inserita: ${err?.message||err}`);}finally{if(imageInput)imageInput.value='';activeTool=lastInkTool;updateToolbarUi();}
+  }
+
+  function startVoiceAt(point){
+    const SR=globalThis.SpeechRecognition||globalThis.webkitSpeechRecognition;if(!SR){setStatus('Dettatura non disponibile in questo browser.');activeTool=lastInkTool;updateToolbarUi();return;}
+    try{const rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.maxAlternatives=1;setStatus('Dettatura Rubrica in ascolto…');rec.onresult=(e)=>{const text=String(e.results?.[0]?.[0]?.transcript||'').trim();if(!text)return;const before=pageSnapshot();notebook.pages[activeLetter].push(sanitizeItem({kind:'text',text,x:point.x,y:point.y,color:toolStyle.text.color,size:toolStyle.text.size}));notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Testo dettato inserito.',true);};rec.onerror=(e)=>setStatus(`Dettatura non riuscita: ${e.error||'errore'}`);rec.onend=()=>{activeTool=lastInkTool;updateToolbarUi();};rec.start();}catch(err){setStatus(`Dettatura non disponibile: ${err?.message||err}`);activeTool=lastInkTool;updateToolbarUi();}
+  }
+
+  async function readLocalSecurityState(){return await getRow(VAULT_LOCAL_STATE_KEY).catch(()=>null)||{key:VAULT_LOCAL_STATE_KEY,failedAttempts:0,lockedUntil:0};}
+  async function notePinFailure(){const state=await readLocalSecurityState();const failedAttempts=Math.max(0,Number(state.failedAttempts)||0)+1;let waitMs=0;if(failedAttempts>=8)waitMs=5*60*1000;else if(failedAttempts>=5)waitMs=30000;const row={key:VAULT_LOCAL_STATE_KEY,failedAttempts,lockedUntil:waitMs?Date.now()+waitMs:0,modifiedAt:new Date().toISOString()};await putLocalRow(row).catch(()=>{});return row;}
+  async function clearPinFailures(){await putLocalRow({key:VAULT_LOCAL_STATE_KEY,failedAttempts:0,lockedUntil:0,modifiedAt:new Date().toISOString()}).catch(()=>{});}
+  async function ensurePinAllowed(){const state=await readLocalSecurityState();const until=Math.max(0,Number(state.lockedUntil)||0);if(until>Date.now())throw new Error(`Troppi tentativi errati. Riprova tra ${Math.ceil((until-Date.now())/1000)} s.`);}
+
+  async function unlockWithMasterKey(rawKey,method){
+    const payload=await decryptPayload(rawKey,dataRow);if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=new Uint8Array(rawKey);legacyEntries=Array.isArray(payload.entries)?clone(payload.entries):[];notebook=sanitizeNotebook(payload.notebook);activeLetter='A';activeTool='pen';lastInkTool='pen';selectionIds.clear();undoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));redoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));notebookDirty=false;renderMode();armAutoLock();setStatus(`Rubrica sbloccata con ${method}.`,true);
+  }
+
+  async function unlockPin(){try{await ensurePinAllowed();const pin=String(pinInput?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Inserisci le 4 cifre del PIN');const raw=await unwrapMasterKeyWithPin(configRow,pin);await clearPinFailures();if(pinInput)pinInput.value='';await unlockWithMasterKey(raw,'PIN');raw.fill(0);}catch(err){if(!String(err?.message||'').startsWith('Troppi tentativi'))await notePinFailure();setStatus(`Accesso non riuscito: ${err?.message||err}`);}}
+
+  async function unlockBiometric(){
+    if(biometricOpening)return;biometricOpening=true;try{if(!localAuthRow)throw new Error('Biometria non configurata su questo dispositivo');setStatus('Conferma impronta / biometria su iPad…');const raw=await unwrapMasterKeyWithBiometric(configRow,localAuthRow);await unlockWithMasterKey(raw,'biometria');raw.fill(0);}catch(err){if(err?.name==='NotAllowedError')setStatus('Accesso biometrico annullato. PIN disponibile come alternativa.');else setStatus(`Biometria non disponibile: ${err?.message||err}`);setTimeout(()=>pinInput?.focus?.({preventScroll:true}),60);}finally{biometricOpening=false;}
+  }
+
+  async function setupVault(){try{const pin=String(setupPin?.value||''),confirm=String(setupPinConfirm?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Il PIN deve contenere esattamente 4 cifre');if(pin!==confirm)throw new Error('I due PIN non coincidono');const material=await createVaultMaterial(pin);await commitPortableRows([material.configRow,material.dataRow]);configRow={...material.configRow};dataRow={...material.dataRow};await unlockWithMasterKey(material.masterKeyBytes,'nuovo PIN');material.masterKeyBytes.fill(0);clearSecretInputs();}catch(err){setStatus(`Creazione Rubrica non riuscita: ${err?.message||err}`);}}
+
+  async function enableBiometric(){try{if(!masterKeyBytes||!configRow)throw new Error('Sblocca prima la Rubrica con il PIN');setStatus('Conferma l’autenticazione biometrica di iPadOS…');const row=await createBiometricWrapper(masterKeyBytes,configRow.vaultId);await putLocalRow(row);localAuthRow=row;renderMode();setStatus('Impronta digitale / biometria associata e impostata come accesso predefinito.',true);}catch(err){if(err?.name==='NotAllowedError')setStatus('Configurazione biometrica annullata.');else setStatus(`Biometria non configurata: ${err?.message||err}`);}}
+
+  async function lock(reason='manual'){
+    clearTimeout(autoLockTimer);await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
+  }
+
+  async function open(){
+    if(destroyed||!panel)return;try{onOpen();}catch{}panel.hidden=false;
+    if(!configRow||!dataRow)await refreshRows();else{const latestAuth=await getRow(VAULT_LOCAL_AUTH_KEY).catch(()=>localAuthRow);if(latestAuth)localAuthRow=latestAuth;}
     renderMode();
-    armAutoLock();
-    setStatus(`Rubrica sbloccata con ${method}.`, true);
+    if(masterKeyBytes){armAutoLock();requestAnimationFrame(()=>resizeCanvas(true));return;}
+    if(configRow&&dataRow){
+      if(localAuthRow){setStatus('Accesso biometrico predefinito…');void unlockBiometric();}
+      else{setStatus('Accedi con il PIN. Puoi associare la biometria dopo lo sblocco.');setTimeout(()=>pinInput?.focus?.({preventScroll:true}),50);}
+    }else{setStatus('Prima configurazione: crea il PIN di 4 cifre.');setTimeout(()=>setupPin?.focus?.({preventScroll:true}),50);}
   }
 
-  async function unlockPin() {
-    try {
-      await ensurePinAllowed();
-      const pin = String(pinInput?.value || '');
-      if (!/^\d{4}$/.test(pin)) throw new Error('Inserisci le 4 cifre del PIN');
-      const raw = await unwrapMasterKeyWithPin(configRow, pin);
-      await clearPinFailures();
-      if (pinInput) pinInput.value = '';
-      await unlockWithMasterKey(raw, 'PIN');
-      raw.fill(0);
-    } catch (err) {
-      if (!String(err?.message || '').startsWith('Troppi tentativi')) await notePinFailure();
-      setStatus(`Accesso non riuscito: ${err?.message || err}`);
-    }
-  }
+  async function close(){if(!panel)return;await flushNotebookBeforeExit();await lock('manual');panel.hidden=true;try{onClose();}catch{}}
+  async function handleRemoteUpdate(key){if(key!==VAULT_CONFIG_KEY&&key!==VAULT_DATA_KEY)return;await refreshRows();if(masterKeyBytes)await lock('remote');setStatus('Rubrica aggiornata dal Sync. Accedi nuovamente.');}
 
-  async function unlockBiometric() {
-    try {
-      if (!localAuthRow) throw new Error('Biometria non configurata su questo dispositivo');
-      const raw = await unwrapMasterKeyWithBiometric(configRow, localAuthRow);
-      await unlockWithMasterKey(raw, 'biometria');
-      raw.fill(0);
-    } catch (err) {
-      if (err?.name === 'NotAllowedError') setStatus('Accesso biometrico annullato. Puoi usare il PIN.');
-      else setStatus(`Biometria non disponibile: ${err?.message || err}`);
-    }
-  }
+  function bindDirectAction(element,action){if(!element)return;let lastDirect=-Infinity;element.addEventListener('pointerdown',(ev)=>{if(ev.pointerType==='mouse')return;lastDirect=performance.now();ev.preventDefault();ev.stopPropagation();action(ev);},{passive:false});element.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastDirect<650)return;action(ev);});}
 
-  async function setupVault() {
-    try {
-      const pin = String(setupPin?.value || '');
-      const confirm = String(setupPinConfirm?.value || '');
-      if (!/^\d{4}$/.test(pin)) throw new Error('Il PIN deve contenere esattamente 4 cifre');
-      if (pin !== confirm) throw new Error('I due PIN non coincidono');
-      const material = await createVaultMaterial(pin);
-      await commitPortableRows([material.configRow, material.dataRow]);
-      configRow = { ...material.configRow };
-      dataRow = { ...material.dataRow };
-      await unlockWithMasterKey(material.masterKeyBytes, 'nuovo PIN');
-      material.masterKeyBytes.fill(0);
-      clearSecretInputs();
-    } catch (err) { setStatus(`Creazione Rubrica non riuscita: ${err?.message || err}`); }
-  }
+  bindFullKeyboardPin(setupPin);bindFullKeyboardPin(setupPinConfirm);bindFullKeyboardPin(pinInput);
+  keyButton?.addEventListener('pointerdown',(ev)=>{if(ev.pointerType==='mouse')return;lastKeyDirectOpenAt=performance.now();ev.preventDefault();ev.stopPropagation();void open();},{passive:false});
+  keyButton?.addEventListener('pointerup',(ev)=>{if(ev.pointerType==='mouse')return;ev.preventDefault();ev.stopPropagation();},{passive:false});
+  keyButton?.addEventListener('touchstart',(ev)=>{if(performance.now()-lastKeyDirectOpenAt<220){ev.preventDefault();ev.stopPropagation();return;}lastKeyDirectOpenAt=performance.now();ev.preventDefault();ev.stopPropagation();void open();},{passive:false});
+  keyButton?.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastKeyDirectOpenAt<650)return;void open();});
 
-  async function enableBiometric() {
-    try {
-      if (!masterKeyBytes || !configRow) throw new Error('Sblocca prima la Rubrica con il PIN');
-      setStatus('Conferma l’autenticazione biometrica di iPadOS…');
-      const row = await createBiometricWrapper(masterKeyBytes, configRow.vaultId);
-      await putLocalRow(row);
-      localAuthRow = row;
-      renderMode();
-      setStatus('Impronta digitale / biometria associata.', true);
-    } catch (err) {
-      if (err?.name === 'NotAllowedError') setStatus('Configurazione biometrica annullata.');
-      else setStatus(`Biometria non configurata: ${err?.message || err}`);
-    }
-  }
+  bindDirectAction(closeButton,()=>void close());bindDirectAction(lockButton,()=>void lock('manual'));bindDirectAction(createButton,()=>void setupVault());bindDirectAction(pinUnlockButton,()=>void unlockPin());bindDirectAction(biometricUnlockButton,()=>void unlockBiometric());bindDirectAction(biometricSetupButton,()=>void enableBiometric());
+  pinInput?.addEventListener('keydown',(ev)=>{if(ev.key==='Enter'){ev.preventDefault();void unlockPin();}});
+  if(azBar)for(const button of azBar.querySelectorAll('[data-vault-letter]'))bindDirectAction(button,()=>selectLetter(String(button.dataset.vaultLetter||'A')));
+  imageInput?.addEventListener('change',()=>void addImageFile(imageInput.files?.[0]));
 
-  async function lock(reason = 'manual') {
-    clearTimeout(autoLockTimer);
-    if (activeStroke) finishStroke(false);
-    const pending = saveChain;
-    if (masterKeyBytes) masterKeyBytes.fill(0);
-    masterKeyBytes = null;
-    notebook = emptyNotebook();
-    legacyEntries = [];
-    clearSecretInputs();
-    renderMode();
-    try { await pending; } catch {}
-    if (reason === 'timeout') setStatus('Rubrica bloccata automaticamente.');
-    else if (reason === 'background') setStatus('Rubrica bloccata.');
-    else setStatus('Rubrica protetta.');
-  }
-
-  async function open() {
-    if (destroyed || !panel) return;
-    await refreshRows();
-    try { onOpen(); } catch {}
-    panel.hidden = false;
-    renderMode();
-    if (masterKeyBytes) {
-      armAutoLock();
-      requestAnimationFrame(() => resizeCanvas(true));
-    } else {
-      setStatus(configRow && dataRow ? 'Accedi con impronta digitale / biometria oppure PIN.' : 'Prima configurazione: crea il PIN di 4 cifre.');
-      setTimeout(() => (configRow && dataRow ? pinInput : setupPin)?.focus?.({ preventScroll:true }), 50);
-    }
-  }
-
-  async function close() {
-    if (!panel) return;
-    await lock('manual');
-    panel.hidden = true;
-    try { onClose(); } catch {}
-  }
-
-  async function handleRemoteUpdate(key) {
-    if (key !== VAULT_CONFIG_KEY && key !== VAULT_DATA_KEY) return;
-    await refreshRows();
-    if (masterKeyBytes) await lock('remote');
-    setStatus('Rubrica aggiornata dal Sync. Accedi nuovamente.');
-  }
-
-  function bindDirectAction(element, action) {
-    if (!element) return;
-    let lastDirect = -Infinity;
-    element.addEventListener('pointerdown', (ev) => {
-      if (ev.pointerType === 'mouse') return;
-      lastDirect = performance.now();
-      ev.preventDefault();
-      ev.stopPropagation();
-      action(ev);
-    }, { passive:false });
-    element.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      if (performance.now() - lastDirect < 650) return;
-      action(ev);
-    });
-  }
-
-  bindFullKeyboardPin(setupPin);
-  bindFullKeyboardPin(setupPinConfirm);
-  bindFullKeyboardPin(pinInput);
-
-  keyButton?.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
-    lastKeyDirectOpenAt = performance.now();
-    ev.preventDefault();
-    ev.stopPropagation();
-    void open();
-  }, { passive:false });
-  keyButton?.addEventListener('pointerup', (ev) => {
-    if (ev.pointerType === 'mouse') return;
-    ev.preventDefault();
-    ev.stopPropagation();
-  }, { passive:false });
-  keyButton?.addEventListener('touchstart', (ev) => {
-    if (performance.now() - lastKeyDirectOpenAt < 220) { ev.preventDefault(); ev.stopPropagation(); return; }
-    lastKeyDirectOpenAt = performance.now();
-    ev.preventDefault();
-    ev.stopPropagation();
-    void open();
-  }, { passive:false });
-  keyButton?.addEventListener('click', (ev) => {
-    ev.preventDefault();
-    if (performance.now() - lastKeyDirectOpenAt < 650) return;
-    void open();
-  });
-
-  bindDirectAction(closeButton, () => void close());
-  bindDirectAction(lockButton, () => void lock('manual'));
-  bindDirectAction(createButton, () => void setupVault());
-  bindDirectAction(pinUnlockButton, () => void unlockPin());
-  bindDirectAction(biometricUnlockButton, () => void unlockBiometric());
-  bindDirectAction(biometricSetupButton, () => void enableBiometric());
-  bindDirectAction(undoButton, () => undoLastStroke());
-  pinInput?.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); void unlockPin(); } });
-
-  if (azBar) for (const button of azBar.querySelectorAll('[data-vault-letter]')) {
-    bindDirectAction(button, () => selectLetter(String(button.dataset.vaultLetter || 'A')));
-  }
-
-  canvas?.addEventListener('pointerdown', handleCanvasPointerDown, { passive:false });
-  canvas?.addEventListener('pointermove', handleCanvasPointerMove, { passive:false });
-  canvas?.addEventListener('pointerup', (ev) => handleCanvasPointerUp(ev, false), { passive:false });
-  canvas?.addEventListener('pointercancel', (ev) => handleCanvasPointerUp(ev, true), { passive:false });
-  canvas?.addEventListener('touchstart', handleCanvasTouchStart, { passive:false });
-  canvas?.addEventListener('touchmove', handleCanvasTouchMove, { passive:false });
-  canvas?.addEventListener('touchend', (ev) => handleCanvasTouchEnd(ev, false), { passive:false });
-  canvas?.addEventListener('touchcancel', (ev) => handleCanvasTouchEnd(ev, true), { passive:false });
-
-  panel?.addEventListener('pointerdown', armAutoLock, { passive:true });
-  panel?.addEventListener('keydown', armAutoLock, { passive:true });
-  document.addEventListener('visibilitychange', () => { if (document.hidden && masterKeyBytes) void lock('background'); });
-
-  if (typeof ResizeObserver !== 'undefined' && page) {
-    resizeObserver = new ResizeObserver(() => resizeCanvas());
-    resizeObserver.observe(page);
-  }
-  globalThis.visualViewport?.addEventListener?.('resize', () => resizeCanvas());
-  globalThis.addEventListener?.('orientationchange', () => setTimeout(() => resizeCanvas(true), 60));
+  canvas?.addEventListener('pointerdown',handleCanvasPointerDown,{passive:false});canvas?.addEventListener('pointermove',handleCanvasPointerMove,{passive:false});canvas?.addEventListener('pointerup',(ev)=>handleCanvasPointerUp(ev,false),{passive:false});canvas?.addEventListener('pointercancel',(ev)=>handleCanvasPointerUp(ev,true),{passive:false});canvas?.addEventListener('touchstart',handleCanvasTouchStart,{passive:false});canvas?.addEventListener('touchmove',handleCanvasTouchMove,{passive:false});canvas?.addEventListener('touchend',(ev)=>handleCanvasTouchEnd(ev,false),{passive:false});canvas?.addEventListener('touchcancel',(ev)=>handleCanvasTouchEnd(ev,true),{passive:false});
+  panel?.addEventListener('pointerdown',armAutoLock,{passive:true});panel?.addEventListener('keydown',armAutoLock,{passive:true});document.addEventListener('visibilitychange',()=>{if(document.hidden&&masterKeyBytes)void lock('background');});
+  if(typeof ResizeObserver!=='undefined'&&page){resizeObserver=new ResizeObserver(()=>resizeCanvas());resizeObserver.observe(page);}globalThis.visualViewport?.addEventListener?.('resize',()=>resizeCanvas());globalThis.addEventListener?.('orientationchange',()=>setTimeout(()=>resizeCanvas(true),60));
 
   void refreshRows().then(renderMode);
 
-  return {
-    open,
-    close,
-    lock,
-    isUnlocked:() => Boolean(masterKeyBytes),
-    isWriting:() => Boolean(activeStroke),
-    handleRemoteUpdate,
-    refresh:async () => { await refreshRows(); renderMode(); },
-    destroy:() => { destroyed = true; resizeObserver?.disconnect?.(); void lock('manual'); }
-  };
+  return {open,close,lock,isUnlocked:()=>Boolean(masterKeyBytes),isWriting:()=>Boolean(activeGesture),handleRemoteUpdate,refresh:async()=>{await refreshRows();renderMode();},destroy:()=>{destroyed=true;resizeObserver?.disconnect?.();void lock('manual');}};
 }
