@@ -316,6 +316,11 @@ export function initPasswordVault(options = {}) {
   const onStatus = typeof options.onStatus === 'function' ? options.onStatus : () => {};
   const onOpen = typeof options.onOpen === 'function' ? options.onOpen : () => {};
   const onClose = typeof options.onClose === 'function' ? options.onClose : () => {};
+  const onUnlocked = typeof options.onUnlocked === 'function' ? options.onUnlocked : async () => {};
+  const onBeforeLock = typeof options.onBeforeLock === 'function' ? options.onBeforeLock : async () => {};
+  const onLocked = typeof options.onLocked === 'function' ? options.onLocked : async () => {};
+  const isExternalPageActive = typeof options.isExternalPageActive === 'function' ? options.isExternalPageActive : () => false;
+  const onExternalExit = typeof options.onExternalExit === 'function' ? options.onExternalExit : async () => {};
 
   const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
   const keyButton = document.getElementById('passwordVaultButton');
@@ -363,6 +368,7 @@ export function initPasswordVault(options = {}) {
   let notebookDirty = false;
   let changeSerial = 0;
   let biometricOpening = false;
+  let locking = false;
   let activeTool = 'pen';
   let lastInkTool = 'pen';
   let activeShapeType = 'rectangle';
@@ -380,15 +386,17 @@ export function initPasswordVault(options = {}) {
   const imageCache = new Map();
 
   function emptyNotebook() {
-    return { version:2, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])) };
+    return { version:3, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])), pageStyles:{} };
   }
 
   function sanitizePoint(point = {}) {
-    return {
+    const out = {
       x:Math.max(0, Math.min(1, Number(point.x) || 0)),
       y:Math.max(0, Math.min(1, Number(point.y) || 0)),
       p:Math.max(0, Math.min(1, Number(point.p) || 0.5))
     };
+    if (Number.isFinite(Number(point.t))) out.t = Number(point.t);
+    return out;
   }
 
   function newId(prefix = 'rv') {
@@ -405,7 +413,8 @@ export function initPasswordVault(options = {}) {
     };
     if (kind === 'image') {
       return {
-        ...base, src:String(item.src || '').slice(0, 14000000),
+        ...base, src:String(item.src || '').slice(0, 14000000), name:String(item.name || 'Immagine Rubrica').slice(0,300),
+        mimeType:String(item.mimeType || '').slice(0,120), rotation:Number(item.rotation) || 0,
         x:Math.max(0, Math.min(1, Number(item.x) || 0)), y:Math.max(0, Math.min(1, Number(item.y) || 0)),
         w:Math.max(.02, Math.min(1, Number(item.w) || .32)), h:Math.max(.02, Math.min(1, Number(item.h) || .24))
       };
@@ -413,13 +422,26 @@ export function initPasswordVault(options = {}) {
     if (kind === 'text') {
       return {
         ...base, text:String(item.text || '').slice(0, 4000),
+        tool:String(item.tool || 'voice-text'), source:String(item.source || ''),
         x:Math.max(0, Math.min(1, Number(item.x) || .12)), y:Math.max(0, Math.min(1, Number(item.y) || .14)),
-        color:String(item.color || '#24303a'), size:Math.max(12, Math.min(72, Number(item.size) || 24))
+        color:String(item.color || '#24303a'), size:Math.max(12, Math.min(72, Number(item.size) || 24)),
+        fontFamily:String(item.fontFamily || 'Snell Roundhand'),
+        fontSizeNorm:Math.max(.008, Math.min(.12, Number(item.fontSizeNorm) || ((Number(item.size) || 24) / 1366))),
+        anchorMode:String(item.anchorMode || 'baseline')
       };
     }
     if (kind === 'shape') {
+      const shapeType = SHAPE_TYPES.includes(item.shapeType) ? item.shapeType : 'rectangle';
+      const rawPoints = Array.isArray(item.points) ? item.points.slice(0, 30000).map(sanitizePoint) : [];
+      if (rawPoints.length) {
+        return {
+          ...base, shapeType, shapeVersion:Number(item.shapeVersion) || 1, tool:'pen', points:rawPoints,
+          color:String(item.color || '#24303a'), width:Math.max(.8, Math.min(40, Number(item.width) || 2.2)),
+          opacity:Math.max(.05, Math.min(1, Number(item.opacity) || 1))
+        };
+      }
       return {
-        ...base, shapeType:SHAPE_TYPES.includes(item.shapeType) ? item.shapeType : 'rectangle',
+        ...base, shapeType,
         x:Math.max(0, Math.min(1, Number(item.x) || 0)), y:Math.max(0, Math.min(1, Number(item.y) || 0)),
         w:Math.max(.005, Math.min(1, Number(item.w) || .2)), h:Math.max(.005, Math.min(1, Number(item.h) || .15)),
         color:String(item.color || '#24303a'), width:Math.max(.8, Math.min(40, Number(item.width) || 2.2))
@@ -429,16 +451,23 @@ export function initPasswordVault(options = {}) {
     return {
       ...base, kind:'stroke', tool:item.tool === 'highlighter' ? 'highlighter' : 'pen', points,
       color:String(item.color || (item.tool === 'highlighter' ? '#f0d84f' : '#24303a')),
-      width:Math.max(.8, Math.min(50, Number(item.width) || (item.tool === 'highlighter' ? 15 : 2.2)))
+      width:Math.max(.8, Math.min(50, Number(item.width) || (item.tool === 'highlighter' ? 15 : 2.2))),
+      opacity:Math.max(.05, Math.min(1, Number(item.opacity) || (item.tool === 'highlighter' ? .30 : 1)))
     };
   }
 
   function sanitizeNotebook(value) {
     const out = emptyNotebook();
     const pages = value?.pages && typeof value.pages === 'object' ? value.pages : {};
+    const styles = value?.pageStyles && typeof value.pageStyles === 'object' ? value.pageStyles : {};
     for (const letter of LETTERS) {
       const items = Array.isArray(pages[letter]) ? pages[letter] : [];
       out.pages[letter] = items.slice(0, 12000).map(sanitizeItem).filter((item) => item.kind !== 'stroke' || item.points.length > 0);
+      const style = styles[letter] || {};
+      out.pageStyles[letter] = {
+        color:['yellow','white','black'].includes(style.color) ? style.color : 'yellow',
+        template:['ruled','blank','grid'].includes(style.template) ? style.template : 'ruled'
+      };
     }
     return out;
   }
@@ -498,7 +527,7 @@ export function initPasswordVault(options = {}) {
 
   function armAutoLock() {
     clearTimeout(autoLockTimer);
-    if (!masterKeyBytes) return;
+    if (!masterKeyBytes || locking) return;
     autoLockTimer = setTimeout(() => void lock('timeout'), AUTO_LOCK_MS);
   }
 
@@ -595,6 +624,65 @@ export function initPasswordVault(options = {}) {
     if (activeGesture) finishGesture(null, false, true);
     if (notebookDirty) await saveCurrentNotebook(true);
     try { await saveChain; } catch {}
+  }
+
+  // 0.1.100 — ponte verso il motore pagina principale di Agenda/Note.
+  // La Rubrica non disegna più sul canvas dedicato: espone la pagina A-Z al
+  // motore Ink principale e riceve lo snapshot soltanto a fine gesto/salvataggio.
+  function mainPageFromLetter(letter = activeLetter) {
+    const safeLetter = LETTERS.includes(letter) ? letter : 'A';
+    const strokes = [];
+    const images = [];
+    for (const raw of notebook.pages[safeLetter] || []) {
+      const item = sanitizeItem(raw);
+      if (item.kind === 'image') {
+        images.push({
+          id:item.id, name:String(item.name || 'Immagine Rubrica'), mimeType:String(item.mimeType || ''), src:item.src,
+          blobHash:'', blobSize:0, x:item.x, y:item.y, w:item.w, h:item.h, rotation:Number(item.rotation) || 0,
+          createdAt:item.createdAt, modifiedAt:item.modifiedAt
+        });
+        continue;
+      }
+      if (item.kind === 'shape' && !Array.isArray(item.points)) {
+        const bounds={ left:item.x, top:item.y, right:item.x + item.w, bottom:item.y + item.h };
+        strokes.push({
+          id:item.id, kind:'shape', shapeType:item.shapeType, shapeVersion:1, tool:'pen', color:item.color, width:item.width, opacity:1,
+          points:buildShapePoints(item.shapeType,bounds).map((p,index)=>({...sanitizePoint(p),t:index})),
+          createdAt:item.createdAt, modifiedAt:item.modifiedAt
+        });
+      } else strokes.push(clone(item));
+    }
+    const style = notebook.pageStyles?.[safeLetter] || { color:'yellow', template:'ruled' };
+    return { letter:safeLetter, strokes, images, pageStyle:clone(style) };
+  }
+
+  async function saveMainPage(letter, pageStrokes = [], pageImages = [], pageStyle = { color:'yellow', template:'ruled' }, flush = true) {
+    if (!masterKeyBytes) throw new Error('Rubrica bloccata');
+    const safeLetter = LETTERS.includes(letter) ? letter : activeLetter;
+    const combined = [
+      ...(Array.isArray(pageStrokes) ? pageStrokes : []).map((item)=>sanitizeItem(item)),
+      ...(Array.isArray(pageImages) ? pageImages : []).map((image)=>sanitizeItem({ ...image, kind:'image' }))
+    ];
+    notebook.pages[safeLetter] = combined;
+    notebook.pageStyles ||= {};
+    notebook.pageStyles[safeLetter] = {
+      color:['yellow','white','black'].includes(pageStyle?.color) ? pageStyle.color : 'yellow',
+      template:['ruled','blank','grid'].includes(pageStyle?.template) ? pageStyle.template : 'ruled'
+    };
+    activeLetter = safeLetter;
+    notebookDirty = true;
+    changeSerial += 1;
+    armAutoLock();
+    if (flush) await saveCurrentNotebook(true);
+    return true;
+  }
+
+  function setExternalLetter(letter) {
+    if (!LETTERS.includes(letter)) return mainPageFromLetter(activeLetter);
+    activeLetter = letter;
+    updateTabs();
+    armAutoLock();
+    return mainPageFromLetter(activeLetter);
   }
 
   function canvasMetrics() {
@@ -859,6 +947,8 @@ export function initPasswordVault(options = {}) {
 
   async function unlockWithMasterKey(rawKey,method){
     const payload=await decryptPayload(rawKey,dataRow);if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=new Uint8Array(rawKey);legacyEntries=Array.isArray(payload.entries)?clone(payload.entries):[];notebook=sanitizeNotebook(payload.notebook);activeLetter='A';activeTool='pen';lastInkTool='pen';selectionIds.clear();undoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));redoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));notebookDirty=false;renderMode();armAutoLock();setStatus(`Rubrica sbloccata con ${method}.`,true);
+    if(panel) panel.hidden=true;
+    await onUnlocked({ method, letter:activeLetter, page:mainPageFromLetter(activeLetter) });
   }
 
   async function unlockPin(){try{await ensurePinAllowed();const pin=String(pinInput?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Inserisci le 4 cifre del PIN');const raw=await unwrapMasterKeyWithPin(configRow,pin);await clearPinFailures();if(pinInput)pinInput.value='';await unlockWithMasterKey(raw,'PIN');raw.fill(0);}catch(err){if(!String(err?.message||'').startsWith('Troppi tentativi'))await notePinFailure();setStatus(`Accesso non riuscito: ${err?.message||err}`);}}
@@ -867,16 +957,26 @@ export function initPasswordVault(options = {}) {
     if(biometricOpening)return;biometricOpening=true;try{if(!localAuthRow)throw new Error('Biometria non configurata su questo dispositivo');setStatus('Conferma impronta / biometria su iPad…');const raw=await unwrapMasterKeyWithBiometric(configRow,localAuthRow);await unlockWithMasterKey(raw,'biometria');raw.fill(0);}catch(err){if(err?.name==='NotAllowedError')setStatus('Accesso biometrico annullato. PIN disponibile come alternativa.');else setStatus(`Biometria non disponibile: ${err?.message||err}`);setTimeout(()=>pinInput?.focus?.({preventScroll:true}),60);}finally{biometricOpening=false;}
   }
 
-  async function setupVault(){try{const pin=String(setupPin?.value||''),confirm=String(setupPinConfirm?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Il PIN deve contenere esattamente 4 cifre');if(pin!==confirm)throw new Error('I due PIN non coincidono');const material=await createVaultMaterial(pin);await commitPortableRows([material.configRow,material.dataRow]);configRow={...material.configRow};dataRow={...material.dataRow};await unlockWithMasterKey(material.masterKeyBytes,'nuovo PIN');material.masterKeyBytes.fill(0);clearSecretInputs();}catch(err){setStatus(`Creazione Rubrica non riuscita: ${err?.message||err}`);}}
+  async function setupVault(){try{const pin=String(setupPin?.value||''),confirm=String(setupPinConfirm?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Il PIN deve contenere esattamente 4 cifre');if(pin!==confirm)throw new Error('I due PIN non coincidono');const material=await createVaultMaterial(pin);await commitPortableRows([material.configRow,material.dataRow]);configRow={...material.configRow};dataRow={...material.dataRow};
+    if(!localAuthRow){try{const bio=await createBiometricWrapper(material.masterKeyBytes,configRow.vaultId);await putLocalRow(bio);localAuthRow=bio;}catch(err){console.warn('Biometria iniziale Rubrica non configurata',err);}}
+    await unlockWithMasterKey(material.masterKeyBytes,'nuovo PIN');material.masterKeyBytes.fill(0);clearSecretInputs();}catch(err){setStatus(`Creazione Rubrica non riuscita: ${err?.message||err}`);}}
 
   async function enableBiometric(){try{if(!masterKeyBytes||!configRow)throw new Error('Sblocca prima la Rubrica con il PIN');setStatus('Conferma l’autenticazione biometrica di iPadOS…');const row=await createBiometricWrapper(masterKeyBytes,configRow.vaultId);await putLocalRow(row);localAuthRow=row;renderMode();setStatus('Impronta digitale / biometria associata e impostata come accesso predefinito.',true);}catch(err){if(err?.name==='NotAllowedError')setStatus('Configurazione biometrica annullata.');else setStatus(`Biometria non configurata: ${err?.message||err}`);}}
 
   async function lock(reason='manual'){
-    clearTimeout(autoLockTimer);await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
+    if(locking)return;locking=true;
+    try{
+      clearTimeout(autoLockTimer);
+      if(masterKeyBytes) await onBeforeLock(reason);
+      await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
+      await onLocked(reason);
+    }finally{locking=false;}
   }
 
   async function open(){
-    if(destroyed||!panel)return;try{onOpen();}catch{}panel.hidden=false;
+    if(destroyed||!panel)return;
+    if(masterKeyBytes && isExternalPageActive()){ await onExternalExit(); return; }
+    try{onOpen();}catch{}panel.hidden=false;
     if(!configRow||!dataRow)await refreshRows();else{const latestAuth=await getRow(VAULT_LOCAL_AUTH_KEY).catch(()=>localAuthRow);if(latestAuth)localAuthRow=latestAuth;}
     renderMode();
     if(masterKeyBytes){armAutoLock();requestAnimationFrame(()=>resizeCanvas(true));return;}
@@ -908,5 +1008,17 @@ export function initPasswordVault(options = {}) {
 
   void refreshRows().then(renderMode);
 
-  return {open,close,lock,isUnlocked:()=>Boolean(masterKeyBytes),isWriting:()=>Boolean(activeGesture),handleRemoteUpdate,refresh:async()=>{await refreshRows();renderMode();},destroy:()=>{destroyed=true;resizeObserver?.disconnect?.();void lock('manual');}};
+  return {
+    open,close,lock,
+    isUnlocked:()=>Boolean(masterKeyBytes),
+    isWriting:()=>Boolean(activeGesture),
+    getPage:(letter='A')=>mainPageFromLetter(letter),
+    savePage:(letter,strokes,images,pageStyle,flush=true)=>saveMainPage(letter,strokes,images,pageStyle,flush),
+    setActiveLetter:(letter)=>setExternalLetter(letter),
+    noteActivity:()=>armAutoLock(),
+    flush:()=>flushNotebookBeforeExit(),
+    handleRemoteUpdate,
+    refresh:async()=>{await refreshRows();renderMode();},
+    destroy:()=>{destroyed=true;resizeObserver?.disconnect?.();void lock('manual');}
+  };
 }

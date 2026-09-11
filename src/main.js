@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.99';
+const APP_VERSION = '0.1.100';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -79,6 +79,7 @@ const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
 const FREE_NOTE_KEY_PREFIX = '::free-note::';
+const RUBRICA_KEY_PREFIX = '::rubrica::';
 const GLOBAL_PAGE_STYLE_KEY = '::global-page-style';
 const PLANNER_MODES = Object.freeze(['daily', 'weekly', 'monthly', 'yearly']);
 const PAPER_TOOL_DEFAULTS = Object.freeze({
@@ -126,6 +127,8 @@ const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
 const freeNotesButton = document.getElementById('freeNotesButton');
+const rubricaAzTabs = document.getElementById('rubricaAzTabs');
+const rubricaTabButtons = [...document.querySelectorAll('[data-rubrica-letter]')];
 const miniCalendar = document.getElementById('miniCalendar');
 const styleButton = document.getElementById('styleButton');
 const stylePanel = document.getElementById('stylePanel');
@@ -214,6 +217,11 @@ let currentNoteTotal = 0;
 let currentFreeNoteIndex = 1;
 let currentFreeNoteTotal = 1;
 let freeNoteCountLoaded = false;
+let currentRubricaLetter = 'A';
+let rubricaReturnDescriptor = null;
+let rubricaExitInProgress = false;
+let rubricaPageSwitchBusy = false;
+let rubricaImageClipboard = null;
 const notesCountCache = new Map();
 let strokes = [];
 let images = [];
@@ -660,7 +668,7 @@ async function setPageColor(color) {
   renderAll();
   dirty = true;
 
-  if (pageStyleScope === 'all') {
+  if (pageStyleScope === 'all' && currentPageKind !== 'rubrica') {
     pageStyleBulkBusy = true;
     updatePageStyleUi();
     statusLabel.textContent = 'applico colore a tutta l’agenda…';
@@ -693,20 +701,21 @@ async function setPageColor(color) {
     return;
   }
 
-  syncFoundation?.recordPageProperty(pageDescriptor(), 'color', color, 'current');
+  if (pageSyncAllowed()) syncFoundation?.recordPageProperty(pageDescriptor(), 'color', color, 'current');
   scheduleSave();
   statusLabel.textContent = 'colore carta impostato sulla pagina';
 }
 
 async function setPageTemplate(template) {
   if (denyMutationDuringSyncRecovery()) return;
+  if (currentPageKind === 'rubrica' && template !== 'ruled') { statusLabel.textContent = 'La Rubrica resta sempre a righe'; return; }
   if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
   pageStyle = { ...pageStyle, template };
   applyPageStyle();
   updatePageStyleUi();
   dirty = true;
 
-  if (pageStyleScope === 'all') {
+  if (pageStyleScope === 'all' && currentPageKind !== 'rubrica') {
     pageStyleBulkBusy = true;
     updatePageStyleUi();
     statusLabel.textContent = 'applico modello a tutta l’agenda…';
@@ -739,7 +748,7 @@ async function setPageTemplate(template) {
     return;
   }
 
-  syncFoundation?.recordPageProperty(pageDescriptor(), 'template', template, 'current');
+  if (pageSyncAllowed()) syncFoundation?.recordPageProperty(pageDescriptor(), 'template', template, 'current');
   scheduleSave();
   statusLabel.textContent = 'modello pagina impostato sulla pagina';
 }
@@ -1718,7 +1727,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
   if (kindLabel) {
-    if (pageKind === 'free-note') kindLabel.textContent = 'Note libere';
+    if (pageKind === 'rubrica') kindLabel.textContent = 'Rubrica';
+    else if (pageKind === 'free-note') kindLabel.textContent = 'Note libere';
     else if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
     else if (isPlannerKind(pageKind)) {
       const mode = plannerModeFromKind(pageKind);
@@ -1733,8 +1743,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
       else kindLabel.textContent = plannerModeTitle('yearly', dateString);
     } else kindLabel.textContent = '';
   }
-  if (noteCounter) noteCounter.textContent = pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '';
-  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || isPlannerKind(pageKind);
+  if (noteCounter) noteCounter.textContent = pageKind === 'rubrica' ? currentRubricaLetter : (pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '');
+  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || pageKind === 'rubrica' || isPlannerKind(pageKind);
   if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
   else if (kindLabel) kindLabel.style.removeProperty('left');
 }
@@ -2146,6 +2156,7 @@ function configurePageRoot(root, descriptor) {
   root.classList.toggle('planner-view', planner);
   root.classList.toggle('note-view', descriptor.kind === 'note');
   root.classList.toggle('free-note-view', descriptor.kind === 'free-note');
+  root.classList.toggle('rubrica-view', descriptor.kind === 'rubrica');
   for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
   root.classList.toggle('planner-timetable', planner && mode === 'timetable');
   const layer = root.querySelector('.planner-layer');
@@ -2163,7 +2174,7 @@ function configurePageRoot(root, descriptor) {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
   const hours = root.querySelector('.hours');
-  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || planner;
+  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || descriptor.kind === 'rubrica' || planner;
 }
 
 let audioIndicatorSerial = 0;
@@ -2199,12 +2210,19 @@ function updateHeader() {
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
   if (baselineLabel) {
-    if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
+    if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter}`;
+    else if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
     else if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
     else baselineLabel.textContent = 'AGENDA · PLANNER · INK STABILE';
   }
   freeNotesButton?.setAttribute('aria-pressed', currentPageKind === 'free-note' ? 'true' : 'false');
+  if (rubricaAzTabs) rubricaAzTabs.hidden = currentPageKind !== 'rubrica';
+  for (const button of rubricaTabButtons) {
+    const active = currentPageKind === 'rubrica' && button.dataset.rubricaLetter === currentRubricaLetter;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-current', active ? 'page' : 'false');
+  }
   void refreshAudioPageIndicator();
 }
 
@@ -2220,14 +2238,15 @@ function freeNoteKey(index) {
   return `${FREE_NOTE_KEY_PREFIX}${String(Math.max(1, Number(index) || 1)).padStart(4, '0')}`;
 }
 
-function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex) {
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, rubricaLetter = currentRubricaLetter) {
+  if (pageKind === 'rubrica') return `${RUBRICA_KEY_PREFIX}${String(rubricaLetter || 'A').toUpperCase()}`;
   if (pageKind === 'free-note') return freeNoteKey(freeNoteIndex);
   if (pageKind === 'note') return noteKey(dateString, noteIndex);
   if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind), timetableIndex);
   return dateString;
 }
 
-function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal) {
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal, rubricaLetter = currentRubricaLetter) {
   const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
   return {
     date: dateString,
@@ -2240,7 +2259,8 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
     noteTotal: pageKind === 'note' ? noteTotal : 0,
     freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(freeNoteIndex) || 1) : 0,
     freeNoteTotal: pageKind === 'free-note' ? Math.max(1, Number(freeNoteTotal) || 1) : 0,
-    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex),
+    rubricaLetter: pageKind === 'rubrica' ? String(rubricaLetter || 'A').toUpperCase() : '',
+    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex, rubricaLetter),
     createNote: false,
     createFreeNote: false
   };
@@ -2253,7 +2273,7 @@ function freeNoteDescriptor(index = currentFreeNoteIndex, total = currentFreeNot
 }
 
 function currentPageKey() {
-  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex);
+  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex, currentRubricaLetter);
 }
 
 function addDays(dateString, delta) {
@@ -2569,12 +2589,13 @@ async function ensureImageBlob(image) {
   image.blobSize = row.size;
   image.mimeType = row.mimeType;
   image.modifiedAt = image.modifiedAt || new Date().toISOString();
-  syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, blobMigration: true });
+  if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, blobMigration: true });
   dirty = true;
   return true;
 }
 
 async function ensureCurrentPageImageBlobs() {
+  if (currentPageKind === 'rubrica') return 0;
   if (!images.length) return 0;
   let changed = 0;
   for (const image of images) {
@@ -2694,9 +2715,9 @@ async function queueAuthoritativeGroupSnapshot() {
   for (const original of records) {
     const record = await ensureSnapshotRecordImageBlobs(original);
     const descriptor = descriptorFromStoredRecord(record);
-    syncFoundation?.recordPageSnapshot(descriptor, record);
+    if (pageSyncAllowed(descriptor)) syncFoundation?.recordPageSnapshot(descriptor, record);
     for (const stroke of Array.isArray(record?.strokes) ? record.strokes : []) {
-      if (stroke?.id) syncFoundation?.recordStrokeAdded(descriptor, stroke);
+      if (stroke?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, stroke);
     }
     const commit = syncFoundation?.prepareAtomicCommit(descriptor.key) || { events: [], eventIds: [], stateRow: null };
     if (commit.events.length) {
@@ -3915,13 +3936,14 @@ function updateImageInspector() {
     button.disabled = !hasSelection;
     button.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
   }
+  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
   if (cutImageButton) {
-    const canCut = hasSelection && !localImageCutClipboard?.image;
+    const canCut = hasSelection && !activeClipboard?.image;
     cutImageButton.disabled = !canCut;
     cutImageButton.setAttribute('aria-disabled', canCut ? 'false' : 'true');
   }
   if (pasteImageButton) {
-    const canPaste = Boolean(localImageCutClipboard?.image) && !localImageCutClipboard?.pendingImageId;
+    const canPaste = Boolean(activeClipboard?.image) && !activeClipboard?.pendingImageId;
     pasteImageButton.disabled = !canPaste;
     pasteImageButton.setAttribute('aria-disabled', canPaste ? 'false' : 'true');
   }
@@ -4050,11 +4072,11 @@ async function importImageFile(file) {
   statusLabel.textContent = 'preparo immagine';
   try {
     const packed = await compressImageFile(file);
-    const blobRow = await registerBlob(packed.blob, packed.mimeType);
+    const blobRow = currentPageKind === 'rubrica' ? null : await registerBlob(packed.blob, packed.mimeType);
     const geom = initialImageGeometry(packed.width, packed.height);
     const image = normalizeImageObject({
       id: makeImageId(), name: file.name || 'Immagine', mimeType: packed.mimeType, src: packed.src,
-      blobHash: blobRow.hash, blobSize: blobRow.size,
+      blobHash: blobRow?.hash || '', blobSize: blobRow?.size || packed.blob?.size || 0,
       ...geom, rotation: 0, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString()
     });
     images.push(image);
@@ -4064,7 +4086,7 @@ async function importImageFile(file) {
     dirty = true;
     renderImages();
     statusLabel.textContent = 'immagine inserita';
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image);
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image);
     scheduleSave();
   } catch (err) {
     console.warn('Importazione immagine non riuscita', err);
@@ -4154,7 +4176,7 @@ function endImageGesture(ev, cancelled = false) {
     rememberUndo({ type: 'update-image', id: image.id, before: g.before, after: cloneImageObject(image) });
     session.imageTransforms++;
     dirty = true;
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before: g.before });
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before: g.before });
     scheduleSave();
   }
   renderImages();
@@ -4174,14 +4196,15 @@ function rotateSelectedImage(delta) {
   session.imageTransforms++;
   dirty = true;
   renderImages();
-  syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before });
+  if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before });
   scheduleSave();
 }
 
 async function cutSelectedImage() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || imageBusy) return;
-  if (localImageCutClipboard?.image) {
+  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
+  if (activeClipboard?.image) {
     statusLabel.textContent = 'incolla prima l’immagine già tagliata';
     return;
   }
@@ -4195,15 +4218,15 @@ async function cutSelectedImage() {
   };
   imageBusy = true;
   try {
-    await saveLocalImageCutClipboard(clipboard);
-    localImageCutClipboard = clipboard;
+    if (currentPageKind === 'rubrica') rubricaImageClipboard = clipboard;
+    else { await saveLocalImageCutClipboard(clipboard); localImageCutClipboard = clipboard; }
     images.splice(index, 1);
     rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
     selectedImageId = null;
     session.imagesDeleted++;
     dirty = true;
     renderImages();
-    syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
+    if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
     scheduleSave();
     updateImageInspector();
     statusLabel.textContent = 'immagine tagliata · pronta da incollare';
@@ -4228,12 +4251,13 @@ async function ensureClipboardImageBlob(image) {
 
 async function pasteCutImage() {
   if (denyMutationDuringSyncRecovery()) return;
-  if (drawing || pageTurning || imageBusy || !localImageCutClipboard?.image || localImageCutClipboard?.pendingImageId) return;
+  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
+  if (drawing || pageTurning || imageBusy || !activeClipboard?.image || activeClipboard?.pendingImageId) return;
   imageBusy = true;
-  const clipboardSnapshot = localImageCutClipboard;
+  const clipboardSnapshot = activeClipboard;
   statusLabel.textContent = 'incollo immagine';
   try {
-    const source = await ensureClipboardImageBlob(cloneImageObject(clipboardSnapshot.image));
+    const source = currentPageKind === 'rubrica' ? cloneImageObject(clipboardSnapshot.image) : await ensureClipboardImageBlob(cloneImageObject(clipboardSnapshot.image));
     const now = new Date().toISOString();
     const image = normalizeImageObject({
       ...source,
@@ -4251,14 +4275,14 @@ async function pasteCutImage() {
       pendingPageKey: currentPageKey(),
       pasteRequestedAt: now
     };
-    await saveLocalImageCutClipboard(pendingClipboard);
-    localImageCutClipboard = pendingClipboard;
+    if (currentPageKind === 'rubrica') rubricaImageClipboard = pendingClipboard;
+    else { await saveLocalImageCutClipboard(pendingClipboard); localImageCutClipboard = pendingClipboard; }
     images.push(image);
     selectedImageId = image.id;
     rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: images.length - 1 });
     dirty = true;
     renderImages();
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image, {
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image, {
       reason: 'local-cut-paste',
       sourcePageKey: clipboardSnapshot.sourcePageKey
     });
@@ -4311,7 +4335,7 @@ function sizeImageCropStage() {
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
 
-  // 0.1.99 — usa il viewport realmente visibile su iPadOS e riserva spazio
+  // 0.1.100 — usa il viewport realmente visibile su iPadOS e riserva spazio
   // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
   // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
   const viewport = cropViewportSize();
@@ -4496,12 +4520,12 @@ async function applyImageCrop() {
   try {
     const before = cloneImageObject(image);
     const packed = await cropPreviewToData(rect, image.mimeType);
-    const blobRow = await registerBlob(packed.blob, packed.mimeType);
+    const blobRow = currentPageKind === 'rubrica' ? null : await registerBlob(packed.blob, packed.mimeType);
     applyCropGeometry(image, rect, imageLayerBounds());
     image.src = packed.src;
     image.mimeType = packed.mimeType;
-    image.blobHash = blobRow.hash;
-    image.blobSize = blobRow.size;
+    image.blobHash = blobRow?.hash || '';
+    image.blobSize = blobRow?.size || packed.blob?.size || 0;
     constrainImage(image);
     rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
     session.imageTransforms++;
@@ -4509,7 +4533,7 @@ async function applyImageCrop() {
     dirty = true;
     closeImageCropEditor();
     renderImages();
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, crop: true });
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, crop: true });
     scheduleSave();
     statusLabel.textContent = 'immagine ritagliata';
   } catch (err) {
@@ -4867,7 +4891,7 @@ function endShapeGesture(ev, cancelled = false) {
   cancelShapeGesture();
   strokes.push(shape);
   rememberUndo({ type: 'add-stroke', stroke: shape, index: strokes.length - 1 });
-  syncFoundation?.recordStrokeAdded(pageDescriptor(), shape);
+  if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), shape);
   session.shapesInserted++;
   renderAll();
   dirty = true;
@@ -4934,7 +4958,7 @@ function undoLastModification() {
     if (index >= 0) {
       const [removed] = strokes.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
-      syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
+      if (pageSyncAllowed()) syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
     }
   } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
     const descriptor = pageDescriptor();
@@ -4945,9 +4969,9 @@ function undoLastModification() {
       if (!original?.id || strokes.some((stroke) => stroke.id === original.id)) continue;
       const index = Math.max(0, Math.min(Number(change.originalIndex) || 0, strokes.length));
       strokes.splice(index, 0, original);
-      syncFoundation?.recordStrokeAdded(descriptor, original);
+      if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, original);
       for (const fragment of change.fragments || []) {
-        if (fragment?.id) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
+        if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
       }
     }
     pushBounded(redoHistory, action, REDO_LIMIT);
@@ -4957,20 +4981,20 @@ function undoLastModification() {
       const [removed] = images.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-image', image: cloneImageObject(removed), index }, REDO_LIMIT);
       if (selectedImageId === removed.id) selectedImageId = null;
-      syncFoundation?.recordImageDeleted(pageDescriptor(), removed.id);
+      if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), removed.id);
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
     images.splice(index, 0, cloneImageObject(action.image));
     selectedImageId = action.image.id;
     pushBounded(redoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index }, REDO_LIMIT);
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'undo-delete' });
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'undo-delete' });
   } else if (action?.type === 'update-image' && action.before?.id) {
     const index = images.findIndex((image) => image.id === action.before.id);
     if (index >= 0) images[index] = cloneImageObject(action.before);
     selectedImageId = action.before.id;
     pushBounded(redoHistory, { type: 'update-image', id: action.before.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, REDO_LIMIT);
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.before, { reason: 'undo-update' });
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.before, { reason: 'undo-update' });
   }
   renderAll();
   renderImages();
@@ -4994,7 +5018,7 @@ function redoLastModification() {
       const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : strokes.length, strokes.length));
       strokes.splice(index, 0, action.stroke);
       pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
-      syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
+      if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
     }
   } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
     const descriptor = pageDescriptor();
@@ -5004,9 +5028,9 @@ function redoLastModification() {
       const index = strokes.findIndex((stroke) => stroke.id === original.id);
       if (index < 0) continue;
       strokes.splice(index, 1, ...(change.fragments || []));
-      syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
+      if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
       for (const fragment of change.fragments || []) {
-        if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+        if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, fragment);
       }
     }
     pushBounded(undoHistory, action, UNDO_LIMIT);
@@ -5016,20 +5040,20 @@ function redoLastModification() {
       images.splice(index, 0, cloneImageObject(action.image));
       selectedImageId = action.image.id;
       pushBounded(undoHistory, { type: 'add-image', image: cloneImageObject(action.image), index }, UNDO_LIMIT);
-      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'redo-add' });
+      if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'redo-add' });
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = images.findIndex((image) => image.id === action.image.id);
     if (index >= 0) images.splice(index, 1);
     if (selectedImageId === action.image.id) selectedImageId = null;
     pushBounded(undoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index: action.index }, UNDO_LIMIT);
-    syncFoundation?.recordImageDeleted(pageDescriptor(), action.image.id);
+    if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), action.image.id);
   } else if (action?.type === 'update-image' && action.after?.id) {
     const index = images.findIndex((image) => image.id === action.after.id);
     if (index >= 0) images[index] = cloneImageObject(action.after);
     selectedImageId = action.after.id;
     pushBounded(undoHistory, { type: 'update-image', id: action.after.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, UNDO_LIMIT);
-    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.after, { reason: 'redo-update' });
+    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.after, { reason: 'redo-update' });
   }
   renderAll();
   renderImages();
@@ -5307,6 +5331,24 @@ function cancelPendingSave() {
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
   let syncCommit = null;
   try {
+    // 0.1.100 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
+    // scritta in chiaro nello store pagine. Lo snapshot viene consegnato al Vault,
+    // cifrato e sincronizzato come unico involucro opaco AES-GCM.
+    if (descriptor?.kind === 'rubrica') {
+      if (!passwordVault?.isUnlocked?.()) throw new Error('Rubrica bloccata');
+      storageBusy = true;
+      await passwordVault.savePage(descriptor.rubricaLetter || currentRubricaLetter, pageStrokes, pageImages, pageStyleSnapshot, true);
+      if (rubricaImageClipboard?.pendingImageId
+          && rubricaImageClipboard.pendingPageKey === descriptor.key
+          && (pageImages || []).some((image)=>image?.id === rubricaImageClipboard.pendingImageId)) {
+        rubricaImageClipboard = null;
+        updateImageInspector();
+      }
+      session.storageWrites++;
+      if (updateStatus) statusLabel.textContent = 'Rubrica salvata';
+      scheduleCloudAuto('rubrica-vault-commit', 5000);
+      return true;
+    }
     await openDb();
     const txStart = performance.now();
     storageBusy = true;
@@ -5459,9 +5501,9 @@ function startStroke(ev, reason = 'pointerdown') {
 function recordStructuralEraseChanges(changes, reason = 'eraser') {
   const descriptor = pageDescriptor();
   for (const change of changes || []) {
-    if (change?.original?.id) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
+    if (change?.original?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
     for (const fragment of change?.fragments || []) {
-      if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+      if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, fragment);
     }
   }
 }
@@ -5511,7 +5553,7 @@ function finalizeStroke(reason = 'pointerup') {
   } else if (completedStroke) {
     strokes.push(completedStroke);
     rememberUndo({ type: 'add-stroke', stroke: completedStroke, index: strokes.length - 1 });
-    syncFoundation?.recordStrokeAdded(pageDescriptor(), completedStroke);
+    if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), completedStroke);
     pageChanged = true;
   }
   if (currentStrokeDiag) {
@@ -5590,7 +5632,7 @@ async function commitVoiceScriptText(payload = {}) {
   if (descriptor.key === currentPageKey()) {
     strokes.push(item);
     rememberUndo({ type:'add-stroke', stroke:item, index:strokes.length - 1 });
-    syncFoundation?.recordStrokeAdded(descriptor, item);
+    if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, item);
     renderAll();
     dirty = true;
     scheduleSave();
@@ -5603,7 +5645,7 @@ async function commitVoiceScriptText(payload = {}) {
     const pageStrokes = [...(Array.isArray(record?.strokes) ? record.strokes : []), item];
     const targetStyle = normalizePageStyle(record?.pageStyle || globalPageStyle);
     const targetImages = Array.isArray(record?.images) ? record.images : [];
-    syncFoundation?.recordStrokeAdded(descriptor, item);
+    if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, item);
     return await persistSnapshot(descriptor, pageStrokes, false, targetStyle, targetImages);
   } catch (err) {
     console.warn('Voice Script: salvataggio pagina origine non riuscito', err);
@@ -5965,7 +6007,7 @@ async function clearCurrentPage(options = {}) {
   let clearCommit = null;
   try {
     await openDb();
-    syncFoundation?.recordPageCleared(clearedDescriptor, removedStrokeIds, removedImageIds);
+    if (pageSyncAllowed(clearedDescriptor)) syncFoundation?.recordPageCleared(clearedDescriptor, removedStrokeIds, removedImageIds);
     clearCommit = syncFoundation?.prepareAtomicCommit(clearedDescriptor.key) ?? { events: [], eventIds: [], stateRow: null };
     const txStart = performance.now();
     await deleteRecordWithSync(clearedDescriptor.key, clearCommit);
@@ -6147,7 +6189,7 @@ function resetTurnStyles() {
 }
 
 function horizontalTarget(direction) {
-  if (currentPageKind === 'free-note') return null;
+  if (currentPageKind === 'free-note' || currentPageKind === 'rubrica') return null;
   if (currentPageKind === 'planner-timetable') {
     const nextIndex = currentTimetableIndex + direction;
     if (nextIndex < 1 || nextIndex > WEEKLY_TIMETABLE_MAX_PAGES) return null;
@@ -6160,6 +6202,7 @@ function horizontalTarget(direction) {
 }
 
 function verticalTarget(direction) {
+  if (currentPageKind === 'rubrica') return null;
   if (currentPageKind === 'free-note') {
     if (direction < 0) {
       if (currentFreeNoteIndex <= 1) return null;
@@ -6326,6 +6369,165 @@ function movePageSwipe(ev) {
 
   applySwipeVisual(dx, dy);
   ev.preventDefault();
+}
+
+async function loadDescriptorDirect(target) {
+  if (!target?.key) return false;
+  try {
+    await openDb();
+    const record = await getRecord(target.key);
+    session.storageReads++;
+    currentDate = target.date || currentDate;
+    currentPageKind = target.kind || 'agenda';
+    currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode || plannerModeFromKind(target.kind) || 'daily') : currentPlannerMode;
+    currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
+    currentNoteIndex = target.kind === 'note' ? (Number(target.noteIndex) || 1) : 0;
+    currentNoteTotal = target.kind === 'note' ? Math.max(currentNoteIndex, Number(target.noteTotal) || currentNoteIndex) : 0;
+    if (target.kind === 'free-note') {
+      currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
+      currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || currentFreeNoteTotal || 1);
+      freeNoteCountLoaded = true;
+    }
+    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+    images = imagesFromRecord(record);
+    selectedImageId = null;
+    const previousPaperColor = pageStyle.color;
+    pageStyle = target.kind === 'planner-timetable'
+      ? normalizePageStyle({ color:'black', template:'blank' })
+      : target.kind === 'free-note' && !record
+        ? normalizePageStyle({ color:globalPageStyle.color, template:'ruled' })
+        : pageStyleFromRecord(record);
+    applyPageStyle();
+    updatePageStyleUi();
+    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
+    resetUndoHistory();
+    dirty = false;
+    await migrateLegacyErasersOnCurrentPage();
+    updateHeader();
+    resizeCanvas();
+    renderAll();
+    renderImages();
+    updateToolUi();
+    updateStyleUi();
+    return true;
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Ripristino pagina dopo Rubrica non riuscito', err);
+    return false;
+  }
+}
+
+function applyRubricaPage(page, letter = currentRubricaLetter) {
+  currentRubricaLetter = String(letter || 'A').toUpperCase();
+  strokes = Array.isArray(page?.strokes) ? page.strokes.map((item)=>globalThis.structuredClone ? globalThis.structuredClone(item) : JSON.parse(JSON.stringify(item))) : [];
+  images = Array.isArray(page?.images) ? page.images.map(normalizeImageObject).filter(Boolean) : [];
+  selectedImageId = null;
+  const requestedStyle = normalizePageStyle(page?.pageStyle || { color:'yellow', template:'ruled' });
+  pageStyle = { ...requestedStyle, template:'ruled' };
+  applyPageStyle();
+  updatePageStyleUi();
+  resetUndoHistory();
+  dirty = false;
+  lassoTool?.clearSelection?.();
+  updateHeader();
+  resizeCanvas();
+  renderAll();
+  renderImages();
+  updateToolUi();
+  updateStyleUi();
+  passwordVault?.noteActivity?.();
+}
+
+async function enterRubricaFromVault(payload = {}) {
+  if (!passwordVault?.isUnlocked?.() || rubricaPageSwitchBusy) return false;
+  if (currentPageKind === 'rubrica') return true;
+  rubricaPageSwitchBusy = true;
+  pageTurning = true;
+  cancelPendingSave();
+  try {
+    const oldDescriptor = pageDescriptor();
+    const oldStrokes = strokes;
+    const oldImages = images;
+    const oldStyle = { ...pageStyle };
+    const saveOk = dirty ? await persistSnapshot(oldDescriptor, oldStrokes, false, oldStyle, oldImages) : true;
+    if (!saveOk) {
+      statusLabel.textContent = 'salvataggio pagina non riuscito';
+      return false;
+    }
+    rubricaReturnDescriptor = { ...oldDescriptor };
+    currentPageKind = 'rubrica';
+    currentNoteIndex = 0;
+    currentNoteTotal = 0;
+    currentRubricaLetter = String(payload.letter || 'A').toUpperCase();
+    if (!/^[A-Z]$/.test(currentRubricaLetter)) currentRubricaLetter = 'A';
+    const page = payload.page || passwordVault.getPage?.(currentRubricaLetter) || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
+    if (activeTool !== 'pen') {
+      deactivatePageTool('rubrica-enter');
+      selectTool('pen');
+    }
+    applyRubricaPage(page, currentRubricaLetter);
+    statusLabel.textContent = `Rubrica · ${currentRubricaLetter}`;
+    return true;
+  } finally {
+    pageTurning = false;
+    rubricaPageSwitchBusy = false;
+  }
+}
+
+async function flushRubricaCurrentPage(updateStatus = false) {
+  if (currentPageKind !== 'rubrica' || !passwordVault?.isUnlocked?.()) return true;
+  if (drawing) finalizeStroke('rubrica-flush');
+  cancelPendingSave();
+  const descriptor = pageDescriptor();
+  const snapshot = strokes;
+  const imageSnapshot = images;
+  const ok = await persistSnapshot(descriptor, snapshot, updateStatus, { ...pageStyle, template:'ruled' }, imageSnapshot);
+  if (ok && currentPageKind === 'rubrica' && currentRubricaLetter === descriptor.rubricaLetter && strokes === snapshot) dirty = false;
+  return ok;
+}
+
+async function switchRubricaLetter(letter) {
+  const targetLetter = String(letter || '').toUpperCase();
+  if (currentPageKind !== 'rubrica' || !/^[A-Z]$/.test(targetLetter) || targetLetter === currentRubricaLetter || rubricaPageSwitchBusy) return;
+  rubricaPageSwitchBusy = true;
+  pageTurning = true;
+  try {
+    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-tab');
+    const saved = dirty ? await flushRubricaCurrentPage(false) : true;
+    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return; }
+    const page = passwordVault?.setActiveLetter?.(targetLetter) || passwordVault?.getPage?.(targetLetter);
+    applyRubricaPage(page || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } }, targetLetter);
+    statusLabel.textContent = `Rubrica · ${targetLetter}`;
+  } finally {
+    pageTurning = false;
+    rubricaPageSwitchBusy = false;
+  }
+}
+
+async function restoreAfterRubrica(reason = 'manual') {
+  if (currentPageKind !== 'rubrica') return;
+  const target = rubricaReturnDescriptor || pageDescriptor(currentDate, 'agenda', 0, 0);
+  rubricaReturnDescriptor = null;
+  rubricaImageClipboard = null;
+  currentPageKind = 'agenda'; // evita che eventuali routine UI vedano ancora la pagina privata durante il load
+  const ok = await loadDescriptorDirect(target);
+  statusLabel.textContent = reason === 'timeout' ? 'Rubrica salvata e bloccata automaticamente' : (ok ? 'Rubrica salvata' : 'Rubrica chiusa');
+}
+
+async function exitRubrica() {
+  if (currentPageKind !== 'rubrica' || rubricaExitInProgress) return;
+  rubricaExitInProgress = true;
+  pageTurning = true;
+  try {
+    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-exit');
+    const saved = await flushRubricaCurrentPage(false);
+    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return; }
+    await passwordVault?.lock?.('manual');
+    await restoreAfterRubrica('manual');
+  } finally {
+    pageTurning = false;
+    rubricaExitInProgress = false;
+  }
 }
 
 async function toggleFreeNotes() {
@@ -6649,7 +6851,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.99 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.100 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -6754,8 +6956,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.99 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.99 questi campioni venivano scartati perché il canale
+  // 0.1.100 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.100 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -6790,7 +6992,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.99 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.100 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -6857,7 +7059,7 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.99 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // 0.1.100 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
   // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
   // logico già aperto nel controller Lazo.
   if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
@@ -6888,7 +7090,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.99 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  // 0.1.100 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
   if (lassoTouchId == null && lassoPointerId != null) {
     const id = lassoPointerId;
     const ended = ev.changedTouches?.[0] || null;
@@ -7074,11 +7276,11 @@ lassoTool = initLassoTool({
   makeStrokeId: () => makeId(),
   makeImageId: () => makeImageId(),
   cloneImage: (image) => cloneImageObject(image),
-  recordStrokeAdded: (descriptor, stroke) => syncFoundation?.recordStrokeAdded(descriptor, stroke),
-  recordStrokeDeleted: (descriptor, strokeId, reason) => syncFoundation?.recordStrokeDeleted(descriptor, strokeId, reason),
-  recordImageAdded: (descriptor, image, sourcePageKey) => syncFoundation?.recordImageMetadata(descriptor, 'image.add', image, { reason:'lasso-paste', sourcePageKey }),
-  recordImageUpdated: (descriptor, image, before) => syncFoundation?.recordImageMetadata(descriptor, 'image.update', image, { before, reason:'lasso-move' }),
-  recordImageDeleted: (descriptor, imageId) => syncFoundation?.recordImageDeleted(descriptor, imageId),
+  recordStrokeAdded: (descriptor, stroke) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, stroke); },
+  recordStrokeDeleted: (descriptor, strokeId, reason) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, strokeId, reason); },
+  recordImageAdded: (descriptor, image, sourcePageKey) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageMetadata(descriptor, 'image.add', image, { reason:'lasso-paste', sourcePageKey }); },
+  recordImageUpdated: (descriptor, image, before) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageMetadata(descriptor, 'image.update', image, { before, reason:'lasso-move' }); },
+  recordImageDeleted: (descriptor, imageId) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageDeleted(descriptor, imageId); },
   renderAll: () => renderAll(),
   renderImages: () => renderImages(),
   rememberUndo: (action) => rememberUndo(action),
@@ -7100,6 +7302,20 @@ const directUiButtons = [...new Set([
   cancelImageCropButton, applyImageCropButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
+for (const button of rubricaTabButtons) {
+  button.addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType === 'mouse') return;
+    recentPencilUiActivation.set(button, performance.now());
+    void switchRubricaLetter(button.dataset.rubricaLetter);
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, { passive:false });
+  button.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    if (wasJustActivatedByPencil(button)) return;
+    void switchRubricaLetter(button.dataset.rubricaLetter);
+  });
+}
 
 // 0.1.77 — qualsiasi altro comando UI richiude la finestra Figure.
 document.addEventListener('pointerdown', (ev) => {
@@ -7185,6 +7401,7 @@ initializeShapePaletteIcons();
 // 0.1.50 — Orario settimanale = normale pagina Planner.
 // Nessun router Ink dedicato: tutti i Pointer Events passano dagli stessi handler core dell'Agenda.
 function routeGlobalPointerDown(ev) {
+  if (currentPageKind === 'rubrica') passwordVault?.noteActivity?.();
   if (isSyncRestorePending() && !isUiControlTarget(ev.target) && ev.pointerType !== 'touch') {
     denyMutationDuringSyncRecovery();
     ev.preventDefault();
@@ -7233,7 +7450,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.99 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
+// 0.1.100 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
 // del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
 // shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
 function handleLassoShieldPointerDown(ev) {
@@ -7267,7 +7484,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.99 — listener diretti sullo shield mantenuti solo come fallback.
+// 0.1.100 — listener diretti sullo shield mantenuti solo come fallback.
 // Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
@@ -7278,7 +7495,7 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.99 — Window capture è il percorso primario iPad/Pencil/dito.
+// 0.1.100 — Window capture è il percorso primario iPad/Pencil/dito.
 // Non viene più saltato quando event.target è lo shield.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
@@ -7704,6 +7921,15 @@ async function bootAgenda() {
         if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-password');
         deactivatePageTool('password-vault');
       },
+      onUnlocked: async (payload) => { await enterRubricaFromVault(payload); },
+      onBeforeLock: async () => {
+        if (currentPageKind === 'rubrica' && !rubricaExitInProgress) await flushRubricaCurrentPage(false);
+      },
+      onLocked: async (reason) => {
+        if (currentPageKind === 'rubrica' && !rubricaExitInProgress) await restoreAfterRubrica(reason);
+      },
+      isExternalPageActive: () => currentPageKind === 'rubrica',
+      onExternalExit: async () => { await exitRubrica(); },
       onClose: () => { updateToolUi(); }
     });
   }
