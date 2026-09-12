@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.100';
+const APP_VERSION = '0.1.101';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -4335,7 +4335,7 @@ function sizeImageCropStage() {
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
 
-  // 0.1.100 — usa il viewport realmente visibile su iPadOS e riserva spazio
+  // 0.1.101 — usa il viewport realmente visibile su iPadOS e riserva spazio
   // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
   // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
   const viewport = cropViewportSize();
@@ -5331,7 +5331,7 @@ function cancelPendingSave() {
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
   let syncCommit = null;
   try {
-    // 0.1.100 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
+    // 0.1.101 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
     // scritta in chiaro nello store pagine. Lo snapshot viene consegnato al Vault,
     // cifrato e sincronizzato come unico involucro opaco AES-GCM.
     if (descriptor?.kind === 'rubrica') {
@@ -6851,7 +6851,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.100 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.101 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -6956,8 +6956,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.100 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.100 questi campioni venivano scartati perché il canale
+  // 0.1.101 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.101 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -6992,7 +6992,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.100 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.101 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -7059,7 +7059,7 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.100 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // 0.1.101 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
   // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
   // logico già aperto nel controller Lazo.
   if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
@@ -7090,7 +7090,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.100 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  // 0.1.101 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
   if (lassoTouchId == null && lassoPointerId != null) {
     const id = lassoPointerId;
     const ended = ev.changedTouches?.[0] || null;
@@ -7450,7 +7450,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.100 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
+// 0.1.101 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
 // del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
 // shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
 function handleLassoShieldPointerDown(ev) {
@@ -7484,7 +7484,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.100 — listener diretti sullo shield mantenuti solo come fallback.
+// 0.1.101 — listener diretti sullo shield mantenuti solo come fallback.
 // Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
@@ -7495,7 +7495,7 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.100 — Window capture è il percorso primario iPad/Pencil/dito.
+// 0.1.101 — Window capture è il percorso primario iPad/Pencil/dito.
 // Non viene più saltato quando event.target è lo shield.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
@@ -7996,14 +7996,28 @@ async function bootAgenda() {
   }
   if (isSyncRestorePending()) {
     const pendingMode = String(syncRestoreGuard?.mode || 'local-restore');
-    const result = await runPendingRestoreReconciliation();
-    if (result?.error) {
-      const title = pendingMode === 'global-authoritative'
-        ? 'Ripristino globale non completato'
-        : pendingMode === 'group-authoritative' ? 'Riallineamento alla nuova generazione non completato' : 'Ripristino locale completato, ma riallineamento Sync non riuscito';
-      const text = `${title}.\nInvio bloccato e Agenda in sola lettura per sicurezza. Premi “Sincronizza adesso” per riprovare.\n${result.error}`;
-      updateCloudStatus(text);
-      updateLanStatus(text);
+    if (pendingMode === 'local-restore') {
+      const transport = String(syncRestoreGuard?.transport || 'none');
+      if (transport === 'none') {
+        clearSyncRestoreGuard();
+        const text = 'Backup locale ripristinato completamente. Nessun gruppo Sync configurato: lo snapshot resta lo stato corrente del dispositivo.';
+        updateCloudStatus(text);
+        updateLanStatus(text);
+      } else {
+        const text = 'Backup locale ripristinato e mantenuto sul dispositivo. Sync sospesa per non sovrascrivere lo snapshot.\nUsa “Ripristina gruppo attivo” per rendere questo stato autorevole, oppure “Sincronizza adesso” per abbandonarlo e riallinearti al gruppo corrente.';
+        updateCloudStatus(text);
+        updateLanStatus(text);
+      }
+    } else {
+      const result = await runPendingRestoreReconciliation();
+      if (result?.error) {
+        const title = pendingMode === 'global-authoritative'
+          ? 'Ripristino globale non completato'
+          : pendingMode === 'group-authoritative' ? 'Riallineamento alla nuova generazione non completato' : 'Ripristino locale completato, ma riallineamento Sync non riuscito';
+        const text = `${title}.\nInvio bloccato e Agenda in sola lettura per sicurezza. Premi “Sincronizza adesso” per riprovare.\n${result.error}`;
+        updateCloudStatus(text);
+        updateLanStatus(text);
+      }
     }
   }
   startCloudHeartbeat();
@@ -8053,6 +8067,10 @@ async function bootAgenda() {
       isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(passwordVault?.isWriting?.()),
       cloudBridge: backupFoundation?.cloudBridge || null,
       onRecordingsChanged: (pageKey) => { if (pageKey === currentPageKey()) void refreshAudioPageIndicator(); }
+    });
+    backupFoundation?.attachAudioProvider?.({
+      exportBackup: () => audioRecorder.exportFullBackup(),
+      restoreBackup: (snapshot) => audioRecorder.restoreFullBackup(snapshot)
     });
     void refreshAudioPageIndicator();
   }

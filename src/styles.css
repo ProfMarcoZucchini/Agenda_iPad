@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.100 — editor ritaglio vincolato al viewport visibile iPad. */
+/* 0.1.101 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -2894,7 +2894,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
 
-/* 0.1.100 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+/* 0.1.101 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
 #passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
 #passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
 @media (orientation: landscape) {
@@ -2902,7 +2902,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.100 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
+/* 0.1.101 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
 .password-vault-panel input,
 .password-vault-panel textarea {
   font-size:16px;
@@ -2919,7 +2919,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   -webkit-tap-highlight-color:transparent;
 }
 
-/* 0.1.100 — Rubrica manoscritta A-Z */
+/* 0.1.101 — Rubrica manoscritta A-Z */
 .password-vault-panel {
   place-items:stretch;
   padding:max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
@@ -3182,7 +3182,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 
 
-/* 0.1.100 — Copertina, crediti full-screen e accesso Note libere. */
+/* 0.1.101 — Copertina, crediti full-screen e accesso Note libere. */
 .cover-card { overflow:hidden; }
 /* L'anno e' incorporato nell'immagine storica: lo copriamo con una placchetta decorativa,
    senza modificare il file sorgente della copertina. */
@@ -3259,7 +3259,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .paper[data-paper-color="black"].free-note-view .page-kind-label,
 .paper[data-paper-color="black"].free-note-view .note-counter { color:rgba(255,255,255,.82); }
 
-/* 0.1.100 — Note libere: titolo più grande e corsivo elegante. */
+/* 0.1.101 — Note libere: titolo più grande e corsivo elegante. */
 .paper.free-note-view .page-kind-label {
   font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
   font-size:clamp(30px,4.1vw,46px);
@@ -3268,7 +3268,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   line-height:1;
 }
 
-/* 0.1.100 — Rubrica sullo stesso motore pagina di Note/Agenda. */
+/* 0.1.101 — Rubrica sullo stesso motore pagina di Note/Agenda. */
 .rubrica-tabs[hidden] { display:none !important; }
 .rubrica-tabs {
   position:absolute;
