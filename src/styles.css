@@ -3200,9 +3200,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   box-shadow:inset 0 0 0 1px rgba(229,173,86,.34);
   pointer-events:none;
 }
-@media (orientation: landscape) {
-  .cover-card { transform:rotate(180deg); transform-origin:50% 50%; }
-}
+/* 0.1.101-fix2 — la copertina segue sempre l’orientamento naturale del dispositivo.
+   Nessuna rotazione aggiuntiva in landscape: evita il capovolgimento di 180° su iPad. */
 
 .credits-screen img,
 .info-credits-screen img {
