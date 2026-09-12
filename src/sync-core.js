@@ -199,6 +199,7 @@ export function initSyncFoundation(options = {}) {
   }
 
   function recordStrokeAdded(descriptor, stroke) {
+    if (descriptor?.kind === 'rubrica') return null;
     if (!stroke?.id) return null;
     return queueEvent({
       entityId: `stroke:${stroke.id}`,

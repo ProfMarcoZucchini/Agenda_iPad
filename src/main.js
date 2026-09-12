@@ -258,6 +258,10 @@ let protectedTop = 0;
 let lastPoint = null;
 let activeStroke = null;
 let saveTimer = 0;
+// fix5: revisione monotona delle richieste di salvataggio. Impedisce a un
+// persistNow precedente di azzerare dirty dopo che una nuova modifica è stata
+// programmata mentre la transazione IndexedDB precedente era ancora in corso.
+let saveRequestSerial = 0;
 let idleHandle = 0;
 let dpr = 1;
 let storageBusy = false;
@@ -2293,7 +2297,7 @@ function freeNoteDescriptor(index = currentFreeNoteIndex, total = currentFreeNot
 }
 
 function currentPageKey() {
-  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex, currentRubricaLetter);
+  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex, currentRubricaLetter, currentRubricaPageIndex);
 }
 
 function addDays(dateString, delta) {
@@ -5431,8 +5435,12 @@ async function persistNow() {
   const saveKey = descriptor.key;
   const snapshot = strokes;
   const imageSnapshot = images;
+  const requestSerial = saveRequestSerial;
   const ok = await persistSnapshot(descriptor, snapshot, true, pageStyle, imageSnapshot);
-  if (ok && currentPageKey() === saveKey && strokes === snapshot) {
+  // Non dichiarare la pagina pulita se, mentre questa transazione era in corso,
+  // è stata programmata una nuova modifica. Questo è il caso che faceva sparire
+  // i tratti quando si cambiava pagina subito dopo avere scritto.
+  if (ok && currentPageKey() === saveKey && strokes === snapshot && saveRequestSerial === requestSerial) {
     dirty = false;
     scheduleCloudAuto('local-commit', 5000);
   }
@@ -5440,6 +5448,7 @@ async function persistNow() {
 
 function scheduleSave() {
   if (!ready) return;
+  saveRequestSerial += 1;
   cancelPendingSave();
   statusLabel.textContent = 'da salvare';
   saveTimer = window.setTimeout(() => {
@@ -5573,7 +5582,7 @@ function finalizeStroke(reason = 'pointerup') {
   } else if (completedStroke) {
     strokes.push(completedStroke);
     rememberUndo({ type: 'add-stroke', stroke: completedStroke, index: strokes.length - 1 });
-    if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), completedStroke);
+    syncFoundation?.recordStrokeAdded(pageDescriptor(), completedStroke);
     pageChanged = true;
   }
   if (currentStrokeDiag) {
