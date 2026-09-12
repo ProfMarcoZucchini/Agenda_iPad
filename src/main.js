@@ -2278,6 +2278,14 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
   };
 }
 
+// 0.1.101-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
+// La Rubrica viene persistita esclusivamente nel Vault cifrato; tutte le altre
+// pagine continuano a usare il normale Sync. Questa funzione deve restare
+// fuori dal percorso pointermove e non modifica il motore realtime Ink.
+function pageSyncAllowed(descriptor = pageDescriptor()) {
+  return descriptor?.kind !== 'rubrica';
+}
+
 function freeNoteDescriptor(index = currentFreeNoteIndex, total = currentFreeNoteTotal) {
   const safeIndex = Math.max(1, Number(index) || 1);
   const safeTotal = Math.max(safeIndex, Number(total) || 1);
