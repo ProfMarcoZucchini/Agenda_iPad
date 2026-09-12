@@ -54,10 +54,11 @@ const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const HIGHLIGHTER_COLOR = '#f0d84f';
 const HIGHLIGHTER_WIDTH = 15;
-const HIGHLIGHTER_OPACITY = 0.30;
+const HIGHLIGHTER_OPACITY = 0.42;
 const ERASER_WIDTH = 22;
 const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
 const SHAPE_TYPE_STORAGE_KEY = 'agenda-ipad-shape-type-v1';
+const SHAPE_FILL_STORAGE_KEY = 'agenda-ipad-shape-fill-v1';
 const CALENDAR_VISIBILITY_STORAGE_KEY = 'agenda-ipad-calendar-visible-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
   pen: { colors: ['#111111','#8e8e8e','#a52b2b','#f02f37','#f07f31','#f2d21b','#23724b','#1698cf','#174f9b','#9c4ca8','#f5f3eb','#c7c7c7','#bd845f','#ef9fb6','#f3b82f','#eadca7','#9ccf24','#8fc9d8','#7696b7','#c1b6d6'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
@@ -122,8 +123,14 @@ const voiceScriptToolButton = document.getElementById('voiceScriptToolButton');
 const shapeToolButton = document.getElementById('shapeToolButton');
 const shapePalette = document.getElementById('shapePalette');
 const shapeChoiceButtons = [...document.querySelectorAll('[data-shape-type]')];
+const shapeFillButtons = [...document.querySelectorAll('[data-shape-fill]')];
 const shapeOverlay = document.getElementById('shapeOverlay');
 const shapePreviewPath = document.getElementById('shapePreviewPath');
+const rulerToolButton = document.getElementById('rulerToolButton');
+const rulerOverlay = document.getElementById('rulerOverlay');
+const rulerBody = document.getElementById('rulerBody');
+const rulerRotateHandle = document.getElementById('rulerRotateHandle');
+const rulerPreviewPath = document.getElementById('rulerPreviewPath');
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
@@ -315,6 +322,11 @@ const NATIVE_TOUCH_POINTER_ID = -2147483000;
 const NATIVE_LASSO_TOUCH_POINTER_ID = -2147482999;
 let activeTool = 'pen';
 let selectedShapeType = loadSelectedShapeType();
+let selectedShapeFill = loadSelectedShapeFill();
+let lastInkTool = 'pen';
+let rulerGesture = null;
+let rulerState = { x:.5, y:.48, angle:0 };
+let rulerInkTool = 'pen';
 let undoHistory = [];
 let redoHistory = [];
 let toolStyles = loadToolStyles();
@@ -566,6 +578,15 @@ function saveSelectedShapeType() {
   try { localStorage.setItem(SHAPE_TYPE_STORAGE_KEY, selectedShapeType); } catch {}
 }
 
+function loadSelectedShapeFill() {
+  try { return localStorage.getItem(SHAPE_FILL_STORAGE_KEY) === 'filled' ? 'filled' : 'outline'; }
+  catch { return 'outline'; }
+}
+
+function saveSelectedShapeFill() {
+  try { localStorage.setItem(SHAPE_FILL_STORAGE_KEY, selectedShapeFill); } catch {}
+}
+
 
 function normalizePageStyle(value) {
   const color = ALLOWED_PAGE_COLORS.includes(value?.color) ? value.color : DEFAULT_PAGE_STYLE.color;
@@ -763,8 +784,8 @@ async function setPageTemplate(template) {
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const styleTool = (activeTool === 'shape' || activeTool === 'voice' || activeTool === 'lasso') ? 'pen' : activeTool;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', lasso: 'Lazo', shape: 'Figure', voice: 'Voice Script', image: 'Immagine' };
+  const styleTool = activeTool === 'ruler' ? rulerInkTool : (activeTool === 'shape' || activeTool === 'voice' || activeTool === 'lasso') ? 'pen' : activeTool;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', lasso: 'Lazo', shape: 'Figure', ruler: 'Righello', voice: 'Voice Script', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== styleTool;
   const effectiveColor = currentPageKind === 'planner-timetable' && styleTool === 'pen'
@@ -3925,10 +3946,26 @@ function storedInkDisplayColor(stroke, paperColor = pageStyle.color) {
 
 function setupStoredStrokeStyle(stroke, targetCtx = ctx, paperColor = pageStyle.color) {
   setupStrokeStyle(stroke, targetCtx);
-  if ((stroke?.tool ?? 'pen') !== 'pen') return;
+  const tool = stroke?.tool ?? 'pen';
+  // fix7: il ridisegno dell'evidenziatore mantiene la vividezza percepita durante
+  // il tratto realtime. Vecchi stroke con opacity 0.30 vengono rialzati solo in
+  // visualizzazione, senza alterare i dati memorizzati.
+  if (tool === 'highlighter') {
+    targetCtx.globalAlpha = Math.max(HIGHLIGHTER_OPACITY, Number(stroke?.opacity) || 0);
+    return;
+  }
+  if (tool !== 'pen') return;
   const displayColor = storedInkDisplayColor(stroke, paperColor);
   targetCtx.strokeStyle = displayColor;
   targetCtx.fillStyle = displayColor;
+}
+
+function shapeStrokeIsClosed(stroke) {
+  if (stroke?.kind !== 'shape' || stroke?.shapeFill !== 'filled') return false;
+  const points = Array.isArray(stroke?.points) ? stroke.points : [];
+  if (points.length < 3) return false;
+  const a = points[0], b = points.at(-1);
+  return Math.hypot((Number(a?.x)||0)-(Number(b?.x)||0), (Number(a?.y)||0)-(Number(b?.y)||0)) < 0.0005;
 }
 
 function toolStrokeStyle(tool = activeTool) {
@@ -4606,6 +4643,163 @@ function updateToolUi() {
   }
 }
 
+function syncRulerOverlayBounds() {
+  if (!rulerOverlay || !rulerBody || !rect) return;
+  const writableHeight = Math.max(1, rect.height - protectedTop - FOOTER_PX);
+  rulerOverlay.style.top = `${protectedTop}px`;
+  rulerOverlay.style.bottom = `${FOOTER_PX}px`;
+  const svg = rulerOverlay.querySelector('.ruler-line-layer');
+  svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
+  const bodyWidth = Math.max(180, rulerBody.offsetWidth || Math.min(650, rect.width * .58));
+  const bodyHeight = Math.max(48, rulerBody.offsetHeight || 66);
+  const minX = Math.min(.5, (bodyWidth / 2 + 8) / Math.max(1, rect.width));
+  const maxX = Math.max(.5, 1 - minX);
+  const minY = Math.min(.5, (protectedTop + bodyHeight / 2 + 8) / Math.max(1, rect.height));
+  const maxY = Math.max(.5, (rect.height - FOOTER_PX - bodyHeight / 2 - 8) / Math.max(1, rect.height));
+  rulerState.x = Math.max(minX, Math.min(maxX, rulerState.x));
+  rulerState.y = Math.max(minY, Math.min(maxY, rulerState.y));
+  rulerBody.style.left = `${rulerState.x * rect.width}px`;
+  rulerBody.style.top = `${rulerState.y * rect.height - protectedTop}px`;
+  rulerBody.style.transform = `translate(-50%,-50%) rotate(${rulerState.angle}deg)`;
+}
+
+function rulerPaperPoint(ev) {
+  if (!rect) rect = canvas.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
+    y: Math.max(protectedTop, Math.min(rect.height - FOOTER_PX, ev.clientY - rect.top))
+  };
+}
+
+function projectPointToRulerEdge(ev) {
+  if (!rulerBody || !rect) return null;
+  const point = rulerPaperPoint(ev);
+  const cx = rulerState.x * rect.width;
+  const cy = rulerState.y * rect.height;
+  const angle = rulerState.angle * Math.PI / 180;
+  const ax = Math.cos(angle), ay = Math.sin(angle);
+  const nx = -ay, ny = ax;
+  const halfW = Math.max(90, (rulerBody.offsetWidth || Math.min(650, rect.width * .58)) / 2 - 8);
+  const halfH = Math.max(20, (rulerBody.offsetHeight || 66) / 2);
+  // Bordo superiore del righello: il tratto resta appena sopra la superficie.
+  const ex = cx - nx * halfH;
+  const ey = cy - ny * halfH;
+  const rawT = (point.x - ex) * ax + (point.y - ey) * ay;
+  const t = Math.max(-halfW, Math.min(halfW, rawT));
+  return {
+    x: Math.max(0, Math.min(1, (ex + ax * t) / Math.max(1, rect.width))),
+    y: Math.max(0, Math.min(1, (ey + ay * t) / Math.max(1, rect.height)))
+  };
+}
+
+function updateRulerPreview() {
+  if (!rulerPreviewPath || !rulerGesture || rulerGesture.type !== 'draw' || !rect) {
+    rulerPreviewPath?.setAttribute('d', '');
+    return;
+  }
+  const a = rulerGesture.start;
+  const b = rulerGesture.current;
+  rulerPreviewPath.setAttribute('d', `M ${(a.x * rect.width).toFixed(2)} ${(a.y * rect.height - protectedTop).toFixed(2)} L ${(b.x * rect.width).toFixed(2)} ${(b.y * rect.height - protectedTop).toFixed(2)}`);
+  const style = toolStrokeStyle(rulerInkTool);
+  rulerPreviewPath.style.stroke = rulerInkTool === 'pen' ? storedInkDisplayColor(style, pageStyle.color) : style.color;
+  rulerPreviewPath.style.strokeWidth = String(style.width);
+  rulerPreviewPath.style.opacity = String(rulerInkTool === 'highlighter' ? HIGHLIGHTER_OPACITY : 1);
+}
+
+function cancelRulerGesture() {
+  rulerGesture = null;
+  rulerPreviewPath?.setAttribute('d', '');
+}
+
+function beginRulerGesture(ev) {
+  if (activeTool !== 'ruler' || !rulerBody || pageTurning || drawing) return false;
+  const target = ev.target instanceof Element ? ev.target : null;
+  const onHandle = Boolean(target?.closest?.('#rulerRotateHandle'));
+  const onBody = Boolean(target?.closest?.('#rulerBody'));
+  if (!onBody) return false;
+  if (ev.pointerType === 'touch') {
+    rulerGesture = {
+      type:onHandle ? 'rotate' : 'move',
+      pointerId:ev.pointerId,
+      startClientX:ev.clientX,
+      startClientY:ev.clientY,
+      startX:rulerState.x,
+      startY:rulerState.y,
+      startAngle:rulerState.angle
+    };
+  } else if (ev.pointerType === 'pen' || (ev.pointerType === 'mouse' && ev.button === 0)) {
+    const point = projectPointToRulerEdge(ev);
+    if (!point) return false;
+    rulerGesture = { type:'draw', pointerId:ev.pointerId, start:point, current:point };
+    updateRulerPreview();
+  } else return false;
+  try { rulerBody.setPointerCapture?.(ev.pointerId); } catch {}
+  ev.preventDefault();
+  ev.stopPropagation();
+  return true;
+}
+
+function moveRulerGesture(ev) {
+  if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId || activeTool !== 'ruler') return false;
+  if (rulerGesture.type === 'move') {
+    const dx = (ev.clientX - rulerGesture.startClientX) / Math.max(1, rect.width);
+    const dy = (ev.clientY - rulerGesture.startClientY) / Math.max(1, rect.height);
+    rulerState.x = rulerGesture.startX + dx;
+    rulerState.y = rulerGesture.startY + dy;
+    syncRulerOverlayBounds();
+  } else if (rulerGesture.type === 'rotate') {
+    const cx = rect.left + rulerState.x * rect.width;
+    const cy = rect.top + rulerState.y * rect.height;
+    rulerState.angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI;
+    syncRulerOverlayBounds();
+  } else if (rulerGesture.type === 'draw') {
+    const point = projectPointToRulerEdge(ev);
+    if (point) {
+      rulerGesture.current = point;
+      updateRulerPreview();
+    }
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  return true;
+}
+
+function endRulerGesture(ev, cancelled = false) {
+  if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId) return false;
+  const gesture = rulerGesture;
+  if (!cancelled && gesture.type === 'draw') moveRulerGesture(ev);
+  try { rulerBody?.releasePointerCapture?.(gesture.pointerId); } catch {}
+  cancelRulerGesture();
+  if (!cancelled && gesture.type === 'draw') {
+    const dx = (gesture.current.x - gesture.start.x) * rect.width;
+    const dy = (gesture.current.y - gesture.start.y) * rect.height;
+    if (Math.hypot(dx, dy) >= 4) {
+      const style = toolStrokeStyle(rulerInkTool);
+      const now = performance.now();
+      const stroke = {
+        id:makeId(), kind:'stroke', tool:rulerInkTool, ruler:true,
+        color:style.color, width:style.width, opacity:style.opacity,
+        pointerType:ev.pointerType,
+        points:[
+          { ...gesture.start, p:.5, t:now },
+          { ...gesture.current, p:.5, t:now + 1 }
+        ],
+        createdAt:new Date().toISOString()
+      };
+      strokes.push(stroke);
+      rememberUndo({ type:'add-stroke', stroke, index:strokes.length - 1 });
+      if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), stroke);
+      dirty = true;
+      renderAll();
+      scheduleSave();
+      statusLabel.textContent = `righello · linea ${rulerInkTool === 'highlighter' ? 'evidenziata' : 'tracciata'}`;
+    }
+  }
+  ev.preventDefault();
+  ev.stopPropagation();
+  return true;
+}
+
 function activateShapeTool() {
   if (drawing || pageTurning) return;
   if (activeTool !== 'shape') {
@@ -4677,13 +4871,15 @@ function deactivatePageTool(reason = '') {
   if (drawing || pageTurning) return false;
   if (isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
   cancelShapeGesture();
+  cancelRulerGesture();
+  rulerOverlay?.setAttribute('hidden', '');
   activeTool = 'none';
   selectedImageId = null;
   closeStylePanel();
   if (shapePalette) shapePalette.hidden = true;
   shapeOverlay?.setAttribute('hidden', '');
   shapeToolButton?.setAttribute('aria-expanded', 'false');
-  paper?.classList.remove('shape-mode', 'lasso-mode', 'voice-script-armed', 'image-edit-mode');
+  paper?.classList.remove('shape-mode', 'ruler-mode', 'lasso-mode', 'voice-script-armed', 'image-edit-mode');
   renderImages();
   updateToolUi();
   updateStyleUi();
@@ -4734,29 +4930,36 @@ function activateLassoTool() {
 }
 
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'ruler', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
   if (tool !== 'shape') cancelShapeGesture();
+  if (tool !== 'ruler') cancelRulerGesture();
   if (isLassoUiArmed() && tool !== 'lasso') { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
+  if (tool === 'ruler') rulerInkTool = ['pen','highlighter'].includes(activeTool) ? activeTool : lastInkTool;
+  if (tool === 'pen' || tool === 'highlighter') lastInkTool = tool;
   activeTool = tool;
   if (tool === 'lasso') { lassoTool?.setActive?.(true); setLassoInputShieldActive(true); }
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
   paper?.classList.toggle('shape-mode', tool === 'shape');
+  paper?.classList.toggle('ruler-mode', tool === 'ruler');
   paper?.classList.toggle('lasso-mode', tool === 'lasso');
   paper?.classList.toggle('voice-script-armed', tool === 'voice');
   paper?.classList.toggle('image-edit-mode', tool === 'image');
   if (shapePalette) shapePalette.hidden = tool !== 'shape';
   shapeOverlay?.toggleAttribute('hidden', tool !== 'shape');
+  rulerOverlay?.toggleAttribute('hidden', tool !== 'ruler');
   shapeToolButton?.setAttribute('aria-expanded', tool === 'shape' ? 'true' : 'false');
   if (tool === 'shape') syncShapeOverlayBounds();
+  if (tool === 'ruler') syncRulerOverlayBounds();
   renderImages();
   updateToolUi();
   updateStyleUi();
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore'
     : tool === 'eraser' ? 'gomma'
     : tool === 'lasso' ? 'lazo · disegna un contorno chiuso'
-    : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · trascina o fai clic`
+    : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`
+    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · sposta con dito, traccia con Pencil`
     : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
 }
@@ -4783,6 +4986,11 @@ function updateShapePaletteUi() {
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
+  for (const button of shapeFillButtons) {
+    const selected = button.dataset.shapeFill === selectedShapeFill;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
 }
 
 function setSelectedShapeType(type) {
@@ -4791,7 +4999,21 @@ function setSelectedShapeType(type) {
   selectedShapeType = type;
   saveSelectedShapeType();
   updateShapePaletteUi();
-  statusLabel.textContent = `figura · ${SHAPE_LABELS[type]} · trascina o fai clic`;
+  statusLabel.textContent = `figura · ${SHAPE_LABELS[type]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`;
+}
+
+function setSelectedShapeFill(value) {
+  if (!['outline','filled'].includes(value) || drawing || pageTurning) return;
+  selectedShapeFill = value;
+  saveSelectedShapeFill();
+  updateShapePaletteUi();
+  syncShapeOverlayBounds();
+  updateShapePreview();
+  statusLabel.textContent = `figure · ${value === 'filled' ? 'Piena' : 'Contorno'}`;
+}
+
+function shapeTypeSupportsFill(type) {
+  return !['line','curve','check'].includes(type);
 }
 
 function syncShapeOverlayBounds() {
@@ -4802,8 +5024,12 @@ function syncShapeOverlayBounds() {
   shapeOverlay.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
   const penStyle = toolStrokeStyle('pen');
   if (shapePreviewPath) {
-    shapePreviewPath.style.stroke = storedInkDisplayColor(penStyle, pageStyle.color);
+    const color = storedInkDisplayColor(penStyle, pageStyle.color);
+    shapePreviewPath.style.stroke = color;
     shapePreviewPath.style.strokeWidth = String(penStyle.width);
+    const filled = selectedShapeFill === 'filled' && shapeTypeSupportsFill(selectedShapeType);
+    shapePreviewPath.style.fill = filled ? color : 'none';
+    shapePreviewPath.style.fillOpacity = filled ? '.92' : '0';
   }
 }
 
@@ -4903,6 +5129,7 @@ function endShapeGesture(ev, cancelled = false) {
     kind: 'shape',
     shapeType: selectedShapeType,
     shapeVersion: 1,
+    shapeFill: selectedShapeFill === 'filled' && shapeTypeSupportsFill(selectedShapeType) ? 'filled' : 'outline',
     tool: 'pen',
     color: style.color,
     width: style.width,
@@ -5218,6 +5445,7 @@ function drawStoredStroke(stroke) {
     p = cssPoint(points[i]);
     ctx.lineTo(p.x, p.y);
   }
+  if (shapeStrokeIsClosed(stroke)) ctx.fill();
   ctx.stroke();
   ctx.restore();
 }
@@ -5243,6 +5471,7 @@ function resizeCanvas() {
   protectedTop = Math.max(0, Math.min(r.height, hr.bottom - r.top));
   rect = canvas.getBoundingClientRect();
   syncShapeOverlayBounds();
+  syncRulerOverlayBounds();
   if (isLassoInputShieldArmed()) syncLassoInputShieldBounds();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderAll();
@@ -5733,7 +5962,7 @@ function getUiButtonTarget(target) {
 
 function activateUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
-  if (button !== shapeToolButton && !button.matches('[data-shape-type]')) closeShapePalette();
+  if (button !== shapeToolButton && !button.matches('[data-shape-type], [data-shape-fill]')) closeShapePalette();
   if (button === undoButton && !undoHistory.length) return;
   if (button === redoButton && !redoHistory.length) return;
   if (button === imageToolButton) {
@@ -5781,6 +6010,10 @@ function activateUiButton(button) {
   }
   if (button.matches('[data-shape-type]')) {
     setSelectedShapeType(button.dataset.shapeType);
+    return;
+  }
+  if (button.matches('[data-shape-fill]')) {
+    setSelectedShapeFill(button.dataset.shapeFill);
     return;
   }
   if (button.matches('.planner-mode-button')) {
@@ -6114,6 +6347,7 @@ function drawPreviewInk(preview, previewStrokes) {
         q = css(points[i]);
         pctx.lineTo(q.x, q.y);
       }
+      if (shapeStrokeIsClosed(stroke)) pctx.fill();
       pctx.stroke();
     }
     pctx.restore();
@@ -7245,7 +7479,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
 }
 
 function handlePaperTouchStart(ev) {
-  if (activeTool === 'shape') { ev.preventDefault(); return; }
+  if (activeTool === 'shape' || activeTool === 'ruler') { ev.preventDefault(); return; }
   // 0.1.86: il Lazo viene catturato a livello Window prima dei gesti pagina.
   // Il listener del paper non deve duplicare o reinterpretare quel contatto.
   if (isLassoUiArmed()) return;
@@ -7429,6 +7663,7 @@ const directUiButtons = [...new Set([
   freeNotesButton,
   ...toolButtons,
   ...shapeChoiceButtons,
+  ...shapeFillButtons,
   undoButton,
   redoButton,
   styleButton,
@@ -7456,7 +7691,7 @@ for (const button of rubricaTabButtons) {
 // 0.1.77 — qualsiasi altro comando UI richiude la finestra Figure.
 document.addEventListener('pointerdown', (ev) => {
   const button = getUiButtonTarget(ev.target);
-  if (!button || button === shapeToolButton || button.matches('[data-shape-type]')) return;
+  if (!button || button === shapeToolButton || button.matches('[data-shape-type], [data-shape-fill]')) return;
   closeShapePalette();
 }, { passive:true, capture:true });
 
@@ -7548,6 +7783,7 @@ function routeGlobalPointerDown(ev) {
     handleLassoGlobalPointerDown(ev, isLassoInputSurfaceTarget(ev.target) ? lassoInputShield : paper);
     return;
   }
+  if (activeTool === 'ruler' && beginRulerGesture(ev)) return;
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
@@ -7558,10 +7794,11 @@ function routeGlobalPointerMove(ev) {
     handleLassoGlobalPointerMove(ev);
     return;
   }
-  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture) {
+  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture && !rulerGesture) {
     ev.preventDefault();
     return;
   }
+  if (activeTool === 'ruler' && moveRulerGesture(ev)) return;
   if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
@@ -7571,6 +7808,7 @@ function routeGlobalPointerUp(ev) {
     finishLassoGlobalPointer(ev, false);
     return;
   }
+  if (endRulerGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerUp(ev);
   voiceScript?.flushIfIdle?.();
@@ -7581,6 +7819,7 @@ function routeGlobalPointerCancel(ev) {
     finishLassoGlobalPointer(ev, true);
     return;
   }
+  if (endRulerGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerCancel(ev);
   voiceScript?.flushIfIdle?.();
@@ -7832,6 +8071,12 @@ for (const button of shapeChoiceButtons) {
   button.addEventListener('click', () => {
     if (wasJustActivatedByPencil(button)) return;
     setSelectedShapeType(button.dataset.shapeType);
+  });
+}
+for (const button of shapeFillButtons) {
+  button.addEventListener('click', () => {
+    if (wasJustActivatedByPencil(button)) return;
+    setSelectedShapeFill(button.dataset.shapeFill);
   });
 }
 calendarButton?.addEventListener('click', () => {

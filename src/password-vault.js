@@ -440,13 +440,13 @@ export function initPasswordVault(options = {}) {
       const rawPoints = Array.isArray(item.points) ? item.points.slice(0, 30000).map(sanitizePoint) : [];
       if (rawPoints.length) {
         return {
-          ...base, shapeType, shapeVersion:Number(item.shapeVersion) || 1, tool:'pen', points:rawPoints,
+          ...base, shapeType, shapeVersion:Number(item.shapeVersion) || 1, shapeFill:item.shapeFill === 'filled' ? 'filled' : 'outline', tool:'pen', points:rawPoints,
           color:String(item.color || '#24303a'), width:Math.max(.8, Math.min(40, Number(item.width) || 2.2)),
           opacity:Math.max(.05, Math.min(1, Number(item.opacity) || 1))
         };
       }
       return {
-        ...base, shapeType,
+        ...base, shapeType, shapeFill:item.shapeFill === 'filled' ? 'filled' : 'outline',
         x:Math.max(0, Math.min(1, Number(item.x) || 0)), y:Math.max(0, Math.min(1, Number(item.y) || 0)),
         w:Math.max(.005, Math.min(1, Number(item.w) || .2)), h:Math.max(.005, Math.min(1, Number(item.h) || .15)),
         color:String(item.color || '#24303a'), width:Math.max(.8, Math.min(40, Number(item.width) || 2.2))
@@ -457,7 +457,7 @@ export function initPasswordVault(options = {}) {
       ...base, kind:'stroke', tool:item.tool === 'highlighter' ? 'highlighter' : 'pen', points,
       color:String(item.color || (item.tool === 'highlighter' ? '#f0d84f' : '#24303a')),
       width:Math.max(.8, Math.min(50, Number(item.width) || (item.tool === 'highlighter' ? 15 : 2.2))),
-      opacity:Math.max(.05, Math.min(1, Number(item.opacity) || (item.tool === 'highlighter' ? .30 : 1)))
+      opacity:Math.max(.05, Math.min(1, Number(item.opacity) || (item.tool === 'highlighter' ? .42 : 1)))
     };
   }
 
@@ -747,7 +747,7 @@ export function initPasswordVault(options = {}) {
     ctx.save();
     ctx.strokeStyle = item.color || '#24303a';
     ctx.fillStyle = item.color || '#24303a';
-    ctx.globalAlpha = item.tool === 'highlighter' ? .34 : 1;
+    ctx.globalAlpha = item.tool === 'highlighter' ? .42 : 1;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const baseWidth = Math.max(.8, Number(item.width) || 2.2) * dpr;
     if (pts.length === 1) {
@@ -766,8 +766,9 @@ export function initPasswordVault(options = {}) {
     ctx.save();
     ctx.strokeStyle = item.color || '#24303a';
     ctx.lineWidth = Math.max(.8, Number(item.width) || 2.2) * Math.max(1, Math.min(3, globalThis.devicePixelRatio || 1));
-    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.beginPath();
+    ctx.lineCap='round'; ctx.lineJoin='round'; ctx.fillStyle=item.color || '#24303a'; ctx.beginPath();
     points.forEach((p,i) => i ? ctx.lineTo(p.x*canvas.width,p.y*canvas.height) : ctx.moveTo(p.x*canvas.width,p.y*canvas.height));
+    if (item.shapeFill === 'filled') ctx.fill();
     ctx.stroke(); ctx.restore();
   }
 
