@@ -3233,7 +3233,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   align-items:center;
 }
 .paper.free-note-view .page-kind-label {
-  position:static !important;
+  position:relative !important;
+  top:8px;
   margin:0;
   min-height:0;
   font-family:Georgia, "Times New Roman", serif;
@@ -3320,7 +3321,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   padding-right:52px !important;
 }
 .paper.rubrica-view .page-kind-label {
-  position:static !important;
+  position:relative !important;
+  top:8px;
   margin:0;
   min-height:0;
   font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
@@ -3341,20 +3343,27 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper.rubrica-view .note-counter { display:none !important; }
 .rubrica-page-counter {
-  min-width:44px;
-  padding:3px 9px;
-  border-radius:999px;
-  font-family:Georgia,"Times New Roman",serif;
-  font-size:14px;
-  font-weight:700;
-  letter-spacing:.03em;
-  text-align:center;
-  color:rgba(75,61,48,.86);
-  background:rgba(255,255,255,.48);
-  border:1px solid rgba(99,78,56,.16);
+  position:absolute;
+  right:calc(clamp(34px,4.1vw,44px) + 14px);
+  bottom:calc(var(--footer-h) + 10px);
+  z-index:6;
+  min-width:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+  font-size:clamp(18px,2.2vw,26px);
+  font-weight:600;
+  font-style:italic;
+  line-height:1;
+  letter-spacing:.015em;
+  text-align:right;
+  color:rgba(75,61,48,.88);
   box-sizing:border-box;
+  pointer-events:none;
 }
-.paper[data-paper-color="black"] .rubrica-page-counter { color:rgba(255,255,255,.88); background:rgba(255,255,255,.09); border-color:rgba(255,255,255,.18); }
+.paper[data-paper-color="black"] .rubrica-page-counter { color:rgba(255,255,255,.88); background:transparent; border:0; }
 .paper[data-paper-color="black"].rubrica-view .page-kind-label,
 .paper[data-paper-color="black"].rubrica-view .note-counter { color:rgba(255,255,255,.84); }
 
