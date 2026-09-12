@@ -98,6 +98,7 @@ const authorCreditsButton = document.getElementById('authorCreditsButton');
 const infoCreditsOverlay = document.getElementById('infoCreditsOverlay');
 const idleCoverOverlay = document.getElementById('idleCoverOverlay');
 const statusLabel = document.getElementById('statusLabel');
+const rubricaPageCounter = document.getElementById('rubricaPageCounter');
 const reportPanel = document.getElementById('reportPanel');
 const reportText = document.getElementById('reportText');
 const copyReportButton = document.getElementById('copyReportButton');
@@ -218,6 +219,9 @@ let currentFreeNoteIndex = 1;
 let currentFreeNoteTotal = 1;
 let freeNoteCountLoaded = false;
 let currentRubricaLetter = 'A';
+let currentRubricaPageIndex = 1;
+let currentRubricaPageTotal = 1;
+let rubricaTouchSwipe = null;
 let rubricaReturnDescriptor = null;
 let rubricaExitInProgress = false;
 let rubricaPageSwitchBusy = false;
@@ -1743,7 +1747,7 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
       else kindLabel.textContent = plannerModeTitle('yearly', dateString);
     } else kindLabel.textContent = '';
   }
-  if (noteCounter) noteCounter.textContent = pageKind === 'rubrica' ? currentRubricaLetter : (pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '');
+  if (noteCounter) noteCounter.textContent = pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '';
   if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || pageKind === 'rubrica' || isPlannerKind(pageKind);
   if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
   else if (kindLabel) kindLabel.style.removeProperty('left');
@@ -2212,7 +2216,7 @@ function updateHeader() {
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
   if (baselineLabel) {
-    if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter}`;
+    if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter} · ${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
     else if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
     else if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
@@ -2224,6 +2228,10 @@ function updateHeader() {
     const active = currentPageKind === 'rubrica' && button.dataset.rubricaLetter === currentRubricaLetter;
     button.classList.toggle('active', active);
     button.setAttribute('aria-current', active ? 'page' : 'false');
+  }
+  if (rubricaPageCounter) {
+    rubricaPageCounter.hidden = currentPageKind !== 'rubrica';
+    rubricaPageCounter.textContent = `${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
   }
   void refreshAudioPageIndicator();
 }
@@ -2240,15 +2248,15 @@ function freeNoteKey(index) {
   return `${FREE_NOTE_KEY_PREFIX}${String(Math.max(1, Number(index) || 1)).padStart(4, '0')}`;
 }
 
-function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, rubricaLetter = currentRubricaLetter) {
-  if (pageKind === 'rubrica') return `${RUBRICA_KEY_PREFIX}${String(rubricaLetter || 'A').toUpperCase()}`;
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, rubricaLetter = currentRubricaLetter, rubricaPageIndex = currentRubricaPageIndex) {
+  if (pageKind === 'rubrica') return `${RUBRICA_KEY_PREFIX}${String(rubricaLetter || 'A').toUpperCase()}::${String(Math.max(1, Number(rubricaPageIndex) || 1)).padStart(4,'0')}`;
   if (pageKind === 'free-note') return freeNoteKey(freeNoteIndex);
   if (pageKind === 'note') return noteKey(dateString, noteIndex);
   if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind), timetableIndex);
   return dateString;
 }
 
-function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal, rubricaLetter = currentRubricaLetter) {
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal, rubricaLetter = currentRubricaLetter, rubricaPageIndex = currentRubricaPageIndex, rubricaPageTotal = currentRubricaPageTotal) {
   const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
   return {
     date: dateString,
@@ -2262,7 +2270,9 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
     freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(freeNoteIndex) || 1) : 0,
     freeNoteTotal: pageKind === 'free-note' ? Math.max(1, Number(freeNoteTotal) || 1) : 0,
     rubricaLetter: pageKind === 'rubrica' ? String(rubricaLetter || 'A').toUpperCase() : '',
-    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex, rubricaLetter),
+    rubricaPageIndex: pageKind === 'rubrica' ? Math.max(1, Number(rubricaPageIndex) || 1) : 0,
+    rubricaPageTotal: pageKind === 'rubrica' ? Math.max(1, Number(rubricaPageTotal) || 1) : 0,
+    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex, rubricaLetter, rubricaPageIndex),
     createNote: false,
     createFreeNote: false
   };
@@ -5339,7 +5349,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     if (descriptor?.kind === 'rubrica') {
       if (!passwordVault?.isUnlocked?.()) throw new Error('Rubrica bloccata');
       storageBusy = true;
-      await passwordVault.savePage(descriptor.rubricaLetter || currentRubricaLetter, pageStrokes, pageImages, pageStyleSnapshot, true);
+      await passwordVault.savePage(descriptor.rubricaLetter || currentRubricaLetter, descriptor.rubricaPageIndex || currentRubricaPageIndex, pageStrokes, pageImages, pageStyleSnapshot, true);
       if (rubricaImageClipboard?.pendingImageId
           && rubricaImageClipboard.pendingPageKey === descriptor.key
           && (pageImages || []).some((image)=>image?.id === rubricaImageClipboard.pendingImageId)) {
@@ -6419,8 +6429,10 @@ async function loadDescriptorDirect(target) {
   }
 }
 
-function applyRubricaPage(page, letter = currentRubricaLetter) {
+function applyRubricaPage(page, letter = currentRubricaLetter, pageIndex = 1, pageTotal = 1) {
   currentRubricaLetter = String(letter || 'A').toUpperCase();
+  currentRubricaPageIndex = Math.max(1, Number(pageIndex ?? page?.pageIndex) || 1);
+  currentRubricaPageTotal = Math.max(currentRubricaPageIndex, Number(pageTotal ?? page?.pageTotal) || 1);
   strokes = Array.isArray(page?.strokes) ? page.strokes.map((item)=>globalThis.structuredClone ? globalThis.structuredClone(item) : JSON.parse(JSON.stringify(item))) : [];
   images = Array.isArray(page?.images) ? page.images.map(normalizeImageObject).filter(Boolean) : [];
   selectedImageId = null;
@@ -6462,13 +6474,15 @@ async function enterRubricaFromVault(payload = {}) {
     currentNoteTotal = 0;
     currentRubricaLetter = String(payload.letter || 'A').toUpperCase();
     if (!/^[A-Z]$/.test(currentRubricaLetter)) currentRubricaLetter = 'A';
-    const page = payload.page || passwordVault.getPage?.(currentRubricaLetter) || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
+    currentRubricaPageIndex = Math.max(1, Number(payload.pageIndex) || 1);
+    currentRubricaPageTotal = Math.max(currentRubricaPageIndex, Number(payload.pageTotal) || passwordVault.getPageCount?.(currentRubricaLetter) || 1);
+    const page = payload.page || passwordVault.getPage?.(currentRubricaLetter, currentRubricaPageIndex) || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
     if (activeTool !== 'pen') {
       deactivatePageTool('rubrica-enter');
       selectTool('pen');
     }
-    applyRubricaPage(page, currentRubricaLetter);
-    statusLabel.textContent = `Rubrica · ${currentRubricaLetter}`;
+    applyRubricaPage(page, currentRubricaLetter, currentRubricaPageIndex, currentRubricaPageTotal);
+    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · ${currentRubricaPageIndex}/${currentRubricaPageTotal}`;
     return true;
   } finally {
     pageTurning = false;
@@ -6484,7 +6498,7 @@ async function flushRubricaCurrentPage(updateStatus = false) {
   const snapshot = strokes;
   const imageSnapshot = images;
   const ok = await persistSnapshot(descriptor, snapshot, updateStatus, { ...pageStyle, template:'ruled' }, imageSnapshot);
-  if (ok && currentPageKind === 'rubrica' && currentRubricaLetter === descriptor.rubricaLetter && strokes === snapshot) dirty = false;
+  if (ok && currentPageKind === 'rubrica' && currentRubricaLetter === descriptor.rubricaLetter && currentRubricaPageIndex === descriptor.rubricaPageIndex && strokes === snapshot) dirty = false;
   return ok;
 }
 
@@ -6497,13 +6511,97 @@ async function switchRubricaLetter(letter) {
     if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-tab');
     const saved = dirty ? await flushRubricaCurrentPage(false) : true;
     if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return; }
-    const page = passwordVault?.setActiveLetter?.(targetLetter) || passwordVault?.getPage?.(targetLetter);
-    applyRubricaPage(page || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } }, targetLetter);
-    statusLabel.textContent = `Rubrica · ${targetLetter}`;
+    currentRubricaPageIndex = 1;
+    currentRubricaPageTotal = Math.max(1, passwordVault?.getPageCount?.(targetLetter) || 1);
+    const page = passwordVault?.setActiveLetter?.(targetLetter, 1) || passwordVault?.getPage?.(targetLetter, 1);
+    applyRubricaPage(page || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } }, targetLetter, 1, currentRubricaPageTotal);
+    statusLabel.textContent = `Rubrica · ${targetLetter} · 1/${currentRubricaPageTotal}`;
   } finally {
     pageTurning = false;
     rubricaPageSwitchBusy = false;
   }
+}
+
+async function switchRubricaPage(direction) {
+  if (currentPageKind !== 'rubrica' || !passwordVault?.isUnlocked?.() || rubricaPageSwitchBusy) return false;
+  const step = direction > 0 ? 1 : -1;
+  if (step < 0 && currentRubricaPageIndex <= 1) {
+    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · 1/${currentRubricaPageTotal}`;
+    return false;
+  }
+  rubricaPageSwitchBusy = true;
+  pageTurning = true;
+  try {
+    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-page-swipe');
+    const saved = await flushRubricaCurrentPage(false);
+    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return false; }
+
+    let targetIndex = currentRubricaPageIndex + step;
+    let total = Math.max(1, passwordVault?.getPageCount?.(currentRubricaLetter) || currentRubricaPageTotal || 1);
+    if (step > 0 && targetIndex > total) {
+      // Swipe destra -> sinistra sull'ultima scheda: crea e persiste subito una nuova scheda vuota.
+      targetIndex = total + 1;
+      const created = await passwordVault.savePage(
+        currentRubricaLetter,
+        targetIndex,
+        [],
+        [],
+        { color:pageStyle?.color || 'yellow', template:'ruled' },
+        true
+      );
+      if (!created) return false;
+      total = Math.max(targetIndex, passwordVault?.getPageCount?.(currentRubricaLetter) || targetIndex);
+    }
+    targetIndex = Math.max(1, Math.min(total, targetIndex));
+    const page = passwordVault?.setActiveLetter?.(currentRubricaLetter, targetIndex)
+      || passwordVault?.getPage?.(currentRubricaLetter, targetIndex)
+      || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
+    applyRubricaPage(page, currentRubricaLetter, targetIndex, total);
+    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · ${targetIndex}/${total}`;
+    return true;
+  } finally {
+    pageTurning = false;
+    rubricaPageSwitchBusy = false;
+  }
+}
+
+function startRubricaTouchSwipe(touch) {
+  rubricaTouchSwipe = {
+    id:touch.identifier,
+    startX:touch.clientX,
+    startY:touch.clientY,
+    lastX:touch.clientX,
+    lastY:touch.clientY,
+    startedAt:performance.now(),
+    lastAt:performance.now(),
+    horizontal:false
+  };
+}
+
+function moveRubricaTouchSwipe(touch, ev) {
+  if (!rubricaTouchSwipe || touch.identifier !== rubricaTouchSwipe.id || pageTurning) return;
+  const dx = touch.clientX - rubricaTouchSwipe.startX;
+  const dy = touch.clientY - rubricaTouchSwipe.startY;
+  rubricaTouchSwipe.lastX = touch.clientX;
+  rubricaTouchSwipe.lastY = touch.clientY;
+  rubricaTouchSwipe.lastAt = performance.now();
+  if (!rubricaTouchSwipe.horizontal && Math.hypot(dx,dy) >= 12 && Math.abs(dx) > Math.abs(dy) * 1.2) rubricaTouchSwipe.horizontal = true;
+  if (rubricaTouchSwipe.horizontal) ev.preventDefault();
+}
+
+function finishRubricaTouchSwipe(touch, cancelled = false) {
+  const swipe = rubricaTouchSwipe;
+  rubricaTouchSwipe = null;
+  if (!swipe || cancelled || !touch || touch.identifier !== swipe.id || !swipe.horizontal) return false;
+  const dx = touch.clientX - swipe.startX;
+  const dy = touch.clientY - swipe.startY;
+  if (Math.abs(dx) <= Math.abs(dy) * 1.15) return false;
+  const elapsed = Math.max(1, performance.now() - swipe.startedAt);
+  const velocity = Math.abs(dx) / elapsed;
+  const threshold = Math.max(54, paper.getBoundingClientRect().width * 0.10);
+  if (Math.abs(dx) < threshold && velocity < .42) return false;
+  void switchRubricaPage(dx < 0 ? 1 : -1);
+  return true;
 }
 
 async function restoreAfterRubrica(reason = 'manual') {
@@ -7152,15 +7250,24 @@ function handlePaperTouchStart(ev) {
 
   const touch = ev.touches[0];
   nativeTouchGestureId = touch.identifier;
+  if (currentPageKind === 'rubrica') {
+    startRubricaTouchSwipe(touch);
+    return;
+  }
   startPageSwipe(nativeTouchProxy(touch, ev));
   if (pageSwipe) pageSwipe.nativeTouch = true;
 }
 
 function handlePaperTouchMove(ev) {
   if (isLassoUiArmed()) return;
-  if (nativeTouchGestureId == null || !pageSwipe || !pageSwipe.nativeTouch || pageTurning) return;
+  if (nativeTouchGestureId == null || pageTurning) return;
   const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
   if (!touch) return;
+  if (currentPageKind === 'rubrica' && rubricaTouchSwipe) {
+    moveRubricaTouchSwipe(touch, ev);
+    return;
+  }
+  if (!pageSwipe || !pageSwipe.nativeTouch) return;
   movePageSwipe(nativeTouchProxy(touch, ev));
   if (pageSwipe?.locked) ev.preventDefault();
 }
@@ -7171,6 +7278,11 @@ function handlePaperTouchEnd(ev, cancelled = false) {
   const ended = findNativeTouch(ev.changedTouches, nativeTouchGestureId);
   if (!ended && !cancelled) return;
   nativeTouchGestureId = null;
+  if (currentPageKind === 'rubrica' && rubricaTouchSwipe) {
+    const committed = finishRubricaTouchSwipe(ended, cancelled);
+    if (committed || cancelled) ev.preventDefault();
+    return;
+  }
   if (!pageSwipe?.nativeTouch) return;
   const wasSwipeLocked = Boolean(pageSwipe.locked);
   const tapTarget = ev.target;

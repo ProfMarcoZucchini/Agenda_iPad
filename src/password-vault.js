@@ -356,6 +356,7 @@ export function initPasswordVault(options = {}) {
   let notebook = emptyNotebook();
   let legacyEntries = [];
   let activeLetter = 'A';
+  let activePageIndex = 1;
   let activeGesture = null;
   let activeTouchId = null;
   let autoLockTimer = 0;
@@ -386,7 +387,11 @@ export function initPasswordVault(options = {}) {
   const imageCache = new Map();
 
   function emptyNotebook() {
-    return { version:3, pages:Object.fromEntries(LETTERS.map((letter) => [letter, []])), pageStyles:{} };
+    return {
+      version:4,
+      pages:Object.fromEntries(LETTERS.map((letter) => [letter, [[]]])),
+      pageStyles:Object.fromEntries(LETTERS.map((letter) => [letter, [{ color:'yellow', template:'ruled' }]]))
+    };
   }
 
   function sanitizePoint(point = {}) {
@@ -460,15 +465,24 @@ export function initPasswordVault(options = {}) {
     const out = emptyNotebook();
     const pages = value?.pages && typeof value.pages === 'object' ? value.pages : {};
     const styles = value?.pageStyles && typeof value.pageStyles === 'object' ? value.pageStyles : {};
+    const sanitizeStyle = (style = {}) => ({
+      color:['yellow','white','black'].includes(style?.color) ? style.color : 'yellow',
+      template:['ruled','blank','grid'].includes(style?.template) ? style.template : 'ruled'
+    });
     for (const letter of LETTERS) {
-      const items = Array.isArray(pages[letter]) ? pages[letter] : [];
-      out.pages[letter] = items.slice(0, 12000).map(sanitizeItem).filter((item) => item.kind !== 'stroke' || item.points.length > 0);
-      const style = styles[letter] || {};
-      out.pageStyles[letter] = {
-        color:['yellow','white','black'].includes(style.color) ? style.color : 'yellow',
-        template:['ruled','blank','grid'].includes(style.template) ? style.template : 'ruled'
-      };
+      const rawPages = Array.isArray(pages[letter]) ? pages[letter] : [];
+      // Migrazione trasparente v3 -> v4: la vecchia pagina unica diventa la scheda 1.
+      const pageList = rawPages.length && Array.isArray(rawPages[0]) ? rawPages : [rawPages];
+      out.pages[letter] = pageList.slice(0, 250).map((items) =>
+        (Array.isArray(items) ? items : []).slice(0, 12000).map(sanitizeItem).filter((item) => item.kind !== 'stroke' || item.points.length > 0)
+      );
+      if (!out.pages[letter].length) out.pages[letter] = [[]];
+
+      const rawStyles = styles[letter];
+      const styleList = Array.isArray(rawStyles) ? rawStyles : [rawStyles || {}];
+      out.pageStyles[letter] = out.pages[letter].map((_, index) => sanitizeStyle(styleList[index] || styleList[0] || {}));
     }
+    out.version = 4;
     return out;
   }
 
@@ -572,14 +586,30 @@ export function initPasswordVault(options = {}) {
     }
   }
 
-  function currentItems() { return notebook.pages[activeLetter] || (notebook.pages[activeLetter] = []); }
+  function pageCount(letter = activeLetter) {
+    const pages = notebook.pages[letter];
+    return Math.max(1, Array.isArray(pages) ? pages.length : 1);
+  }
+  function pageHistoryKey(letter = activeLetter, pageIndex = activePageIndex) { return `${letter}:${Math.max(1, Number(pageIndex) || 1)}`; }
+  function ensureNotebookPage(letter = activeLetter, pageIndex = activePageIndex) {
+    const safeLetter = LETTERS.includes(letter) ? letter : activeLetter;
+    const index = Math.max(1, Math.min(250, Number(pageIndex) || 1));
+    if (!Array.isArray(notebook.pages[safeLetter])) notebook.pages[safeLetter] = [[]];
+    if (!Array.isArray(notebook.pageStyles[safeLetter])) notebook.pageStyles[safeLetter] = [{ color:'yellow', template:'ruled' }];
+    while (notebook.pages[safeLetter].length < index) notebook.pages[safeLetter].push([]);
+    while (notebook.pageStyles[safeLetter].length < index) notebook.pageStyles[safeLetter].push({ color:'yellow', template:'ruled' });
+    return notebook.pages[safeLetter][index - 1];
+  }
+  function currentItems() { return ensureNotebookPage(activeLetter, activePageIndex); }
+  function setCurrentItems(items) { ensureNotebookPage(activeLetter, activePageIndex); notebook.pages[activeLetter][activePageIndex - 1] = Array.isArray(items) ? items : []; }
   function pageSnapshot() { return clone(currentItems()); }
 
   function pushHistory(before) {
-    const stack = undoByLetter[activeLetter];
+    const key = pageHistoryKey();
+    const stack = undoByLetter[key] || (undoByLetter[key] = []);
     stack.push(clone(before));
     if (stack.length > 80) stack.shift();
-    redoByLetter[activeLetter] = [];
+    redoByLetter[key] = [];
   }
 
   function markChanged(before, message = '') {
@@ -629,11 +659,13 @@ export function initPasswordVault(options = {}) {
   // 0.1.101 — ponte verso il motore pagina principale di Agenda/Note.
   // La Rubrica non disegna più sul canvas dedicato: espone la pagina A-Z al
   // motore Ink principale e riceve lo snapshot soltanto a fine gesto/salvataggio.
-  function mainPageFromLetter(letter = activeLetter) {
+  function mainPageFromLetter(letter = activeLetter, pageIndex = activePageIndex) {
     const safeLetter = LETTERS.includes(letter) ? letter : 'A';
+    const total = pageCount(safeLetter);
+    const safeIndex = Math.max(1, Math.min(total, Number(pageIndex) || 1));
     const strokes = [];
     const images = [];
-    for (const raw of notebook.pages[safeLetter] || []) {
+    for (const raw of ensureNotebookPage(safeLetter, safeIndex)) {
       const item = sanitizeItem(raw);
       if (item.kind === 'image') {
         images.push({
@@ -652,24 +684,30 @@ export function initPasswordVault(options = {}) {
         });
       } else strokes.push(clone(item));
     }
-    const style = notebook.pageStyles?.[safeLetter] || { color:'yellow', template:'ruled' };
-    return { letter:safeLetter, strokes, images, pageStyle:clone(style) };
+    const styles = Array.isArray(notebook.pageStyles?.[safeLetter]) ? notebook.pageStyles[safeLetter] : [];
+    const style = styles[safeIndex - 1] || { color:'yellow', template:'ruled' };
+    return { letter:safeLetter, pageIndex:safeIndex, pageTotal:total, strokes, images, pageStyle:clone(style) };
   }
 
-  async function saveMainPage(letter, pageStrokes = [], pageImages = [], pageStyle = { color:'yellow', template:'ruled' }, flush = true) {
+  async function saveMainPage(letter, pageIndex = 1, pageStrokes = [], pageImages = [], pageStyle = { color:'yellow', template:'ruled' }, flush = true) {
     if (!masterKeyBytes) throw new Error('Rubrica bloccata');
     const safeLetter = LETTERS.includes(letter) ? letter : activeLetter;
+    const safeIndex = Math.max(1, Math.min(250, Number(pageIndex) || 1));
+    ensureNotebookPage(safeLetter, safeIndex);
     const combined = [
       ...(Array.isArray(pageStrokes) ? pageStrokes : []).map((item)=>sanitizeItem(item)),
       ...(Array.isArray(pageImages) ? pageImages : []).map((image)=>sanitizeItem({ ...image, kind:'image' }))
     ];
-    notebook.pages[safeLetter] = combined;
+    notebook.pages[safeLetter][safeIndex - 1] = combined;
     notebook.pageStyles ||= {};
-    notebook.pageStyles[safeLetter] = {
+    if (!Array.isArray(notebook.pageStyles[safeLetter])) notebook.pageStyles[safeLetter] = [];
+    while (notebook.pageStyles[safeLetter].length < safeIndex) notebook.pageStyles[safeLetter].push({ color:'yellow', template:'ruled' });
+    notebook.pageStyles[safeLetter][safeIndex - 1] = {
       color:['yellow','white','black'].includes(pageStyle?.color) ? pageStyle.color : 'yellow',
       template:['ruled','blank','grid'].includes(pageStyle?.template) ? pageStyle.template : 'ruled'
     };
     activeLetter = safeLetter;
+    activePageIndex = safeIndex;
     notebookDirty = true;
     changeSerial += 1;
     armAutoLock();
@@ -677,12 +715,14 @@ export function initPasswordVault(options = {}) {
     return true;
   }
 
-  function setExternalLetter(letter) {
-    if (!LETTERS.includes(letter)) return mainPageFromLetter(activeLetter);
+  function setExternalLetter(letter, pageIndex = 1) {
+    if (!LETTERS.includes(letter)) return mainPageFromLetter(activeLetter, activePageIndex);
     activeLetter = letter;
+    const total = pageCount(activeLetter);
+    activePageIndex = Math.max(1, Math.min(total, Number(pageIndex) || 1));
     updateTabs();
     armAutoLock();
-    return mainPageFromLetter(activeLetter);
+    return mainPageFromLetter(activeLetter, activePageIndex);
   }
 
   function canvasMetrics() {
@@ -833,7 +873,7 @@ export function initPasswordVault(options = {}) {
 
   function eraseAt(p){
     if(!activeGesture||activeGesture.type!=='eraser')return; const radius=Math.max(8,Number(toolStyle.eraser.width)||22); const beforeCount=currentItems().length;
-    notebook.pages[activeLetter]=currentItems().filter(item=>!hitItem(item,p,radius)); if(currentItems().length!==beforeCount){activeGesture.changed=true;selectionIds.clear();renderPage();}
+    setCurrentItems(currentItems().filter(item=>!hitItem(item,p,radius))); if(currentItems().length!==beforeCount){activeGesture.changed=true;selectionIds.clear();renderPage();}
   }
 
   function updateGesture(clientX,clientY,pressure=.5){
@@ -846,7 +886,7 @@ export function initPasswordVault(options = {}) {
     }
     if(activeGesture.type==='move-selection'){
       const dx=p.x-activeGesture.start.x,dy=p.y-activeGesture.start.y; const selected=new Set(selectionIds);
-      notebook.pages[activeLetter]=activeGesture.original.map(item=>selected.has(item.id)?translateItem(item,dx,dy):clone(item));renderPage();
+      setCurrentItems(activeGesture.original.map(item=>selected.has(item.id)?translateItem(item,dx,dy):clone(item)));renderPage();
     }
   }
 
@@ -854,13 +894,13 @@ export function initPasswordVault(options = {}) {
 
   function finishGesture(ev,cancelled=false,internal=false){
     const g=activeGesture; if(!g)return; activeGesture=null;activeTouchId=null;
-    if(cancelled){ if(g.before) notebook.pages[activeLetter]=clone(g.before); lassoPoints=[];renderPage();return; }
+    if(cancelled){ if(g.before) setCurrentItems(clone(g.before)); lassoPoints=[];renderPage();return; }
     if(g.type==='ink'){
-      if(ev) appendGesturePoint(ev.clientX,ev.clientY,ev.pressure); if(g.item.points.length){notebook.pages[activeLetter].push(sanitizeItem(g.item));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+      if(ev) appendGesturePoint(ev.clientX,ev.clientY,ev.pressure); if(g.item.points.length){currentItems().push(sanitizeItem(g.item));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
     } else if(g.type==='eraser'){
       if(g.changed){notebookDirty=true;changeSerial++;pushHistory(g.before);setStatus('Cancellazione salvata.',true);void saveCurrentNotebook();} renderPage();
     } else if(g.type==='shape'){
-      if(g.previewItem){notebook.pages[activeLetter].push(sanitizeItem(g.previewItem));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+      if(g.previewItem){currentItems().push(sanitizeItem(g.previewItem));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
     } else if(g.type==='lasso'){
       const poly=[...g.points]; lassoPoints=[];
       if(closeEnough(poly)){selectionIds=new Set(currentItems().filter(item=>{if(item.kind==='stroke')return item.points.some(p=>pointInPolygon(p,poly));const b=itemBounds(item);return pointInPolygon({x:(b.x0+b.x1)/2,y:(b.y0+b.y1)/2},poly);}).map(i=>i.id));setStatus(`Lazo · ${selectionIds.size} elementi selezionati`,true);} else {selectionIds.clear();setStatus('Lazo non chiuso.',true);} renderPage();
@@ -884,14 +924,14 @@ export function initPasswordVault(options = {}) {
   function handleCanvasTouchEnd(ev,cancelled=false){if(!activeGesture||activeTouchId==null)return;const t=findTouch(ev.changedTouches,activeTouchId);if(t)updateGesture(t.clientX,t.clientY,t.force);finishGesture(t||null,cancelled);ev.preventDefault();ev.stopPropagation();}
 
   function selectLetter(letter){
-    if(!LETTERS.includes(letter)||letter===activeLetter)return;if(activeGesture)finishGesture(null,false,true);selectionIds.clear();lassoPoints=[];activeLetter=letter;updateTabs();renderPage();armAutoLock();
+    if(!LETTERS.includes(letter)||letter===activeLetter)return;if(activeGesture)finishGesture(null,false,true);selectionIds.clear();lassoPoints=[];activeLetter=letter;activePageIndex=1;updateTabs();renderPage();armAutoLock();
   }
 
   function undo(){
-    const stack=undoByLetter[activeLetter];if(!stack.length)return setStatus('Niente da annullare.',true);redoByLetter[activeLetter].push(pageSnapshot());notebook.pages[activeLetter]=stack.pop();selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Annullato.',true);
+    const historyKey=pageHistoryKey();const stack=undoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da annullare.',true);(redoByLetter[historyKey]||(redoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Annullato.',true);
   }
   function redo(){
-    const stack=redoByLetter[activeLetter];if(!stack.length)return setStatus('Niente da ripristinare.',true);undoByLetter[activeLetter].push(pageSnapshot());notebook.pages[activeLetter]=stack.pop();selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Ripristinato.',true);
+    const historyKey=pageHistoryKey();const stack=redoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da ripristinare.',true);(undoByLetter[historyKey]||(undoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Ripristinato.',true);
   }
 
   function setActiveTool(tool){
@@ -932,12 +972,12 @@ export function initPasswordVault(options = {}) {
 
   function fileToDataUrl(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result||''));r.onerror=()=>reject(r.error||new Error('Lettura immagine non riuscita'));r.readAsDataURL(file);});}
   async function addImageFile(file){
-    if(!file||!masterKeyBytes)return;try{const before=pageSnapshot();const src=await fileToDataUrl(file);const probe=new Image();await new Promise((res,rej)=>{probe.onload=res;probe.onerror=rej;probe.src=src;});const aspect=Math.max(.2,Math.min(5,probe.naturalWidth/Math.max(1,probe.naturalHeight)));let w=.34,h=w/aspect;if(h>.42){h=.42;w=h*aspect;}const item=sanitizeItem({kind:'image',src,x:.12,y:.16,w,h});notebook.pages[activeLetter].push(item);notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Immagine inserita nella Rubrica.',true);}catch(err){setStatus(`Immagine non inserita: ${err?.message||err}`);}finally{if(imageInput)imageInput.value='';activeTool=lastInkTool;updateToolbarUi();}
+    if(!file||!masterKeyBytes)return;try{const before=pageSnapshot();const src=await fileToDataUrl(file);const probe=new Image();await new Promise((res,rej)=>{probe.onload=res;probe.onerror=rej;probe.src=src;});const aspect=Math.max(.2,Math.min(5,probe.naturalWidth/Math.max(1,probe.naturalHeight)));let w=.34,h=w/aspect;if(h>.42){h=.42;w=h*aspect;}const item=sanitizeItem({kind:'image',src,x:.12,y:.16,w,h});currentItems().push(item);notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Immagine inserita nella Rubrica.',true);}catch(err){setStatus(`Immagine non inserita: ${err?.message||err}`);}finally{if(imageInput)imageInput.value='';activeTool=lastInkTool;updateToolbarUi();}
   }
 
   function startVoiceAt(point){
     const SR=globalThis.SpeechRecognition||globalThis.webkitSpeechRecognition;if(!SR){setStatus('Dettatura non disponibile in questo browser.');activeTool=lastInkTool;updateToolbarUi();return;}
-    try{const rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.maxAlternatives=1;setStatus('Dettatura Rubrica in ascolto…');rec.onresult=(e)=>{const text=String(e.results?.[0]?.[0]?.transcript||'').trim();if(!text)return;const before=pageSnapshot();notebook.pages[activeLetter].push(sanitizeItem({kind:'text',text,x:point.x,y:point.y,color:toolStyle.text.color,size:toolStyle.text.size}));notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Testo dettato inserito.',true);};rec.onerror=(e)=>setStatus(`Dettatura non riuscita: ${e.error||'errore'}`);rec.onend=()=>{activeTool=lastInkTool;updateToolbarUi();};rec.start();}catch(err){setStatus(`Dettatura non disponibile: ${err?.message||err}`);activeTool=lastInkTool;updateToolbarUi();}
+    try{const rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.maxAlternatives=1;setStatus('Dettatura Rubrica in ascolto…');rec.onresult=(e)=>{const text=String(e.results?.[0]?.[0]?.transcript||'').trim();if(!text)return;const before=pageSnapshot();currentItems().push(sanitizeItem({kind:'text',text,x:point.x,y:point.y,color:toolStyle.text.color,size:toolStyle.text.size}));notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Testo dettato inserito.',true);};rec.onerror=(e)=>setStatus(`Dettatura non riuscita: ${e.error||'errore'}`);rec.onend=()=>{activeTool=lastInkTool;updateToolbarUi();};rec.start();}catch(err){setStatus(`Dettatura non disponibile: ${err?.message||err}`);activeTool=lastInkTool;updateToolbarUi();}
   }
 
   async function readLocalSecurityState(){return await getRow(VAULT_LOCAL_STATE_KEY).catch(()=>null)||{key:VAULT_LOCAL_STATE_KEY,failedAttempts:0,lockedUntil:0};}
@@ -946,9 +986,9 @@ export function initPasswordVault(options = {}) {
   async function ensurePinAllowed(){const state=await readLocalSecurityState();const until=Math.max(0,Number(state.lockedUntil)||0);if(until>Date.now())throw new Error(`Troppi tentativi errati. Riprova tra ${Math.ceil((until-Date.now())/1000)} s.`);}
 
   async function unlockWithMasterKey(rawKey,method){
-    const payload=await decryptPayload(rawKey,dataRow);if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=new Uint8Array(rawKey);legacyEntries=Array.isArray(payload.entries)?clone(payload.entries):[];notebook=sanitizeNotebook(payload.notebook);activeLetter='A';activeTool='pen';lastInkTool='pen';selectionIds.clear();undoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));redoByLetter=Object.fromEntries(LETTERS.map(l=>[l,[]]));notebookDirty=false;renderMode();armAutoLock();setStatus(`Rubrica sbloccata con ${method}.`,true);
+    const payload=await decryptPayload(rawKey,dataRow);if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=new Uint8Array(rawKey);legacyEntries=Array.isArray(payload.entries)?clone(payload.entries):[];notebook=sanitizeNotebook(payload.notebook);activeLetter='A';activePageIndex=1;activeTool='pen';lastInkTool='pen';selectionIds.clear();undoByLetter={};redoByLetter={};notebookDirty=false;renderMode();armAutoLock();setStatus(`Rubrica sbloccata con ${method}.`,true);
     if(panel) panel.hidden=true;
-    await onUnlocked({ method, letter:activeLetter, page:mainPageFromLetter(activeLetter) });
+    await onUnlocked({ method, letter:activeLetter, pageIndex:1, pageTotal:pageCount(activeLetter), page:mainPageFromLetter(activeLetter,1) });
   }
 
   async function unlockPin(){try{await ensurePinAllowed();const pin=String(pinInput?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Inserisci le 4 cifre del PIN');const raw=await unwrapMasterKeyWithPin(configRow,pin);await clearPinFailures();if(pinInput)pinInput.value='';await unlockWithMasterKey(raw,'PIN');raw.fill(0);}catch(err){if(!String(err?.message||'').startsWith('Troppi tentativi'))await notePinFailure();setStatus(`Accesso non riuscito: ${err?.message||err}`);}}
@@ -968,7 +1008,7 @@ export function initPasswordVault(options = {}) {
     try{
       clearTimeout(autoLockTimer);
       if(masterKeyBytes) await onBeforeLock(reason);
-      await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
+      await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();activePageIndex=1;legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
       await onLocked(reason);
     }finally{locking=false;}
   }
@@ -1012,9 +1052,10 @@ export function initPasswordVault(options = {}) {
     open,close,lock,
     isUnlocked:()=>Boolean(masterKeyBytes),
     isWriting:()=>Boolean(activeGesture),
-    getPage:(letter='A')=>mainPageFromLetter(letter),
-    savePage:(letter,strokes,images,pageStyle,flush=true)=>saveMainPage(letter,strokes,images,pageStyle,flush),
-    setActiveLetter:(letter)=>setExternalLetter(letter),
+    getPage:(letter='A',pageIndex=1)=>mainPageFromLetter(letter,pageIndex),
+    getPageCount:(letter='A')=>pageCount(LETTERS.includes(letter)?letter:'A'),
+    savePage:(letter,pageIndex,strokes,images,pageStyle,flush=true)=>saveMainPage(letter,pageIndex,strokes,images,pageStyle,flush),
+    setActiveLetter:(letter,pageIndex=1)=>setExternalLetter(letter,pageIndex),
     noteActivity:()=>armAutoLock(),
     flush:()=>flushNotebookBeforeExit(),
     handleRemoteUpdate,
