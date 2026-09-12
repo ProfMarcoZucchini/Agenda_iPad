@@ -7,9 +7,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="theme-color" content="#e9dfc8" />
   <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.101-fix7" />
-  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.101-fix7" />
-  <link rel="stylesheet" href="./src/styles.css?v=0.1.101-fix7" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png?v=0.1.101-fix8" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=0.1.101-fix8" />
+  <link rel="stylesheet" href="./src/styles.css?v=0.1.101-fix8" />
   <title>Agenda iPad · 0.1.101</title>
 </head>
 <body class="startup-active">
@@ -487,8 +487,10 @@
           <div class="backup-actions">
             <button id="backupNowButton" class="primary" type="button">Backup adesso</button>
             <button id="verifyBackupButton" type="button">Verifica ultimo</button>
-            <button id="importBackupButton" type="button">Importa backup…</button>
-            <input id="importBackupInput" type="file" accept=".zip,.agendaipadbackup,application/zip" hidden>
+            <label id="importBackupButton" class="backup-file-picker" role="button">
+              <span>Importa backup…</span>
+              <input id="importBackupInput" type="file" accept=".zip,.agendaipadbackup,application/zip" aria-label="Importa backup">
+            </label>
             <button id="restoreGroupBackupButton" class="danger" type="button">Ripristina gruppo attivo</button>
           </div>
           <div id="backupStatus" class="backup-status">Nessun backup eseguito in questa sessione.</div>
@@ -637,6 +639,6 @@
     </div>
   </section>
 
-  <script type="module" src="./src/main.js?v=0.1.101-fix7"></script>
+  <script type="module" src="./src/main.js?v=0.1.101-fix8"></script>
 </body>
 </html>

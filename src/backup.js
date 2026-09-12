@@ -1197,7 +1197,7 @@ export function initBackupFoundation(options) {
         formatVersion:Number(parsed.formatVersion) || 1,
         reason:'importato',
         appVersion:String(parsed.manifest?.createdBy?.appVersion || '?'),
-        blob:new Blob([await file.arrayBuffer()], { type:'application/zip' }),
+        blob:file,
         deliveries:[{ key:'internal', label:'Archivio app', ok:true, message:'importato' }]
       };
       await backupPut(ARCHIVE_STORE, archive);
@@ -1315,8 +1315,15 @@ export function initBackupFoundation(options) {
   bindAction(exportLatest, async () => { const latest = await getLatest(); latest ? downloadOrShare(latest).catch((e) => setStatus(e.message)) : setStatus('Nessun backup disponibile.'); });
   bindAction(backupNow, async () => { await saveConfig(); await createBackup('manual'); });
   bindAction(verifyButton, verifyLatest);
-  bindAction(importButton, () => importInput?.click());
-  importInput?.addEventListener('change', () => { const file = importInput.files?.[0]; importInput.value = ''; void importBackupFile(file); });
+  // 0.1.101-fix8: il selettore file e' nativo e riceve direttamente il gesto utente.
+  // Safari/iPadOS puo' rifiutare input.click() sintetici lanciati da pointerdown.
+  importInput?.addEventListener('change', async () => {
+    const file = importInput.files?.[0];
+    if (!file) return;
+    setStatus(`Backup selezionato: ${file.name} · verifica in corso…`);
+    try { await importBackupFile(file); }
+    finally { importInput.value = ''; }
+  });
   bindAction(restoreGroupButton, () => { void promoteCurrentStateToGroup().catch((e) => setStatus(`Ripristino gruppo non riuscito: ${e.message || e}`)); });
 
   async function handleHistoryAction(ev) {
