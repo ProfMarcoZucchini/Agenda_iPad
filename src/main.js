@@ -1942,11 +1942,13 @@ async function closeWeeklyTimetable() {
   pageTurning = true;
   cancelPendingSave();
   const currentDescriptor = pageDescriptor();
-  const saveOk = dirty ? await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images) : true;
+  // 0.1.101-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
+  // prima di uscire dalla scheda, indipendentemente dal flag dirty.
+  const saveOk = await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images);
   if (!saveOk) {
     pageTurning = false;
     statusLabel.textContent = 'salvataggio orario non riuscito';
-    if (dirty) scheduleSave();
+    scheduleSave();
     return;
   }
   const fallback = pageDescriptor(currentDate, 'planner-weekly', 0, 0);
@@ -6690,7 +6692,12 @@ async function commitPageTurn() {
   const target = swipe.target;
   const enteringTimetable = oldDescriptor.kind !== 'planner-timetable' && target.kind === 'planner-timetable';
   const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
-  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages) : Promise.resolve(true);
+  // 0.1.101-fix1 — quando si lascia una scheda Orario settimanale, persiste
+  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.101.
+  const mustPersistOldPage = dirty || oldDescriptor.kind === 'planner-timetable';
+  const savePromise = mustPersistOldPage
+    ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages)
+    : Promise.resolve(true);
   const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
   const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
 
@@ -6715,13 +6722,13 @@ async function commitPageTurn() {
   const [targetPage, , saveOk, metaOk] = await Promise.all([
     targetPromise, waitMs(duration + 20), savePromise, metaPromise
   ]);
-  if ((dirty && !saveOk) || !metaOk) {
+  if ((mustPersistOldPage && !saveOk) || !metaOk) {
     resetTurnStyles();
     removePreview();
     pageSwipe = null;
     pageTurning = false;
     statusLabel.textContent = !metaOk ? 'creazione nota non riuscita' : 'salvataggio non riuscito';
-    if (dirty) scheduleSave();
+    if (mustPersistOldPage) scheduleSave();
     return;
   }
   if (target.createFreeNote) {
