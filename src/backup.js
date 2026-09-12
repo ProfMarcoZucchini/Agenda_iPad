@@ -6,12 +6,7 @@ const SETTINGS_STORE = 'settings';
 const SETTINGS_KEY = 'backup-config-v1';
 const DIRECTORY_KEY = 'local-directory-handle-v1';
 const BACKUP_FORMAT = 'agenda-ipad-backup';
-const BACKUP_FORMAT_VERSION = 2;
-const SUPPORTED_BACKUP_FORMAT_VERSIONS = new Set([1, 2]);
-const LOCAL_IMAGE_CLIPBOARD_DB = 'AgendaIPadLocalImageClipboardDB';
-const LOCAL_IMAGE_CLIPBOARD_STORE = 'clipboard';
-const LOCAL_LASSO_CLIPBOARD_DB = 'AgendaIPadLocalLassoClipboardDB';
-const LOCAL_LASSO_CLIPBOARD_STORE = 'clipboard';
+const BACKUP_FORMAT_VERSION = 1;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const NON_PORTABLE_PREFERENCE_KEYS = new Set([
@@ -139,64 +134,6 @@ async function replaceMainRecords(dbName, storeName, records) {
   } finally {
     db.close();
   }
-}
-
-
-async function readStoreRecords(dbName, storeName) {
-  const db = await new Promise((resolve, reject) => {
-    const req = indexedDB.open(dbName, 1);
-    req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(storeName)) req.result.createObjectStore(storeName, { keyPath:'key' });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  try {
-    if (!db.objectStoreNames.contains(storeName)) return [];
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
-      const req = tx.objectStore(storeName).getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-  } finally { db.close(); }
-}
-
-async function replaceStoreRecords(dbName, storeName, records = []) {
-  const db = await new Promise((resolve, reject) => {
-    const req = indexedDB.open(dbName);
-    req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(storeName)) req.result.createObjectStore(storeName, { keyPath:'key' });
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  try {
-    if (!db.objectStoreNames.contains(storeName)) throw new Error(`Archivio locale ${dbName}/${storeName} non disponibile`);
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readwrite');
-      const store = tx.objectStore(storeName);
-      store.clear();
-      for (const record of Array.isArray(records) ? records : []) store.put(record);
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error || new Error(`Ripristino ${dbName}/${storeName} annullato`));
-    });
-  } finally { db.close(); }
-}
-
-async function collectLocalClipboards() {
-  return {
-    schemaVersion: 1,
-    image: await readStoreRecords(LOCAL_IMAGE_CLIPBOARD_DB, LOCAL_IMAGE_CLIPBOARD_STORE).catch(() => []),
-    lasso: await readStoreRecords(LOCAL_LASSO_CLIPBOARD_DB, LOCAL_LASSO_CLIPBOARD_STORE).catch(() => [])
-  };
-}
-
-async function restoreLocalClipboards(snapshot) {
-  if (!snapshot || Number(snapshot.schemaVersion) !== 1) return;
-  await replaceStoreRecords(LOCAL_IMAGE_CLIPBOARD_DB, LOCAL_IMAGE_CLIPBOARD_STORE, snapshot.image || []);
-  await replaceStoreRecords(LOCAL_LASSO_CLIPBOARD_DB, LOCAL_LASSO_CLIPBOARD_STORE, snapshot.lasso || []);
 }
 
 function collectPortablePreferences() {
@@ -421,80 +358,22 @@ function hydrateMediaIntoRecords(records, files) {
   return hydrated;
 }
 
-
-function audioExtensionForMime(mimeType = '') {
-  const mime = String(mimeType || '').toLowerCase();
-  if (mime.includes('webm')) return 'webm';
-  if (mime.includes('ogg')) return 'ogg';
-  if (mime.includes('wav')) return 'wav';
-  if (mime.includes('mp4') || mime.includes('aac')) return 'm4a';
-  return 'audio';
-}
-
-async function prepareAudioBackup(audioSnapshot) {
-  if (!audioSnapshot) return { index:null, entries:[], count:0, bytes:0 };
-  if (Number(audioSnapshot.schemaVersion) !== 1 || !Array.isArray(audioSnapshot.recordings)) throw new Error('Snapshot audio non compatibile');
-  const entries = [];
-  const recordings = [];
-  let totalBytes = 0;
-  for (const item of audioSnapshot.recordings) {
-    const blob = item?.blob;
-    const metadata = item?.metadata && typeof item.metadata === 'object' ? structuredClone(item.metadata) : null;
-    if (!metadata || !(blob instanceof Blob) || !blob.size) throw new Error('Backup audio incompleto: registrazione senza file');
-    const id = String(metadata.id || crypto.randomUUID?.() || `audio-${recordings.length + 1}`).replace(/[^A-Za-z0-9._-]/g, '_');
-    const mimeType = String(metadata.mimeType || blob.type || 'application/octet-stream');
-    const path = `media/audio/${id}.${audioExtensionForMime(mimeType)}`;
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    totalBytes += bytes.length;
-    entries.push({ name:path, bytes });
-    delete metadata.blob;
-    recordings.push({ ...metadata, mediaPath:path, mimeType, size:bytes.length });
-  }
-  return {
-    index: { schemaVersion:1, settings:Array.isArray(audioSnapshot.settings) ? audioSnapshot.settings : [], recordings },
-    entries,
-    count:recordings.length,
-    bytes:totalBytes
-  };
-}
-
-function hydrateAudioBackup(index, files) {
-  if (!index) return null;
-  if (Number(index.schemaVersion) !== 1 || !Array.isArray(index.recordings)) throw new Error('Indice audio del backup non compatibile');
-  return {
-    schemaVersion:1,
-    settings:Array.isArray(index.settings) ? index.settings : [],
-    recordings:index.recordings.map((metadata) => {
-      const mediaPath = String(metadata?.mediaPath || '');
-      const bytes = files.get(mediaPath);
-      if (!mediaPath || !bytes) throw new Error(`File audio mancante: ${mediaPath || '?'}`);
-      const clean = { ...metadata };
-      delete clean.mediaPath;
-      return { metadata:clean, blob:new Blob([bytes], { type:String(metadata.mimeType || 'application/octet-stream') }) };
-    })
-  };
-}
-
 function backupFileName(appVersion, createdAt) {
   const stamp = createdAt.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   return `Agenda_iPad_FULL_${stamp}_app-${appVersion}_fmt-${BACKUP_FORMAT_VERSION}.zip`;
 }
 
-async function makeBackupPackage({ appVersion, records, preferences, config, secureVault = null, audioSnapshot = null, clipboards = null }) {
+async function makeBackupPackage({ appVersion, records, preferences, config, secureVault = null }) {
   const createdAt = new Date().toISOString();
   const media = extractMediaFromRecords(records);
-  const audio = await prepareAudioBackup(audioSnapshot);
   const pagesBytes = jsonBytes({ schemaVersion: 2, count: media.portableRecords.length, records: media.portableRecords });
   const prefBytes = jsonBytes({ schemaVersion: 1, values: preferences });
-  const mediaBytes = jsonBytes({ schemaVersion: 2, items: [...media.mediaItems, ...(audio.index?.recordings || []).map((row) => ({ type:'audio', path:row.mediaPath, mimeType:row.mimeType, pageKey:row.pageKey || null, name:row.name || row.filename || null, size:row.size || 0 }))], layoutVersion: 2 });
+  const mediaBytes = jsonBytes({ schemaVersion: 1, items: media.mediaItems, layoutVersion: 1 });
   const secureVaultBytes = secureVault ? jsonBytes(secureVault) : null;
-  const audioIndexBytes = audio.index ? jsonBytes(audio.index) : null;
-  const clipboardBytes = jsonBytes(clipboards || { schemaVersion:1, image:[], lasso:[] });
   const safeConfig = {
     frequency: config.frequency, customDays: config.customDays, retention: config.retention,
-    backupOnStartup:Boolean(config.backupOnStartup), verifyAfterBackup:Boolean(config.verifyAfterBackup),
     destinations: config.destinations,
-    google: { clientId: config.google.clientId, folderId: config.google.folderId, folderName:config.google.folderName || 'Agenda iPad Backups' },
+    google: { clientId: config.google.clientId, folderId: config.google.folderId },
     oneDrive: { clientId: config.oneDrive.clientId, tenant: config.oneDrive.tenant, folder: config.oneDrive.folder }
   };
   const manifest = {
@@ -503,23 +382,15 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
     createdAt,
     createdBy: { app: 'Agenda iPad', appVersion, platform: 'PWA' },
     reader: { minFormatVersion: 1 },
-    backup: { type: 'full-state', immutable: true, recordCount: records.length, audioCount: audio.count, audioBytes:audio.bytes },
+    backup: { type: 'full', immutable: true, recordCount: records.length },
     collections: [
       { id: 'pages', path: 'data/pages.json', encoding: 'json', schemaVersion: 2 },
       { id: 'preferences', path: 'data/preferences.json', encoding: 'json', schemaVersion: 1 },
-      { id: 'media', path: 'media/index.json', encoding: 'json-index', schemaVersion: 2, extensible: true },
-      { id: 'local-clipboards', path: 'data/local-clipboards.json', encoding: 'json', schemaVersion: 1 },
-      ...(audioIndexBytes ? [{ id:'audio', path:'data/audio.json', encoding:'json-index', schemaVersion:1, completeFiles:true }] : []),
+      { id: 'media', path: 'media/index.json', encoding: 'json-index', schemaVersion: 1, extensible: true },
       ...(secureVaultBytes ? [{ id: 'password-vault', path: 'data/password-vault.json', encoding: 'json-encrypted-envelope', schemaVersion: 1, encrypted: true }] : [])
     ],
     mediaLayout: { images: 'media/images/', audio: 'media/audio/', video: 'media/video/', attachments: 'media/attachments/' },
     backupSettingsSnapshot: safeConfig,
-    restoreNotes: {
-      appBinaryIncluded:false,
-      biometricCredentialPortable:false,
-      oauthSessionsPortable:false,
-      syncCredentialsPortable:false
-    },
     checksumAlgorithm: 'SHA-256'
   };
   const manifestBytes = jsonBytes(manifest);
@@ -528,11 +399,9 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
     'data/pages.json': await sha256Hex(pagesBytes),
     'data/preferences.json': await sha256Hex(prefBytes),
     'media/index.json': await sha256Hex(mediaBytes),
-    'data/local-clipboards.json': await sha256Hex(clipboardBytes),
-    ...(audioIndexBytes ? { 'data/audio.json': await sha256Hex(audioIndexBytes) } : {}),
     ...(secureVaultBytes ? { 'data/password-vault.json': await sha256Hex(secureVaultBytes) } : {})
   };
-  for (const entry of [...media.mediaEntries, ...audio.entries]) checksumFiles[entry.name] = await sha256Hex(entry.bytes);
+  for (const entry of media.mediaEntries) checksumFiles[entry.name] = await sha256Hex(entry.bytes);
   const checksums = { algorithm: 'SHA-256', files: checksumFiles };
   const checksumBytes = jsonBytes(checksums);
   const blob = storedZip([
@@ -541,20 +410,16 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
     { name: 'data/pages.json', bytes: pagesBytes },
     { name: 'data/preferences.json', bytes: prefBytes },
     { name: 'media/index.json', bytes: mediaBytes },
-    { name: 'data/local-clipboards.json', bytes: clipboardBytes },
-    ...(audioIndexBytes ? [{ name:'data/audio.json', bytes:audioIndexBytes }] : []),
     ...(secureVaultBytes ? [{ name: 'data/password-vault.json', bytes: secureVaultBytes }] : []),
-    ...media.mediaEntries,
-    ...audio.entries
+    ...media.mediaEntries
   ]);
-  return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums, audioCount:audio.count };
+  return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums };
 }
 
 async function verifyBackupBlob(blob) {
   const files = await parseStoredZip(blob);
   const manifest = parseJsonBytes(files.get('manifest.json'), 'manifest.json');
-  const formatVersion = Number(manifest.formatVersion);
-  if (manifest.format !== BACKUP_FORMAT || !SUPPORTED_BACKUP_FORMAT_VERSIONS.has(formatVersion)) {
+  if (manifest.format !== BACKUP_FORMAT || Number(manifest.formatVersion) !== BACKUP_FORMAT_VERSION) {
     throw new Error(`Formato backup non compatibile (${manifest.format || '?'}/${manifest.formatVersion || '?'})`);
   }
   const checksums = parseJsonBytes(files.get('checksums.json'), 'checksums.json');
@@ -571,12 +436,7 @@ async function verifyBackupBlob(blob) {
     : null;
   if (passwordVault && passwordVault.encrypted !== true) throw new Error('Rubrica Password del backup non risulta cifrata');
   if (Array.isArray(pages.records)) pages.records = hydrateMediaIntoRecords(pages.records, files);
-  const audioIndex = files.has('data/audio.json') ? parseJsonBytes(files.get('data/audio.json'), 'data/audio.json') : null;
-  const audioBackup = audioIndex ? hydrateAudioBackup(audioIndex, files) : null;
-  const clipboards = files.has('data/local-clipboards.json')
-    ? parseJsonBytes(files.get('data/local-clipboards.json'), 'data/local-clipboards.json')
-    : { schemaVersion:1, image:[], lasso:[] };
-  return { manifest, pages, preferences, passwordVault, audioBackup, clipboards, files, formatVersion };
+  return { manifest, pages, preferences, passwordVault, files };
 }
 
 function dueAt(config) {
@@ -858,9 +718,10 @@ export function initBackupFoundation(options) {
   const oneConnectionStatus = document.getElementById('oneDriveConnectionStatus');
   const backupNow = document.getElementById('backupNowButton');
   const verifyButton = document.getElementById('verifyBackupButton');
-  const importButton = document.getElementById('importBackupButton');
-  const importInput = document.getElementById('importBackupInput');
+  const restoreButton = document.getElementById('restoreBackupButton');
+  const restoreInput = document.getElementById('restoreBackupInput');
   const restoreGroupButton = document.getElementById('restoreGroupBackupButton');
+  const restoreGroupInput = document.getElementById('restoreGroupBackupInput');
   const status = document.getElementById('backupStatus');
   const history = document.getElementById('backupHistory');
 
@@ -870,7 +731,6 @@ export function initBackupFoundation(options) {
   let lastActivity = performance.now();
   let dueTimer = 0;
   let authCallbackMessage = '';
-  let audioProvider = null;
   const directActivations = new WeakMap();
 
   const setStatus = (text) => { if (status) status.textContent = text; };
@@ -1009,14 +869,6 @@ export function initBackupFoundation(options) {
 
   async function createBackup(reason = 'manual', { safety = false } = {}) {
     if (running) return null;
-    if (isRealtimeBusy()) {
-      setStatus('Backup rinviato: termina prima scrittura, registrazione o altra operazione realtime.');
-      return null;
-    }
-    if (!audioProvider?.exportBackup) {
-      setStatus('Backup non disponibile: archivio audio non ancora inizializzato.');
-      return null;
-    }
     running = true;
     setStatus(`Backup ${reason === 'automatic' ? 'automatico' : 'manuale'} in corso…`);
     setAppStatus('backup in corso');
@@ -1025,15 +877,13 @@ export function initBackupFoundation(options) {
       const records = await readMainRecords(mainDbName, mainStore);
       const preferences = collectPortablePreferences();
       const secureVault = await getSecurePasswordVaultBackup();
-      const clipboards = await collectLocalClipboards();
-      const audioSnapshot = await audioProvider.exportBackup();
-      const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault, audioSnapshot, clipboards });
+      const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault });
       if (config.verifyAfterBackup) await verifyBackupBlob(pkg.blob);
       const zipHash = await sha256Hex(pkg.blob);
       const id = `${pkg.createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
       const archive = {
         id, filename: pkg.filename, createdAt: pkg.createdAt, size: pkg.blob.size,
-        sha256: zipHash, recordCount: records.length, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
+        sha256: zipHash, recordCount: records.length, formatVersion: BACKUP_FORMAT_VERSION,
         reason: safety ? 'pre-restore' : reason, appVersion, blob: pkg.blob
       };
       await backupPut(ARCHIVE_STORE, archive);
@@ -1051,7 +901,7 @@ export function initBackupFoundation(options) {
       await backupPut(ARCHIVE_STORE, archive);
       await renderHistory();
       const deliveryText = external.map((item) => `${item.label} ${item.ok ? '✓' : '✗'}${item.ok ? '' : ` ${item.message}`}`).join(' · ');
-      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · SHA-256 verificato${deliveryText ? `\n${deliveryText}` : ''}`);
+      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · SHA-256 verificato${deliveryText ? `\n${deliveryText}` : ''}`);
       setAppStatus('backup completato');
       return archive;
     } catch (err) {
@@ -1082,8 +932,8 @@ export function initBackupFoundation(options) {
     if (!rows.length) { history.innerHTML = '<div class="backup-empty">Nessun backup ancora archiviato.</div>'; return; }
     history.innerHTML = rows.slice(0, 12).map((row) => `
       <div class="backup-item" data-backup-id="${row.id.replace(/"/g, '&quot;')}">
-        <div class="backup-item-main"><strong>${row.filename}</strong><small>${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${row.recordCount} record · ${row.audioCount || 0} audio · ${row.reason}</small><div class="delivery-badges">${(row.deliveries || [{label:'Archivio app',ok:true}]).map((d) => `<span class="delivery-badge ${d.ok ? 'ok' : 'fail'}" title="${String(d.message || '').replace(/"/g,'&quot;')}">${d.label} ${d.ok ? '✓' : '✗'}</span>`).join('')}</div></div>
-        <div class="backup-item-actions"><button type="button" data-backup-restore="1">Ripristina</button><button type="button" data-backup-export="1">Esporta</button><button type="button" data-backup-delete="1">Elimina</button></div>
+        <div class="backup-item-main"><strong>${row.filename}</strong><small>${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${row.recordCount} record · ${row.reason}</small><div class="delivery-badges">${(row.deliveries || [{label:'Archivio app',ok:true}]).map((d) => `<span class="delivery-badge ${d.ok ? 'ok' : 'fail'}" title="${String(d.message || '').replace(/"/g,'&quot;')}">${d.label} ${d.ok ? '✓' : '✗'}</span>`).join('')}</div></div>
+        <div class="backup-item-actions"><button type="button" data-backup-export="1">Esporta</button><button type="button" data-backup-delete="1">Elimina</button></div>
       </div>`).join('');
   }
 
@@ -1123,119 +973,52 @@ export function initBackupFoundation(options) {
     await downloadOrShare(archive);
   }
 
-  async function restoreBackupSettingsSnapshot(snapshot, restoredAt) {
-    if (!snapshot || typeof snapshot !== 'object') return;
-    config = cloneConfig({
-      ...snapshot,
-      destinations:{ ...(snapshot.destinations || {}), localFolder:false },
-      lastBackupAt:restoredAt || null,
-      lastBackupId:null
-    });
-    directoryHandle = null;
-    await backupPut(SETTINGS_STORE, { key:SETTINGS_KEY, value:config, modifiedAt:new Date().toISOString() });
-    await backupDelete(SETTINGS_STORE, DIRECTORY_KEY).catch(() => {});
-    syncForm();
-  }
-
-  async function applyParsedBackup(parsed, sourceLabel = 'backup') {
-    const records = parsed.pages?.records;
-    if (!Array.isArray(records)) throw new Error('Archivio senza records pagina');
-    const audioCount = parsed.audioBackup?.recordings?.length || 0;
-    const legacy = Number(parsed.formatVersion) < 2;
-    const ok = window.confirm(
-      `Ripristinare ${records.length} record${legacy ? '' : ` e ${audioCount} registrazioni audio`} da ${sourceLabel}?\n\n` +
-      `Verrà creato prima un backup di sicurezza dello stato corrente.\n` +
-      (legacy ? '\nATTENZIONE: questo è un backup precedente al formato completo 2 e non contiene necessariamente audio/clipboard.' : '')
-    );
-    if (!ok) return false;
-    const safety = await createBackup('pre-restore', { safety:true });
-    if (!safety) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
-    const details = { fileName:sourceLabel, manifest:parsed.manifest, recordCount:records.length, restoreMode:'local' };
-    await beforeRestoreApplied(details);
-    await flushCurrent();
-    await replaceMainRecords(mainDbName, mainStore, records);
-    if (parsed.passwordVault) await restoreSecurePasswordVaultBackup(parsed.passwordVault);
-    if (!legacy) {
-      if (!audioProvider?.restoreBackup) throw new Error('Modulo audio non inizializzato: ripristino completo non consentito');
-      await audioProvider.restoreBackup(parsed.audioBackup || { schemaVersion:1, settings:[], recordings:[] });
-      await restoreLocalClipboards(parsed.clipboards);
-    }
-    restorePortablePreferences(parsed.preferences?.values || {});
-    await restoreBackupSettingsSnapshot(parsed.manifest?.backupSettingsSnapshot, parsed.manifest?.createdAt);
-    await afterRestoreApplied(details);
-    setStatus(legacy
-      ? 'Ripristino locale completato da backup legacy. Sync sospesa: verifica lo stato prima di riallineare il gruppo.'
-      : 'Ripristino locale completo eseguito. Sync sospesa: puoi usare “Ripristina gruppo attivo” per rendere questo stato autorevole.');
-    setTimeout(() => location.reload(), 700);
-    return true;
-  }
-
-  async function restoreArchiveById(id) {
-    const archive = await backupGet(ARCHIVE_STORE, id);
-    if (!archive?.blob) throw new Error('Backup non trovato');
-    setStatus('Verifica backup da ripristinare…');
-    const parsed = await verifyBackupBlob(archive.blob);
-    return applyParsedBackup(parsed, archive.filename);
-  }
-
-  async function importBackupFile(file) {
+  async function restoreFromFile(file, mode = 'local') {
     if (!file) return;
-    setStatus('Verifica backup da importare…');
+    const globalRestore = mode === 'group';
+    setStatus(globalRestore ? 'Verifica backup per ripristino globale…' : 'Verifica backup da ripristinare…');
     try {
       const parsed = await verifyBackupBlob(file);
-      const whole = await sha256Hex(file);
-      const createdAt = String(parsed.manifest?.createdAt || new Date().toISOString());
-      const id = `import::${createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
-      const archive = {
-        id,
-        filename:String(file.name || backupFileName(parsed.manifest?.createdBy?.appVersion || appVersion, createdAt)),
-        createdAt,
-        size:file.size,
-        sha256:whole,
-        recordCount:Number(parsed.pages?.count ?? parsed.pages?.records?.length ?? 0),
-        audioCount:Number(parsed.audioBackup?.recordings?.length || parsed.manifest?.backup?.audioCount || 0),
-        formatVersion:Number(parsed.formatVersion) || 1,
-        reason:'importato',
-        appVersion:String(parsed.manifest?.createdBy?.appVersion || '?'),
-        blob:new Blob([await file.arrayBuffer()], { type:'application/zip' }),
-        deliveries:[{ key:'internal', label:'Archivio app', ok:true, message:'importato' }]
-      };
-      await backupPut(ARCHIVE_STORE, archive);
-      await renderHistory();
-      setStatus(`Backup importato e verificato ✓\n${archive.filename}`);
+      const records = parsed.pages?.records;
+      if (!Array.isArray(records)) throw new Error('Archivio senza records pagina');
+      if (globalRestore) {
+        const warning = window.confirm(
+          `ATTENZIONE: RIPRISTINO DI TUTTO IL GRUPPO\n\n` +
+          `Il backup ${file.name} diventerà lo stato autorevole per TUTTI i dispositivi sincronizzati.\n` +
+          `Le modifiche successive al backup verranno escluse dalla nuova generazione del gruppo.\n\n` +
+          `Verrà creato prima un backup di sicurezza dello stato corrente.\n\nContinuare?`
+        );
+        if (!warning) return;
+        const typed = window.prompt('Conferma operazione distruttiva: scrivi esattamente RIPRISTINA GRUPPO');
+        if (String(typed || '').trim() !== 'RIPRISTINA GRUPPO') {
+          setStatus('Ripristino globale annullato: conferma testuale non valida.');
+          return;
+        }
+      } else {
+        const ok = window.confirm(`Ripristinare ${records.length} record da ${file.name}?\n\nVerrà creato prima un backup di sicurezza dello stato corrente.`);
+        if (!ok) return;
+      }
+      const safety = await createBackup(globalRestore ? 'pre-group-restore' : 'pre-restore', { safety: true });
+      if (!safety) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
+      const details = { fileName: file.name, manifest: parsed.manifest, recordCount: records.length, restoreMode: globalRestore ? 'group' : 'local' };
+      if (globalRestore) await beforeGlobalRestoreApplied(details);
+      else await beforeRestoreApplied(details);
+      await flushCurrent();
+      await replaceMainRecords(mainDbName, mainStore, records);
+      if (parsed.passwordVault) await restoreSecurePasswordVaultBackup(parsed.passwordVault);
+      // Le credenziali e il gruppo Sync appartengono al dispositivo corrente, non allo snapshot.
+      // I backup 0.1.58 e precedenti possono contenerli: vengono deliberatamente ignorati.
+      restorePortablePreferences(parsed.preferences?.values || {});
+      if (globalRestore) await afterGlobalRestoreApplied(details);
+      else await afterRestoreApplied(details);
+      setStatus(globalRestore
+        ? 'Backup applicato localmente. Pubblicazione protetta come nuovo stato del gruppo al riavvio…'
+        : 'Ripristino completato. Riallineamento Sync protetto al riavvio…');
+      setTimeout(() => location.reload(), 700);
     } catch (err) {
-      setStatus(`Importazione non riuscita: ${err.message || err}`);
+      console.error(globalRestore ? 'Ripristino globale' : 'Ripristino', err);
+      setStatus(`${globalRestore ? 'Ripristino globale' : 'Ripristino'} non riuscito: ${err.message || err}`);
     }
-  }
-
-  async function promoteCurrentStateToGroup() {
-    const warning = window.confirm(
-      'ATTENZIONE: RIPRISTINA GRUPPO ATTIVO\n\n' +
-      'Lo stato ATTUALE di questo dispositivo diventerà la nuova verità per tutti i dispositivi sincronizzati.\n' +
-      'Se hai appena ripristinato un backup storico, verrà pubblicato proprio quello stato.\n\n' +
-      'Le modifiche successive presenti nel gruppo verranno escluse dalla nuova generazione.\n' +
-      'Verrà creato prima un backup di sicurezza.\n\nContinuare?'
-    );
-    if (!warning) return;
-    const typed = window.prompt('Conferma operazione distruttiva: scrivi esattamente RIPRISTINA GRUPPO');
-    if (String(typed || '').trim() !== 'RIPRISTINA GRUPPO') {
-      setStatus('Ripristino gruppo annullato: conferma testuale non valida.');
-      return;
-    }
-    const safety = await createBackup('pre-group-restore', { safety:true });
-    if (!safety) throw new Error('Backup di sicurezza pre-ripristino gruppo non riuscito');
-    await flushCurrent();
-    const records = await readMainRecords(mainDbName, mainStore);
-    const details = {
-      fileName:'stato locale corrente',
-      manifest:{ createdAt:new Date().toISOString(), source:'current-device-state' },
-      recordCount:records.length,
-      restoreMode:'group-current'
-    };
-    await beforeGlobalRestoreApplied(details);
-    await afterGlobalRestoreApplied(details);
-    setStatus('Stato locale fissato. Pubblicazione protetta come nuova generazione del gruppo al riavvio…');
-    setTimeout(() => location.reload(), 700);
   }
 
   function scheduleDueCheck(reason = 'automatic') {
@@ -1315,16 +1098,16 @@ export function initBackupFoundation(options) {
   bindAction(exportLatest, async () => { const latest = await getLatest(); latest ? downloadOrShare(latest).catch((e) => setStatus(e.message)) : setStatus('Nessun backup disponibile.'); });
   bindAction(backupNow, async () => { await saveConfig(); await createBackup('manual'); });
   bindAction(verifyButton, verifyLatest);
-  bindAction(importButton, () => importInput?.click());
-  importInput?.addEventListener('change', () => { const file = importInput.files?.[0]; importInput.value = ''; void importBackupFile(file); });
-  bindAction(restoreGroupButton, () => { void promoteCurrentStateToGroup().catch((e) => setStatus(`Ripristino gruppo non riuscito: ${e.message || e}`)); });
+  bindAction(restoreButton, () => restoreInput.click());
+  restoreInput?.addEventListener('change', () => { const file = restoreInput.files?.[0]; restoreInput.value = ''; restoreFromFile(file, 'local'); });
+  bindAction(restoreGroupButton, () => restoreGroupInput.click());
+  restoreGroupInput?.addEventListener('change', () => { const file = restoreGroupInput.files?.[0]; restoreGroupInput.value = ''; restoreFromFile(file, 'group'); });
 
   async function handleHistoryAction(ev) {
     const button = ev.target instanceof Element ? ev.target.closest('button') : null;
     const row = ev.target instanceof Element ? ev.target.closest('[data-backup-id]') : null;
     if (!button || !row) return;
     const id = row.dataset.backupId;
-    if (button.dataset.backupRestore) await restoreArchiveById(id).catch((e) => setStatus(`Ripristino non riuscito: ${e.message || e}`));
     if (button.dataset.backupExport) await exportArchiveById(id).catch((e) => setStatus(e.message));
     if (button.dataset.backupDelete) {
       if (!window.confirm('Eliminare questo backup dall’archivio locale dell’app?')) return;
@@ -1412,11 +1195,5 @@ export function initBackupFoundation(options) {
     async deleteOneDrive(fileId, signal = null) { return deleteOneDriveFile(fileId, oneDriveAuth.getAccessToken(), signal); }
   };
 
-  return {
-    openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck, cloudBridge,
-    attachAudioProvider(provider = {}) {
-      if (typeof provider.exportBackup !== 'function' || typeof provider.restoreBackup !== 'function') throw new Error('Provider audio backup non valido');
-      audioProvider = { exportBackup:provider.exportBackup, restoreBackup:provider.restoreBackup };
-    }
-  };
+  return { openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck, cloudBridge };
 }

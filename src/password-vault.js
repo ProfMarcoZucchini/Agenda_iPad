@@ -626,7 +626,7 @@ export function initPasswordVault(options = {}) {
     try { await saveChain; } catch {}
   }
 
-  // 0.1.101 — ponte verso il motore pagina principale di Agenda/Note.
+  // 0.1.100 — ponte verso il motore pagina principale di Agenda/Note.
   // La Rubrica non disegna più sul canvas dedicato: espone la pagina A-Z al
   // motore Ink principale e riceve lo snapshot soltanto a fine gesto/salvataggio.
   function mainPageFromLetter(letter = activeLetter) {
