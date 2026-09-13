@@ -3454,51 +3454,126 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   position:absolute;
   left:50%;
   top:48%;
-  width:clamp(260px,58vw,650px);
-  height:66px;
+  width:clamp(260px,64vw,720px);
+  height:76px;
   transform:translate(-50%,-50%) rotate(0deg);
   transform-origin:50% 50%;
-  border:1px solid rgba(103,78,38,.68);
-  border-radius:5px;
-  background:linear-gradient(to bottom,rgba(246,218,139,.91),rgba(224,188,103,.88));
-  box-shadow:0 5px 16px rgba(66,49,24,.20);
   pointer-events:auto;
   touch-action:none;
   -webkit-user-select:none;
   user-select:none;
+  box-sizing:border-box;
 }
-.ruler-body::before {
+.ruler-face {
+  position:absolute;
+  left:0;
+  right:42px;
+  top:6px;
+  bottom:6px;
+  border:1px solid rgba(103,78,38,.72);
+  border-radius:6px;
+  background:linear-gradient(to bottom,rgba(246,222,153,.94),rgba(221,183,93,.91));
+  box-shadow:0 5px 16px rgba(66,49,24,.20), inset 0 1px 0 rgba(255,255,255,.42);
+  overflow:hidden;
+  pointer-events:none;
+}
+.ruler-face::before,
+.ruler-face::after {
   content:"";
   position:absolute;
-  left:10px;
-  right:10px;
-  top:0;
-  height:1px;
-  background:rgba(90,66,31,.78);
+  left:12px;
+  right:12px;
+  pointer-events:none;
 }
-.ruler-ticks {
-  position:absolute;
-  inset:0 10px auto 10px;
-  height:28px;
+.ruler-face::before {
+  top:0;
+  height:27px;
   background:
-    repeating-linear-gradient(to right, rgba(91,68,33,.78) 0 1px, transparent 1px 10px),
-    repeating-linear-gradient(to right, transparent 0 49px, rgba(91,68,33,.88) 49px 51px, transparent 51px 100px);
-  opacity:.92;
+    repeating-linear-gradient(to right, rgba(83,62,29,.76) 0 1px, transparent 1px 10px),
+    repeating-linear-gradient(to right, transparent 0 49px, rgba(83,62,29,.94) 49px 51px, transparent 51px 100px);
+}
+.ruler-face::after {
+  bottom:0;
+  height:19px;
+  background:
+    repeating-linear-gradient(to right, rgba(83,62,29,.72) 0 1px, transparent 1px 10px),
+    repeating-linear-gradient(to right, transparent 0 49px, rgba(83,62,29,.88) 49px 51px, transparent 51px 100px);
+  transform:scaleY(-1);
+}
+.ruler-number-row {
+  position:absolute;
+  left:12px;
+  right:12px;
+  top:27px;
+  height:20px;
+  font:600 10px/1.1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:rgba(79,59,29,.88);
+  pointer-events:none;
+}
+.ruler-number-row span {
+  position:absolute;
+  transform:translateX(-50%);
+  white-space:nowrap;
+}
+.ruler-center-line {
+  position:absolute;
+  left:12px;
+  right:12px;
+  top:50%;
+  height:1px;
+  background:rgba(92,68,31,.42);
+  transform:translateY(-50%);
+  pointer-events:none;
+}
+.ruler-rotate-arm {
+  position:absolute;
+  right:28px;
+  top:50%;
+  width:20px;
+  height:3px;
+  transform:translateY(-50%);
+  border-radius:999px;
+  background:rgba(79,103,116,.58);
   pointer-events:none;
 }
 .ruler-rotate-handle {
   position:absolute;
-  right:-15px;
+  right:0;
   top:50%;
-  width:28px;
-  height:28px;
+  width:32px;
+  height:32px;
   transform:translateY(-50%);
   border-radius:50%;
-  border:2px solid rgba(72,91,102,.72);
+  border:2px solid rgba(72,91,102,.78);
   background:#9ed6e9;
-  box-shadow:0 2px 6px rgba(45,60,68,.20);
+  color:#395767;
+  box-shadow:0 2px 7px rgba(45,60,68,.24), inset 0 1px 0 rgba(255,255,255,.7);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font:700 18px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   pointer-events:auto;
   touch-action:none;
+  box-sizing:border-box;
+}
+.ruler-angle-badge {
+  position:absolute;
+  right:50px;
+  top:9px;
+  min-width:38px;
+  padding:2px 6px;
+  box-sizing:border-box;
+  border-radius:999px;
+  background:rgba(255,255,255,.92);
+  border:1px solid rgba(72,91,102,.26);
+  color:#4b5c65;
+  font:700 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  text-align:center;
+  box-shadow:0 1px 4px rgba(0,0,0,.12);
+  pointer-events:none;
+}
+.paper[data-paper-color="black"] .ruler-face {
+  background:linear-gradient(to bottom,rgba(235,205,127,.95),rgba(199,159,74,.93));
 }
 .paper.ruler-mode #inkCanvas { cursor:crosshair; }
 .paper[data-paper-color="black"] .ruler-body {
