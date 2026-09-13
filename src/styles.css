@@ -395,7 +395,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 }
 
 
-/* 0.1.20 — correzioni UI + intestazione Agenda/Note. */
+/* 0.1.19 — correzioni UI + intestazione Agenda/Note. */
 .month-year-row { display:flex; align-items:baseline; gap:12px; white-space:nowrap; }
 .year-label { font-size:clamp(18px,2.3vw,28px); color:#514536; font-weight:650; }
 .page-kind-label {
@@ -555,7 +555,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
 }
 
 
-/* 0.1.24 — Calendario Agenda richiamabile dalla toolbar. */
+/* 0.1.22 — Calendario Agenda richiamabile dalla toolbar. */
 .calendar-button { font-size:15px; }
 .mini-calendar {
   position:absolute;
@@ -630,7 +630,7 @@ body.startup-active .stage { visibility: hidden; pointer-events: none; }
   .mini-calendar-day, .mini-calendar-empty { height:21px; }
 }
 
-/* 0.1.24 — Impostazioni e backup portabile/versionato. */
+/* 0.1.23 — Impostazioni e backup portabile/versionato. */
 .settings-button {
   position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
   appearance:none; -webkit-appearance:none; width:32px; height:32px; padding:0;
@@ -1017,7 +1017,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .image-handle { width: 20px; height: 20px; }
 }
 
-/* 0.1.29 — editor di ritaglio immagini isolato dal canvas Ink. */
+/* 0.1.101 — editor ritaglio vincolato al viewport visibile iPad. */
 .image-crop-overlay {
   position: fixed;
   inset: 0;
@@ -1025,9 +1025,16 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   display: flex;
   align-items: center;
   justify-content: center;
-  width: auto;
-  height: auto;
-  padding: 18px;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding:
+    max(10px, env(safe-area-inset-top))
+    max(10px, env(safe-area-inset-right))
+    max(10px, env(safe-area-inset-bottom))
+    max(10px, env(safe-area-inset-left));
   border: 0;
   border-radius: 0;
   background: rgba(28, 25, 21, .72);
@@ -1042,8 +1049,12 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
+  width: fit-content;
+  max-width: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px 14px 14px;
   border: 1px solid rgba(255,255,255,.22);
   border-radius: 14px;
@@ -1054,6 +1065,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .image-crop-heading {
   width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1064,9 +1077,11 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .image-crop-heading span { opacity: .72; font-size: 9px; }
 .image-crop-stage {
   position: relative;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   min-width: 1px;
   min-height: 1px;
+  max-width: 100%;
+  max-height: 100%;
   overflow: hidden;
   background: #161616;
   box-shadow: 0 0 0 1px rgba(0,0,0,.25);
@@ -1133,6 +1148,8 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .image-crop-handle.se { right: 2px; bottom: 2px; cursor: nwse-resize; }
 .image-crop-actions {
   width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -2722,7 +2739,7 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   left:0; right:0;
   top:var(--header-h);
   bottom:var(--footer-h);
-  z-index:20;
+  z-index:7;
   background:transparent;
   pointer-events:none;
   touch-action:none;
@@ -2742,13 +2759,13 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   inset:0;
   width:100%;
   height:100%;
-  z-index:21;
+  z-index:8;
   pointer-events:none;
   overflow:visible;
 }
 .lasso-overlay[hidden] { display:none !important; }
 .lasso-path {
-  fill:rgba(100,160,195,.055);
+  fill:none;
   stroke:#4b92b7;
   stroke-width:1.8;
   stroke-linecap:round;
@@ -2758,14 +2775,14 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .lasso-path:not(.closed) { fill:none; }
 .lasso-bounds {
-  fill:rgba(111,174,190,.045);
+  fill:none;
   stroke:#6faebc;
   stroke-width:1.4;
   stroke-dasharray:4 3;
   vector-effect:non-scaling-stroke;
 }
-.paper[data-paper-color="black"] .lasso-path { stroke:#9fd7ee; fill:rgba(159,215,238,.07); }
-.paper[data-paper-color="black"] .lasso-bounds { stroke:#b9dfec; fill:rgba(185,223,236,.05); }
+.paper[data-paper-color="black"] .lasso-path { stroke:#9fd7ee; fill:none; }
+.paper[data-paper-color="black"] .lasso-bounds { stroke:#b9dfec; fill:none; }
 .page-preview .lasso-overlay,
 .page-preview .lasso-inspector { display:none !important; }
 .tool-button[data-tool="lasso"].has-selection::after {
@@ -2790,6 +2807,73 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 .voice-vocabulary-field textarea { min-height:64px; resize:vertical; font-size:14px; line-height:1.3; }
 
 /* 0.1.84 — Rubrica Password cifrata */
+.password-vault-footer-button { color:#5f8da6; }
+.password-vault-key-icon { width:28px; height:28px; overflow:visible; }
+.password-vault-panel {
+  position:fixed; inset:0; z-index:2200; display:grid; place-items:center;
+  padding:max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+  background:rgba(34,28,22,.28); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px);
+}
+.password-vault-panel[hidden] { display:none !important; }
+.password-vault-card {
+  width:min(1080px, 96vw); height:min(760px, 92vh); overflow:hidden;
+  display:flex; flex-direction:column; gap:10px;
+  background:#f8f2e5; color:#3f382f; border:1px solid rgba(91,74,52,.28); border-radius:20px;
+  box-shadow:0 20px 65px rgba(30,24,18,.32), inset 0 1px rgba(255,255,255,.8);
+  padding:16px 18px 18px;
+}
+.password-vault-head { display:flex; align-items:center; justify-content:space-between; gap:14px; border-bottom:1px solid rgba(104,85,60,.18); padding-bottom:9px; }
+.password-vault-head h2 { margin:0; font-family:Georgia,serif; font-size:24px; color:#3d5262; }
+.password-vault-head p { margin:2px 0 0; color:#85745e; font-size:13px; }
+.password-vault-head-actions { display:flex; align-items:center; gap:8px; }
+.password-vault-head-actions button, .password-vault-toolbar button, .password-vault-editor button, .password-vault-auth-view button {
+  appearance:none; border:1px solid rgba(83,70,52,.24); border-radius:10px; background:rgba(255,255,255,.72); color:#433b31;
+  padding:8px 12px; font-weight:750; touch-action:manipulation;
+}
+#passwordVaultCloseButton { width:36px; height:36px; border-radius:50%; padding:0; font-size:24px; line-height:1; }
+.password-vault-primary { background:#5f94a7 !important; color:white !important; border-color:#4d7887 !important; }
+.password-vault-editor button.danger { background:#a74f4d; color:white; border-color:#863f3d; }
+.password-vault-status { min-height:34px; border-radius:10px; background:rgba(255,255,255,.58); border:1px solid rgba(91,74,52,.14); padding:8px 11px; font-size:13px; white-space:pre-wrap; }
+.password-vault-auth-view { width:min(620px,100%); max-width:100%; min-width:0; margin:auto; padding:22px; overflow-x:hidden; border-radius:16px; background:rgba(255,255,255,.55); border:1px solid rgba(92,75,53,.15); }
+.password-vault-auth-view h3 { margin:0 0 8px; color:#435c68; }
+.password-vault-auth-view p { line-height:1.45; }
+.password-vault-pin-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:12px; margin:16px 0; }
+.password-vault-pin-grid label, .password-vault-pin-entry { display:grid; gap:5px; font-weight:700; color:#5d5143; }
+.password-vault-pin-grid input, .password-vault-pin-entry input {
+  width:100%; min-width:0; max-width:100%;
+  min-height:48px; font-size:25px; letter-spacing:.5em; text-align:center; border:1px solid rgba(79,67,52,.28); border-radius:10px; background:#fffdfa; color:#2e2a25;
+}
+.password-vault-unlock-actions { display:grid; gap:10px; }
+.password-vault-biometric { min-height:48px; background:#edf6f6 !important; color:#356f75 !important; border-color:#8dbdc0 !important; }
+.password-vault-or { text-align:center; font-size:12px; color:#9a8a76; text-transform:uppercase; letter-spacing:.08em; }
+.password-vault-security-note { color:#756956; font-size:12px; line-height:1.45; }
+.password-vault-unlocked { min-height:0; flex:1; display:flex; flex-direction:column; gap:9px; }
+.password-vault-unlocked[hidden] { display:none !important; }
+.password-vault-toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.password-vault-toolbar input[type="search"] { flex:1 1 300px; min-height:38px; border:1px solid rgba(80,68,52,.22); border-radius:10px; background:#fffdfa; padding:8px 11px; font-size:14px; color:#332e28; }
+.password-vault-az { display:flex; gap:3px; overflow-x:auto; padding:3px 1px 5px; scrollbar-width:thin; }
+.password-vault-az button { flex:0 0 auto; min-width:29px; height:29px; padding:0 6px; border-radius:8px; border:1px solid rgba(80,68,52,.16); background:rgba(255,255,255,.58); color:#5a5146; font-size:12px; font-weight:750; }
+.password-vault-az button.active { background:#6d9eb0; color:#fff; border-color:#557f8e; }
+.password-vault-body { min-height:0; flex:1; display:grid; grid-template-columns:minmax(250px, .85fr) minmax(360px, 1.35fr); gap:12px; }
+.password-vault-list { min-height:0; overflow:auto; border:1px solid rgba(80,68,52,.15); border-radius:12px; background:rgba(255,255,255,.5); padding:6px; }
+.password-vault-entry { width:100%; display:grid; gap:2px; text-align:left; padding:9px 10px; border:0; border-bottom:1px solid rgba(82,69,53,.10); background:transparent; color:#3b352e; border-radius:8px; }
+.password-vault-entry strong { font-size:14px; }
+.password-vault-entry small { color:#7e7364; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.password-vault-entry.selected { background:#e4eef0; }
+.password-vault-empty { padding:28px 15px; text-align:center; color:#8c7d69; }
+.password-vault-editor { min-height:0; overflow:auto; display:grid; align-content:start; gap:10px; border:1px solid rgba(80,68,52,.15); border-radius:12px; background:rgba(255,255,255,.56); padding:12px; }
+.password-vault-editor[hidden] { display:none !important; }
+.password-vault-editor label { display:grid; gap:4px; font-size:12px; font-weight:750; color:#645849; }
+.password-vault-editor input, .password-vault-editor textarea { width:100%; box-sizing:border-box; border:1px solid rgba(80,68,52,.23); border-radius:9px; background:#fffdfa; color:#302b25; padding:9px 10px; font:inherit; resize:vertical; }
+.password-vault-secret-row { display:grid; grid-template-columns:1fr auto; gap:7px; }
+.password-vault-copy-row, .password-vault-editor-actions { display:flex; flex-wrap:wrap; gap:8px; }
+@media (max-width:760px) {
+  .password-vault-card { width:98vw; height:96vh; padding:12px; border-radius:14px; }
+  .password-vault-body { grid-template-columns:1fr; grid-template-rows:minmax(150px,.8fr) minmax(280px,1.2fr); }
+  .password-vault-pin-grid { grid-template-columns:1fr; }
+  .password-vault-head h2 { font-size:20px; }
+}
+.paper[data-paper-color="black"] .password-vault-footer-button { color:#9fcad2; }
 
 /* 0.1.86 — Lazo: input intercettato globalmente in capture phase.
    Il canvas resta interattivo e i layer contenuto non devono sottrarre il gesto. */
@@ -2810,1477 +2894,720 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 }
 .paper[data-paper-color="black"] .lasso-path.close-ready { stroke:#8fe0ad; }
 
-
-/* 0.1.2 — LAVAGNA FIRST: dark di default, senza riferimenti calendario nella superficie principale. */
-.lavagna-app .paper:not(.planner-view):not(.note-view) .date-block,
-.lavagna-app .paper:not(.planner-view):not(.note-view) .weather-badge,
-.lavagna-app .paper:not(.planner-view):not(.note-view) .page-meta { display:none !important; }
-.lavagna-app .paper:not(.planner-view):not(.note-view) .page-header {
-  border-bottom-color:rgba(255,255,255,.08);
-  background:linear-gradient(to bottom,rgba(28,30,32,.96),rgba(37,40,42,.86));
-}
-.lavagna-cover-card {
-  width:min(86vw,620px); height:min(78vh,720px); aspect-ratio:auto;
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
-  border:1px solid rgba(255,255,255,.14); border-radius:32px;
-  background:radial-gradient(circle at 50% 28%,#343a3d 0,#202426 52%,#111315 100%);
-  box-shadow:inset 0 0 0 1px rgba(255,255,255,.04),0 24px 60px rgba(0,0,0,.42);
-}
-.lavagna-cover-card .cover-version { color:rgba(245,243,235,.68); right:28px; bottom:24px; }
-.lavagna-splash-mark { font-size:clamp(58px,11vw,110px); color:#f5f3eb; opacity:.9; }
-.lavagna-splash-title { color:#f5f3eb; font:900 clamp(44px,9vw,92px)/1 -apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif; letter-spacing:.16em; }
-.lavagna-splash-subtitle { color:rgba(245,243,235,.62); font:650 clamp(14px,2.2vw,22px)/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif; letter-spacing:.05em; }
-.lavagna-credits-card {
-  width:min(82vw,680px); padding:48px 42px; border-radius:28px; text-align:center;
-  display:flex; flex-direction:column; gap:14px; color:#f5f3eb;
-  border:1px solid rgba(255,255,255,.14); background:linear-gradient(160deg,#2d3235,#171a1c);
-  box-shadow:0 22px 56px rgba(0,0,0,.38);
-}
-.lavagna-credits-card strong { font-size:clamp(34px,7vw,68px); letter-spacing:.14em; }
-.lavagna-credits-card span { font-size:clamp(16px,2.6vw,24px); color:rgba(245,243,235,.78); }
-.lavagna-credits-card small { font-size:clamp(12px,1.8vw,17px); color:rgba(245,243,235,.58); }
-.runtime-credits-card { margin:auto; }
-
-
-/* 0.1.3 — Lavagna-first: la superficie iniziale non mostra la scala oraria Agenda.
-   Il DOM degli orari resta disponibile internamente per le funzioni Agenda future. */
-.lavagna-app .paper .hours { display:none !important; }
-
-/* 0.1.4 — LESSON ARCHIVE: metadati lezione, nuova lezione, archivio per materia. */
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-header {
-  position:absolute;
-  left:18px;
-  top:10px;
-  z-index:8;
-  width:min(46%,430px);
-  display:flex;
-  flex-direction:column;
-  align-items:flex-start;
-  gap:4px;
-  color:rgba(245,243,235,.94);
-  pointer-events:none;
-}
-.lesson-header .lesson-meta-editor,
-.lesson-header .lesson-meta-editor select,
-.lesson-header .lesson-meta-editor input { pointer-events:auto; }
-.lesson-date-label {
-  font-size:10px;
-  line-height:1.1;
-  font-weight:700;
-  letter-spacing:.055em;
-  color:rgba(245,243,235,.58);
-}
-.lesson-meta-display {
-  max-width:100%;
-  display:flex;
-  align-items:baseline;
-  min-width:0;
-  font-size:14px;
-  line-height:1.2;
-  font-weight:760;
-  letter-spacing:.01em;
-}
-.lesson-subject-label { flex:0 0 auto; }
-.lesson-topic-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:560; color:rgba(245,243,235,.82); }
-.lesson-separator { opacity:.55; padding:0 3px; }
-.lesson-meta-editor {
-  display:grid;
-  grid-template-columns:minmax(110px,170px) minmax(140px,1fr);
-  gap:6px;
-  width:100%;
-}
-.lesson-meta-editor[hidden] { display:none !important; }
-.lesson-meta-editor select,
-.lesson-meta-editor input {
-  width:100%; min-width:0; height:29px; border:1px solid rgba(255,255,255,.17); border-radius:7px;
-  background:rgba(255,255,255,.09); color:#f5f3eb; padding:4px 7px; font:650 11px/1.1 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
-  outline:none; -webkit-user-select:text; user-select:text;
-}
-.lesson-meta-editor select { color-scheme:dark; }
-.lesson-meta-editor input::placeholder { color:rgba(245,243,235,.40); }
-.lesson-board-badge {
-  margin-top:1px; font-size:9px; font-weight:700; letter-spacing:.04em; color:rgba(245,243,235,.43);
-}
-.page-preview .lesson-meta-editor { display:none !important; }
-.page-preview .lesson-meta-display { display:flex !important; }
-
-.new-lesson-footer-button {
-  position:absolute;
-  left:calc(50% + 42px);
-  top:50%;
-  transform:translate(-50%,-50%);
-  z-index:4;
-}
-.new-lesson-footer-button:active { transform:translate(-50%,calc(-50% + 1px)); }
-.new-lesson-icon { width:27px; height:27px; }
-.lesson-folder-icon { width:27px; height:27px; }
-.paper[data-paper-color="black"] .new-lesson-footer-button { background:rgba(246,238,219,.92); border-color:rgba(255,255,255,.20); }
-
-.lesson-setup-panel,
-.lesson-archive-panel {
-  position:fixed; inset:0; z-index:220; display:grid; place-items:center;
-  padding:max(18px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) max(18px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));
-  background:rgba(8,10,11,.62); backdrop-filter:blur(12px);
-}
-.lesson-setup-panel[hidden], .lesson-archive-panel[hidden] { display:none !important; }
-.lesson-dialog-card,
-.lesson-archive-card {
-  width:min(720px,96vw); max-height:min(820px,92vh); overflow:hidden;
-  border:1px solid rgba(255,255,255,.14); border-radius:20px;
-  background:linear-gradient(160deg,#2b3033,#171a1c); color:#f3efe6;
-  box-shadow:0 28px 80px rgba(0,0,0,.44);
-}
-.lesson-dialog-header {
-  display:flex; align-items:center; justify-content:space-between; gap:14px;
-  padding:16px 18px 13px; border-bottom:1px solid rgba(255,255,255,.10);
-}
-.lesson-dialog-header h2 { margin:0; font:750 24px/1.05 Georgia,"Times New Roman",serif; }
-.lesson-dialog-header p { margin:4px 0 0; font-size:11px; color:rgba(243,239,230,.58); }
-.lesson-dialog-header > button {
-  width:36px; height:36px; border:0; border-radius:50%; background:rgba(255,255,255,.08); color:#f3efe6; font-size:24px;
-}
-.lesson-dialog-body { padding:18px; display:grid; gap:14px; }
-.lesson-dialog-body label { display:grid; gap:6px; }
-.lesson-dialog-body label > span { font-size:11px; font-weight:750; color:rgba(243,239,230,.72); }
-.lesson-dialog-body select,
-.lesson-dialog-body input,
-.lesson-subject-add-row input {
-  width:100%; min-height:44px; border:1px solid rgba(255,255,255,.15); border-radius:10px;
-  background:rgba(255,255,255,.08); color:#f5f3eb; padding:9px 11px; font-size:15px; outline:none; color-scheme:dark;
-  -webkit-user-select:text; user-select:text;
-}
-.lesson-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:2px; }
-.lesson-dialog-actions button,
-.lesson-subject-add-row button,
-.lesson-subject-settings-row button {
-  min-height:40px; border:1px solid rgba(255,255,255,.16); border-radius:10px; background:rgba(255,255,255,.09); color:#f3efe6; padding:7px 12px; font-weight:760;
-}
-.lesson-dialog-actions button.primary { background:#477c68; border-color:#62927f; }
-.lesson-dialog-status { min-height:18px; font-size:11px; color:#f0b6a8; }
-
-.lesson-archive-card { width:min(920px,97vw); }
-.lesson-archive-body { max-height:calc(min(820px,92vh) - 78px); overflow:auto; padding:15px 17px 22px; }
-.lesson-archive-group { margin:0 0 18px; }
-.lesson-archive-group h3 { margin:0 0 8px; font-size:15px; letter-spacing:.03em; color:#f1d383; }
-.lesson-archive-list { display:grid; gap:7px; }
-.lesson-archive-row {
-  width:100%; display:grid; grid-template-columns:108px minmax(0,1fr) auto; align-items:center; gap:12px;
-  border:1px solid rgba(255,255,255,.11); border-radius:12px; background:rgba(255,255,255,.055); color:#f4f0e8; padding:10px 12px; text-align:left;
-}
-.lesson-archive-row:active { background:rgba(255,255,255,.11); }
-.lesson-archive-date { font-variant-numeric:tabular-nums; font-size:11px; color:rgba(244,240,232,.62); }
-.lesson-archive-topic { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:680; }
-.lesson-archive-pages { font-size:10px; color:rgba(244,240,232,.48); }
-.lesson-archive-empty { padding:28px 10px; text-align:center; color:rgba(244,240,232,.56); }
-
-.lesson-subject-add-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin:12px 0; }
-.lesson-subject-settings-list { display:grid; gap:7px; }
-.lesson-subject-settings-row {
-  display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center;
-  padding:8px 9px; border:1px solid rgba(92,77,54,.16); border-radius:10px; background:rgba(255,255,255,.40);
-}
-.lesson-subject-settings-row span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
-.lesson-subject-settings-row button { min-height:32px; padding:5px 8px; color:#9b372f; background:#fffaf1; border-color:rgba(155,55,47,.22); }
-
-@media (max-width:760px) {
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-header { left:10px; top:7px; width:min(48%,330px); gap:3px; }
-  .lesson-date-label { font-size:8px; }
-  .lesson-meta-display { font-size:11px; }
-  .lesson-meta-editor { grid-template-columns:minmax(84px,120px) minmax(90px,1fr); gap:4px; }
-  .lesson-meta-editor select,.lesson-meta-editor input { height:26px; padding:3px 5px; font-size:9px; }
-  .new-lesson-footer-button { left:calc(50% + 37px); width:32px; height:32px; }
-  .lesson-archive-row { grid-template-columns:86px minmax(0,1fr); gap:7px; }
-  .lesson-archive-pages { grid-column:2; }
+/* 0.1.101 — Prima configurazione Rubrica Password: PIN verticali, nessun overflow orizzontale. */
+#passwordVaultSetup .password-vault-pin-grid { grid-template-columns:minmax(0,1fr); width:100%; }
+#passwordVaultSetup > #passwordVaultCreateButton { width:100%; min-height:48px; }
+@media (orientation: landscape) {
+  #passwordVaultSetup.password-vault-auth-view { margin:auto; }
 }
 
 
-/* 0.1.5 — FUNCTION RESTORE: metadata non intercetta Pencil/Lazo/Voice. */
-.lavagna-app .lesson-header { pointer-events:none; }
-.lavagna-app .lesson-meta-editor, .lavagna-app .lesson-meta-editor select, .lavagna-app .lesson-meta-editor input { pointer-events:auto; }
-
-
-/* 0.1.6 — LASSO INPUT HARDENING: lo shield domina i layer contenuto;
-   inspector/toolbar restano sopra e utilizzabili. */
-.paper.lasso-mode .lasso-inspector { z-index:22; }
-.paper.lasso-mode .quick-toolbar { z-index:23; }
-
-
-/* 0.1.8 — replay strategie Lazo Agenda 0.1.92/0.1.94.
-   Il contorno è solo grafico e non deve mai mascherare immagini/ink. */
-.lasso-path { fill:none !important; }
-.paper.lasso-mode .lasso-input-shield:not([hidden]) { pointer-events:auto !important; touch-action:none !important; }
-
-
-/* 0.1.9 — BOARD NOTES: identificatore lavagna, Note per lavagna e Materie evidenti. */
-.lavagna-app .paper:not(.planner-view) .lesson-header {
-  position:absolute; left:18px; top:10px; z-index:8; width:min(48%,450px);
-  display:flex; flex-direction:column; align-items:flex-start; gap:4px; color:rgba(245,243,235,.94); pointer-events:none;
-}
-.lesson-note-label {
-  margin-top:1px; font-size:10px; line-height:1.1; font-weight:800; letter-spacing:.055em; color:rgba(245,243,235,.58);
-}
-.lesson-note-label[hidden] { display:none !important; }
-.lesson-board-progress {
-  position:absolute; right:18px; bottom:58px; z-index:18; min-width:38px; padding:4px 8px;
-  border:1px solid rgba(255,255,255,.13); border-radius:999px; background:rgba(18,20,21,.46);
-  color:rgba(245,243,235,.64); text-align:center; font:800 11px/1 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
-  letter-spacing:.045em; pointer-events:none; backdrop-filter:blur(6px);
-}
-.lesson-board-progress[hidden] { display:none !important; }
-.page-preview .lesson-board-progress { display:block; }
-.lavagna-app .paper.lesson-note-view .date-block,
-.lavagna-app .paper.lesson-note-view .weather-badge,
-.lavagna-app .paper.lesson-note-view .page-meta,
-.lavagna-app .paper.lesson-note-view .page-kind-label { display:none !important; }
-.lavagna-app .paper.lesson-note-view .page-header {
-  border-bottom-color:rgba(255,255,255,.08);
-  background:linear-gradient(to bottom,rgba(28,30,32,.96),rgba(37,40,42,.86));
-}
-.lesson-subject-add-row { align-items:stretch; gap:10px; }
-.lesson-subject-add-primary {
-  min-height:44px !important; padding:9px 18px !important; border-radius:11px !important;
-  border:1px solid rgba(126,206,157,.58) !important; background:linear-gradient(180deg,#7bcf9a,#56a978) !important;
-  color:#10261a !important; font-weight:850 !important; font-size:14px !important; box-shadow:0 5px 16px rgba(55,137,91,.24) !important;
-}
-.lesson-subject-add-primary:active { transform:translateY(1px); }
-
-
-/* 0.1.10 — LESSON GOALS CLEANUP */
-.paper.planner-daily .planner-layer { padding:0 !important; }
-.lesson-goals-sheet {
-  position:absolute; inset:0; overflow:hidden; border:0; border-radius:0;
-  background:transparent; pointer-events:none;
-}
-.lesson-goals-ruled {
-  position:absolute; inset:8px 18px 12px 26px;
-  background:repeating-linear-gradient(to bottom, transparent 0, transparent 31px, var(--planner-rule) 32px, transparent 33px);
-  opacity:.88;
-}
-.paper[data-paper-color="black"] .lesson-goals-ruled { opacity:.72; }
-.expanded-keyboard-input { font-size:max(16px,1em); }
-
-
-/* 0.1.11 — QUICK BOARD UI.
-   Solo presentazione/controlli pagina: nessuna modifica al motore Ink o al Lazo. */
-:root { --header-h: 59px; }
-@media (max-width:760px) { :root { --header-h: 50px; } }
-
-/* Titolo Lavagna compatto: circa metà altezza rispetto alla 0.1.10. */
-.lavagna-app .page-header { height:var(--header-h); min-height:0; padding-top:6px; padding-bottom:5px; }
-.lavagna-app .paper:not(.planner-view) .lesson-header { top:5px; gap:2px; }
-@media (max-width:760px) {
-  .lavagna-app .page-header { padding-top:4px; padding-bottom:3px; }
-  .lavagna-app .paper:not(.planner-view) .lesson-header { top:3px; gap:1px; }
-}
-
-/* Identificatore richiesto: “Lavagna 1/3”, con la parola in corsivo. */
-.lesson-board-progress::before,
-.board-progress::before {
-  content:"Lavagna ";
-  font-family:"Snell Roundhand","Apple Chancery","Segoe Script",Georgia,serif;
-  font-style:italic;
-  font-weight:600;
-  letter-spacing:.015em;
-  margin-right:2px;
-}
-.lesson-board-progress { min-width:82px; }
-
-/* Carta millimetrata: griglia fine + maggiorazioni periodiche. */
-.paper[data-page-template="millimeter"]::before {
-  background-image:
-    linear-gradient(to right, transparent 0, transparent 76px, var(--margin) 77px, transparent 78px),
-    linear-gradient(to right, rgba(135,155,175,.10) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(135,155,175,.10) 1px, transparent 1px),
-    linear-gradient(to right, var(--line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--line) 1px, transparent 1px);
-  background-size:auto,8px 8px,8px 8px,40px 40px,40px 40px;
-}
-@media (max-width:760px) {
-  .paper[data-page-template="millimeter"]::before {
-    background-image:
-      linear-gradient(to right, transparent 0, transparent 60px, var(--margin) 61px, transparent 62px),
-      linear-gradient(to right, rgba(135,155,175,.10) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(135,155,175,.10) 1px, transparent 1px),
-      linear-gradient(to right, var(--line) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--line) 1px, transparent 1px);
-    background-size:auto,8px 8px,8px 8px,40px 40px,40px 40px;
-  }
-}
-
-/* Archivio al centro, immediatamente a destra di Nuova lezione/lavagna. */
-.archive-center-button {
-  position:absolute !important;
-  left:calc(50% + 84px) !important;
-  top:50% !important;
-  transform:translate(-50%,-50%) !important;
-  z-index:4;
-}
-.archive-center-button:active { transform:translate(-50%,calc(-50% + 1px)) !important; }
-@media (max-width:760px) {
-  .archive-center-button { left:calc(50% + 74px) !important; width:32px; height:32px; }
-}
-
-/* Barra rapida sfondi subito dopo autore/versione. */
-.quick-paper-bar {
-  position:absolute;
-  left:156px;
-  top:50%;
-  transform:translateY(-50%);
-  display:flex;
-  align-items:center;
-  gap:4px;
-  z-index:5;
-  pointer-events:auto;
-}
-.quick-paper-button {
-  appearance:none; -webkit-appearance:none;
-  width:25px; height:25px; padding:2px;
-  display:grid; place-items:center;
-  border:1px solid rgba(92,77,54,.22); border-radius:7px;
-  background:rgba(255,255,255,.18);
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.quick-paper-button.selected { box-shadow:0 0 0 2px rgba(84,151,122,.55); border-color:rgba(84,151,122,.8); }
-.quick-paper-button:active { transform:translateY(1px); }
-.quick-paper-swatch {
-  display:block; width:17px; height:17px; border-radius:3px; overflow:hidden;
-  border:1px solid rgba(45,45,45,.32); background:#fbfaf6;
-}
-.quick-paper-blank { background:#fbfaf6; }
-.quick-paper-ruled { background:repeating-linear-gradient(to bottom,#fbfaf6 0,#fbfaf6 4px,#8fa4bb 5px,#fbfaf6 6px); }
-.quick-paper-grid { background-color:#fbfaf6; background-image:linear-gradient(#a4b2c0 1px,transparent 1px),linear-gradient(90deg,#a4b2c0 1px,transparent 1px); background-size:5px 5px; }
-.quick-paper-millimeter { background-color:#fbfaf6; background-image:linear-gradient(rgba(108,132,155,.38) 1px,transparent 1px),linear-gradient(90deg,rgba(108,132,155,.38) 1px,transparent 1px),linear-gradient(rgba(89,111,132,.65) 1px,transparent 1px),linear-gradient(90deg,rgba(89,111,132,.65) 1px,transparent 1px); background-size:3px 3px,3px 3px,9px 9px,9px 9px; }
-.quick-paper-yellow { background:#f3e8cd; }
-.quick-paper-black { background:#25282a; border-color:rgba(255,255,255,.32); }
-.paper[data-paper-color="black"] .quick-paper-button { border-color:rgba(255,255,255,.20); background:rgba(255,255,255,.05); }
-@media (max-width:900px) {
-  .quick-paper-bar { left:146px; gap:3px; }
-  .quick-paper-button { width:23px; height:23px; }
-  .quick-paper-swatch { width:15px; height:15px; }
-}
-@media (max-width:760px) {
-  .copyright-block { max-width:124px; }
-  .author-credits-button { display:none; }
-  .quick-paper-bar { left:61px; gap:2px; }
-  .quick-paper-button { width:22px; height:22px; padding:2px; border-radius:6px; }
-  .quick-paper-swatch { width:14px; height:14px; }
-}
-
-
-/* 0.1.12 — COMPACT FULLSCREEN.
-   Solo UI: motore Ink, Lazo, backup e realtime restano invariati. */
-:root { --header-h: 44px; }
-@media (max-width:760px) { :root { --header-h: 42px; } }
-
-/* Recupera area scrivibile: elimina le righe verticali vuote nell'intestazione. */
-.lavagna-app .page-header {
-  height:var(--header-h);
-  min-height:0;
-  padding-top:2px;
-  padding-bottom:2px;
-}
-.lavagna-app .paper:not(.planner-view) .lesson-header {
-  top:2px;
-  gap:0;
-}
-.lavagna-app .lesson-date-label {
-  font-size:8px;
-  line-height:1;
-  margin:0 0 1px;
-}
-.lavagna-app .lesson-meta-display {
-  font-size:11px;
-  line-height:1.05;
-  min-height:0;
-}
-.lavagna-app .lesson-meta-editor {
-  gap:4px;
-  margin:0;
-}
-.lavagna-app .lesson-meta-editor select,
-.lavagna-app .lesson-meta-editor input {
-  height:23px;
-  min-height:23px;
-  padding:1px 5px;
-  font-size:10px;
-  line-height:1;
-}
-.lavagna-app .lesson-note-label { margin-top:0; font-size:8px; line-height:1; }
-@media (max-width:760px) {
-  .lavagna-app .page-header { padding-top:1px; padding-bottom:1px; }
-  .lavagna-app .paper:not(.planner-view) .lesson-header { top:1px; gap:0; }
-  .lavagna-app .lesson-meta-editor select,
-  .lavagna-app .lesson-meta-editor input { height:22px; min-height:22px; font-size:9px; }
-}
-
-/* In modalità dark i pulsanti principali hanno sfondo grigio chiaro. */
-.paper[data-paper-color="black"] .quick-toolbar {
-  background:rgba(218,221,224,.96);
-  border-color:rgba(255,255,255,.28);
-}
-.paper[data-paper-color="black"] .tool-button {
-  background:#d7dade;
-  color:#24272a;
-  border-color:rgba(45,49,53,.16);
-}
-.paper[data-paper-color="black"] .tool-button.active {
-  background:#f0f1f2;
-  color:#181a1c;
-  border-color:rgba(45,49,53,.34);
-  box-shadow:inset 0 -2px 0 rgba(45,49,53,.12);
-}
-.paper[data-paper-color="black"] .footer-icon-button,
-.paper[data-paper-color="black"] .settings-button.settings-center-button.footer-icon-button,
-.paper[data-paper-color="black"] .new-lesson-footer-button,
-.paper[data-paper-color="black"] .lesson-archive-footer-button {
-  background:#d7dade;
-  border-color:rgba(255,255,255,.28);
-  color:#24272a;
-  box-shadow:0 1px 3px rgba(0,0,0,.16);
-}
-.paper[data-paper-color="black"] .quick-paper-button {
-  background:#d7dade;
-  border-color:rgba(255,255,255,.26);
-}
-.paper[data-paper-color="black"] .quick-paper-button.selected {
-  background:#eef0f1;
-  border-color:rgba(63,135,102,.78);
-}
-
-/* Archivio immediatamente a destra del comando centrale Nuova lezione/lavagna. */
-.archive-center-button {
-  left:calc(50% + 80px) !important;
-}
-@media (max-width:760px) {
-  .archive-center-button { left:calc(50% + 70px) !important; }
-}
-
-/* 0.1.13 — FULLSCREEN PENCIL UI.
-   Solo UI: Ink, Lazo, backup e realtime non vengono modificati. */
-/* Più respiro tra la versione e i sei comandi rapidi dello sfondo. */
-.quick-paper-bar { left:178px; }
-@media (max-width:900px) { .quick-paper-bar { left:168px; } }
-@media (max-width:760px) { .quick-paper-bar { left:74px; } }
-
-/* Area di contatto esplicita per dito e Apple Pencil, senza alterare la dimensione visiva. */
-.quick-paper-button {
-  position:relative;
-  pointer-events:auto;
+/* 0.1.101 — Rubrica Password: tastiera iPad estesa + focus stabile con Pencil. */
+.password-vault-panel input,
+.password-vault-panel textarea {
+  font-size:16px;
   touch-action:manipulation;
-}
-.quick-paper-button::after {
-  content:""; position:absolute; inset:-3px; border-radius:9px;
-}
-
-
-/* 0.1.14 — NOTE/WEEKLY/FOOTER UI.
-   Solo presentazione e anagrafica materie: Ink, Lazo, backup e realtime non vengono toccati. */
-
-/* Note: data, materia/argomento e Nota X/Y in alto a sinistra a dimensione H4. */
-.paper.lesson-note-view { --header-h:72px; }
-.lavagna-app .paper.lesson-note-view .page-header { height:var(--header-h); }
-.lavagna-app .paper.lesson-note-view .lesson-header {
-  top:6px !important; left:18px !important; width:min(76%,760px) !important; gap:2px !important;
-}
-.lavagna-app .paper.lesson-note-view .lesson-date-label,
-.lavagna-app .paper.lesson-note-view .lesson-meta-display,
-.lavagna-app .paper.lesson-note-view .lesson-note-label {
-  font-size:16px !important; line-height:1.15 !important; margin:0 !important;
-  letter-spacing:.015em !important;
-}
-.lavagna-app .paper.lesson-note-view .lesson-date-label { font-weight:700; }
-.lavagna-app .paper.lesson-note-view .lesson-meta-display { font-weight:760; }
-.lavagna-app .paper.lesson-note-view .lesson-note-label { font-weight:800; color:rgba(245,243,235,.76); }
-@media (max-width:760px) {
-  .paper.lesson-note-view { --header-h:68px; }
-  .lavagna-app .paper.lesson-note-view .lesson-header { top:5px !important; left:10px !important; width:min(84%,640px) !important; }
-  .lavagna-app .paper.lesson-note-view .lesson-date-label,
-  .lavagna-app .paper.lesson-note-view .lesson-meta-display,
-  .lavagna-app .paper.lesson-note-view .lesson-note-label { font-size:15px !important; }
-}
-
-/* Planning settimanale: titolo immediatamente prima della tabella, non nell'header. */
-.paper.planner-weekly .page-kind-label { display:none !important; }
-.planner-week-inline-title {
-  height:28px; display:flex; align-items:center; justify-content:flex-start;
-  margin:0 0 6px; padding:0 4px;
-  font:650 clamp(16px,2vw,23px)/1.05 Georgia,"Times New Roman",serif;
-  letter-spacing:.015em; color:rgba(63,52,41,.82); white-space:nowrap;
-}
-.paper[data-paper-color="black"].planner-weekly .planner-week-inline-title { color:rgba(245,241,232,.90); }
-.paper.planner-weekly .planner-week-grid { height:calc(70% - 46px) !important; }
-.paper.planner-weekly .planner-week-bottom { height:calc(30% - 10px) !important; margin-top:8px; }
-@media (max-width:760px) {
-  .planner-week-inline-title { height:24px; margin-bottom:4px; font-size:15px; padding-left:2px; }
-  .paper.planner-weekly .planner-week-grid { height:calc(70% - 38px) !important; }
-}
-
-/* Versione/titolo calligrafico tra Archivio e Microfono. */
-.baseline-footer .lavagna-footer-title {
-  position:absolute !important;
-  left:calc(50% + 112px) !important;
-  right:92px !important;
-  top:50% !important;
-  transform:translateY(-50%) !important;
-  margin:0 !important; padding:2px 6px !important;
-  border:0 !important; background:transparent !important;
-  text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  font-family:"Snell Roundhand","Apple Chancery","Segoe Script","Brush Script MT",cursive !important;
-  font-size:19px !important; font-style:italic; font-weight:600 !important;
-  letter-spacing:.015em !important; color:rgba(70,58,44,.82) !important;
-  z-index:3; touch-action:manipulation;
-}
-.baseline-footer .lavagna-footer-title:active { transform:translateY(calc(-50% + 1px)) !important; }
-.paper[data-paper-color="black"] .baseline-footer .lavagna-footer-title { color:rgba(245,241,232,.92) !important; }
-@media (max-width:900px) {
-  .baseline-footer .lavagna-footer-title { left:calc(50% + 102px) !important; right:84px !important; font-size:16px !important; }
-}
-@media (max-width:760px) {
-  .baseline-footer .lavagna-footer-title { left:calc(50% + 92px) !important; right:78px !important; font-size:14px !important; }
-}
-
-/* Dark: tutte le icone operative hanno fondo grigio chiaro coerente. */
-.paper[data-paper-color="black"] .tool-button,
-.paper[data-paper-color="black"] .footer-icon-button:not(.recording),
-.paper[data-paper-color="black"] .quick-paper-button,
-.paper[data-paper-color="black"] .planner-mode-button {
-  background:#d9dcdf !important;
-  color:#232629 !important;
-  border-color:rgba(55,60,64,.30) !important;
-  box-shadow:0 1px 3px rgba(0,0,0,.14);
-}
-.paper[data-paper-color="black"] .tool-button.active,
-.paper[data-paper-color="black"] .quick-paper-button.selected,
-.paper[data-paper-color="black"] .planner-mode-button.selected {
-  background:#f0f1f2 !important;
-  color:#17191b !important;
-  border-color:rgba(55,60,64,.46) !important;
-}
-
-
-/* 0.1.16 — LESSON ARCHIVE UX.
-   Solo archivio/metadati: motore Ink, Lazo, backup e realtime restano invariati. */
-/* Archivio lezioni realmente scorrevole su iPad, con inerzia nativa. */
-.lesson-archive-card { display:flex; flex-direction:column; height:min(860px,92vh); max-height:92vh; }
-.lesson-archive-card .lesson-dialog-header { flex:0 0 auto; }
-.lesson-archive-body {
-  flex:1 1 auto; min-height:0; max-height:none !important; overflow-y:auto !important; overflow-x:hidden;
-  -webkit-overflow-scrolling:touch; overscroll-behavior:contain; touch-action:pan-y;
-}
-.lesson-archive-item { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:stretch; }
-.lesson-archive-delete {
-  min-width:78px; border:1px solid rgba(212,96,86,.45); border-radius:11px;
-  background:rgba(154,48,42,.18); color:#ffd4cf; padding:7px 10px; font-weight:800;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.lesson-archive-delete:active { background:rgba(181,61,52,.34); transform:translateY(1px); }
-.paper[data-paper-color="black"] ~ .lesson-archive-panel .lesson-archive-delete { background:rgba(175,63,55,.24); }
-@media (max-width:760px) {
-  .lesson-archive-card { height:calc(100vh - 28px); max-height:calc(100vh - 28px); }
-  .lesson-archive-item { grid-template-columns:minmax(0,1fr) 70px; gap:6px; }
-  .lesson-archive-delete { min-width:70px; padding:6px 7px; font-size:11px; }
-}
-
-/* Note: nomenclatura estesa, mantenendo la leggibilità H4 richiesta. */
-.lavagna-app .paper.lesson-note-view .lesson-note-label { white-space:nowrap; }
-
-/* Lavagne: data e denominazione in alto a sinistra circa 3× rispetto alla 0.1.15. */
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-date-label {
-  font-size:24px !important; line-height:1.02 !important; letter-spacing:.025em !important;
-}
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-display {
-  font-size:33px !important; line-height:1.04 !important; font-weight:780 !important;
-}
-/* Prima lavagna: anche i campi editabili devono restare chiaramente leggibili. */
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-editor select,
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-editor input {
-  height:36px; min-height:36px; font-size:18px; padding:3px 8px;
-}
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-header {
-  width:min(72%,880px); overflow:visible;
-}
-@media (max-width:760px) {
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-date-label { font-size:20px !important; }
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-display { font-size:28px !important; }
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-editor select,
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-editor input { height:34px; min-height:34px; font-size:16px; }
-}
-
-
-/* 0.1.17 — TOPIC XL.
-   Nuova lezione: il campo Argomento e' circa 3x piu alto del controllo standard.
-   Solo UI: nessuna modifica al motore Ink/Lazo/realtime/backup. */
-#lessonSetupTopic {
-  min-height:132px;
-  height:132px;
-  padding:20px 16px;
-  border-radius:14px;
-  font-size:22px;
-  line-height:1.25;
   -webkit-user-select:text;
   user-select:text;
 }
-
-
-/* 0.1.18 — ARCHIVE SCROLL + BUTTONS.
-   La riga e' informativa; Apri/Elimina sono controlli espliciti. */
-.lesson-archive-item {
-  display:grid;
-  grid-template-columns:minmax(0,1fr) auto;
-  gap:9px;
-  align-items:stretch;
+.password-vault-pin-grid input,
+.password-vault-pin-entry input {
+  font-size:25px;
 }
-.lesson-archive-row {
-  cursor:default;
-  user-select:none;
-  -webkit-user-select:none;
-  pointer-events:none;
-}
-.lesson-archive-row:active { background:rgba(255,255,255,.055); transform:none; }
-.lesson-archive-actions {
-  display:flex;
-  align-items:stretch;
-  gap:7px;
-  touch-action:pan-y;
-}
-.lesson-archive-open,
-.lesson-archive-delete {
-  min-width:78px;
-  border-radius:11px;
-  padding:7px 10px;
-  font-weight:800;
-  touch-action:pan-y;
+.password-vault-footer-button {
+  touch-action:manipulation;
   -webkit-tap-highlight-color:transparent;
 }
-.lesson-archive-open {
-  border:1px solid rgba(116,177,151,.55);
-  background:rgba(67,124,101,.28);
-  color:#e7fff3;
-}
-.lesson-archive-open:active { background:rgba(73,145,115,.42); transform:translateY(1px); }
-.lesson-archive-body {
-  overflow-y:scroll !important;
-  -webkit-overflow-scrolling:touch;
-  touch-action:pan-y !important;
-  overscroll-behavior-y:contain;
-  scrollbar-gutter:stable;
-}
-@media (max-width:760px) {
-  .lesson-archive-item { grid-template-columns:minmax(0,1fr) auto; gap:6px; }
-  .lesson-archive-actions { gap:5px; }
-  .lesson-archive-open,
-  .lesson-archive-delete { min-width:64px; padding:6px 7px; font-size:11px; }
-}
 
-
-/* 0.1.20 — STATIC LESSON META.
-   Materia e Argomento non sono più editabili direttamente sulle Lavagne. */
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-editor { display:none !important; }
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-display { display:flex !important; }
-
-/* 0.1.25 — BEAUTIFY. Solo UI; nessun impatto sul motore Ink. */
-.beautify-footer-button { color:#735b9c; }
-.beautify-footer-button.is-busy { animation:beautifyPulse .85s ease-in-out infinite alternate; }
-.beautify-footer-icon { width:26px; height:26px; overflow:visible; }
-@keyframes beautifyPulse { from { transform:scale(.94); opacity:.70; } to { transform:scale(1.06); opacity:1; } }
-.paper[data-paper-color="black"] .beautify-footer-button { background:#d9dcdf !important; color:#432d68 !important; }
-
-
-/* 0.1.24 — feedback Beautify immediato e non invasivo. */
-.beautify-feedback {
-  position:fixed;
-  left:50%;
-  bottom:78px;
-  transform:translate(-50%, 8px);
-  z-index:1200;
-  max-width:min(78vw, 680px);
-  padding:9px 15px;
-  border-radius:16px;
-  background:rgba(32,35,39,.94);
-  border:1px solid rgba(255,255,255,.22);
-  color:#f6f6f3;
-  font:600 15px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  text-align:center;
-  box-shadow:0 8px 28px rgba(0,0,0,.28);
-  opacity:0;
-  pointer-events:none;
-  transition:opacity .12s ease, transform .12s ease;
+/* 0.1.101 — Rubrica manoscritta A-Z */
+.password-vault-panel {
+  place-items:stretch;
+  padding:max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  background:rgba(31,28,24,.20);
 }
-.beautify-feedback.is-visible { opacity:1; transform:translate(-50%, 0); }
-.beautify-feedback[data-state="ok"] { background:rgba(40,100,67,.96); }
-.beautify-feedback[data-state="error"] { background:rgba(124,52,52,.96); }
-.beautify-feedback[data-state="info"] { background:rgba(54,63,78,.96); }
-.beautify-footer-button[data-beautify-state="busy"] { outline:2px solid rgba(242,204,90,.78); outline-offset:2px; }
-
-/* 0.1.25 — conferma visiva immediata del comando Beautify. */
-.beautify-footer-button[data-beautify-state="busy"] { box-shadow:0 0 0 3px rgba(242,204,90,.38), 0 0 18px rgba(242,204,90,.32); }
-.beautify-feedback { min-width:220px; }
-
-/* 0.1.26 — BEAUTIFY HIT TARGET HARDENING.
-   Il titolo calligrafico non deve più creare una fascia trasparente sopra Beautify.
-   Footer-actions e Beautify restano sempre sopra al titolo nella hit-test tree. */
-.baseline-footer .lavagna-footer-title {
-  left:calc(75% - 20px) !important;
-  right:auto !important;
-  width:max-content !important;
-  max-width:min(220px, 20vw) !important;
-  padding:2px 5px !important;
-  transform:translate(-50%,-50%) !important;
-  z-index:3 !important;
-}
-.baseline-footer .footer-actions {
-  z-index:8 !important;
-  isolation:isolate;
-}
-.baseline-footer .beautify-footer-button {
-  position:relative;
-  z-index:10 !important;
-  pointer-events:auto !important;
-  touch-action:manipulation !important;
-}
-@media (max-width:900px) {
-  .baseline-footer .lavagna-footer-title {
-    left:calc(75% - 18px) !important;
-    right:auto !important;
-    max-width:min(190px, 20vw) !important;
-  }
-}
-@media (max-width:760px) {
-  .baseline-footer .lavagna-footer-title {
-    left:calc(75% - 16px) !important;
-    right:auto !important;
-    max-width:min(160px, 20vw) !important;
-  }
-}
-
-/* 0.1.29 — pagine Note: carta gialla a quadretti, solo presentazione. */
-.paper[data-paper-color="yellow"] { background-color:#fff2a8; }
-.lesson-board-progress::before,
-.board-progress::before { content:"Pagina "; }
-
-
-/* 0.1.30 — HOME LEZIONE. Solo UI/navigazione: nessuna modifica alla pipeline Ink. */
-.lesson-start-card { width:min(860px,97vw); }
-.lesson-start-tabs {
-  display:grid; grid-template-columns:1.08fr .92fr 1.08fr; gap:8px; padding:12px 14px;
-  border-bottom:1px solid rgba(255,255,255,.10); background:rgba(0,0,0,.12);
-}
-.lesson-start-tab {
-  min-height:48px; border:1px solid rgba(255,255,255,.15); border-radius:12px;
-  background:rgba(255,255,255,.07); color:#f3efe6; padding:8px 11px;
-  font:760 13px/1.15 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
-  touch-action:manipulation;
-}
-.lesson-start-tab.selected { background:#477c68; border-color:#76a894; box-shadow:inset 0 -2px 0 rgba(255,255,255,.09); }
-.lesson-start-resume { background:rgba(104,142,190,.18); border-color:rgba(133,171,219,.42); }
-.lesson-start-resume:disabled { opacity:.38; }
-.lesson-start-panel[hidden] { display:none !important; }
-.lesson-start-open-panel { min-height:220px; }
-.lesson-start-archive-body { max-height:min(58vh,560px); }
-.lesson-setup-field { display:grid; gap:7px; }
-.lesson-setup-field-label { font-size:11px; font-weight:750; color:rgba(243,239,230,.72); }
-.lesson-subject-picker {
-  display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px;
-  max-height:230px; overflow:auto; overscroll-behavior:contain; padding:2px;
-}
-.lesson-subject-choice {
-  min-height:44px; border:1px solid rgba(255,255,255,.15); border-radius:11px;
-  background:rgba(255,255,255,.07); color:#f5f3eb; padding:8px 10px; text-align:left;
-  font:730 13px/1.15 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
-  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
-}
-.lesson-subject-choice.selected { background:#d6b861; color:#252015; border-color:#f0d88d; box-shadow:0 0 0 2px rgba(240,216,141,.20); }
-
-/* Barra titolo: stesso fondo della pagina lezione. */
-.lavagna-app .paper[data-paper-color="yellow"]:not(.planner-timetable) .page-header { background:#fff2a8 !important; border-bottom-color:rgba(92,77,54,.18) !important; }
-.lavagna-app .paper[data-paper-color="white"]:not(.planner-timetable) .page-header { background:#fbfaf6 !important; border-bottom-color:rgba(92,77,54,.15) !important; }
-.lavagna-app .paper[data-paper-color="black"]:not(.planner-timetable) .page-header { background:#25282a !important; border-bottom-color:rgba(255,255,255,.10) !important; }
-.lavagna-app .paper[data-paper-color="yellow"] .lesson-header,
-.lavagna-app .paper[data-paper-color="white"] .lesson-header { color:#3f382e !important; }
-.lavagna-app .paper[data-paper-color="yellow"] .lesson-topic-label,
-.lavagna-app .paper[data-paper-color="white"] .lesson-topic-label { color:rgba(63,56,46,.82) !important; }
-.lavagna-app .paper[data-paper-color="yellow"] .lesson-date-label,
-.lavagna-app .paper[data-paper-color="white"] .lesson-date-label { color:rgba(75,61,42,.76) !important; }
-
-/* Data della lezione: serif elegante ma leggibile, coerente con l'impostazione tipografica del footer. */
-.lavagna-app .lesson-date-label,
-#lessonSetupDate {
-  font-family:"Snell Roundhand","Apple Chancery","Segoe Script","Brush Script MT",cursive !important;
-  font-weight:600 !important; font-style:normal !important; letter-spacing:.02em !important;
-}
-.lavagna-app .lesson-date-label { font-size:13px !important; line-height:1.05 !important; }
-
-/* Chiusura lezione a destra di Nuova lezione; Archivio traslato di uno slot. */
-.close-lesson-footer-button {
-  position:absolute; left:calc(50% + 80px); top:50%; transform:translate(-50%,-50%);
-  width:36px; height:36px; border-radius:50%; padding:4px;
-}
-.close-lesson-footer-button[hidden] { display:none !important; }
-.close-lesson-footer-button:active { transform:translate(-50%,calc(-50% + 1px)); }
-.close-lesson-icon { width:28px; height:28px; }
-.archive-center-button { left:calc(50% + 123px) !important; }
-.paper[data-paper-color="black"] .close-lesson-footer-button { background:#d7dade; border-color:rgba(255,255,255,.28); }
-
-@media (max-width:760px) {
-  .lesson-start-tabs { grid-template-columns:1fr; gap:6px; padding:9px 10px; }
-  .lesson-start-tab { min-height:42px; }
-  .lesson-subject-picker { grid-template-columns:repeat(2,minmax(0,1fr)); max-height:210px; }
-  .close-lesson-footer-button { left:calc(50% + 70px); width:32px; height:32px; }
-  .archive-center-button { left:calc(50% + 103px) !important; }
-  .lavagna-app .lesson-date-label { font-size:11px !important; }
-}
-
-.lesson-start-archive-body .lesson-archive-delete { display:none !important; }
-
-/* 0.1.32 — UPDATE NON DISTRUTTIVO + NUOVA MATERIA + STARTUP COERENTE.
-   Solo UI/storage contract: nessuna regola entra nel percorso Ink. */
-:root { --note-lesson-bg:#fff2a8; }
-html, body { background:var(--note-lesson-bg); }
-.startup-overlay { background:var(--note-lesson-bg) !important; }
-.lesson-setup-panel {
-  background:var(--note-lesson-bg) !important;
-  -webkit-backdrop-filter:none !important;
-  backdrop-filter:none !important;
-}
-.lesson-start-card {
-  background:var(--note-lesson-bg) !important;
-  color:#3f382e !important;
-  border-color:rgba(92,77,54,.24) !important;
-  box-shadow:0 24px 60px rgba(92,77,54,.18) !important;
-}
-.lesson-start-card .lesson-dialog-header { border-bottom-color:rgba(92,77,54,.18); }
-.lesson-start-card .lesson-dialog-header h2 { color:#3f382e; }
-.lesson-start-card .lesson-dialog-header p { color:rgba(75,61,42,.72); }
-.lesson-start-card .lesson-dialog-header > button { background:rgba(255,255,255,.42); color:#4a4034; }
-.lesson-start-card .lesson-start-tabs { background:rgba(255,255,255,.20); border-bottom-color:rgba(92,77,54,.16); }
-.lesson-start-card .lesson-start-tab {
-  background:rgba(255,255,255,.38); color:#4a4034; border-color:rgba(92,77,54,.20);
-}
-.lesson-start-card .lesson-start-tab.selected { background:#cfe8d2; color:#24442d; border-color:#8bb797; box-shadow:inset 0 -2px 0 rgba(43,93,58,.10); }
-.lesson-start-card .lesson-start-resume { background:rgba(207,222,239,.62); border-color:rgba(111,143,180,.28); }
-.lesson-start-card .lesson-setup-field-label,
-.lesson-start-card .lesson-dialog-body label > span { color:rgba(63,56,46,.78); }
-.lesson-start-card .lesson-dialog-body input {
-  background:rgba(255,255,255,.62); color:#352f28; border-color:rgba(92,77,54,.22); color-scheme:light;
-}
-.lesson-start-card .lesson-dialog-body input::placeholder { color:rgba(63,56,46,.48); }
-.lesson-start-card .lesson-dialog-actions button.primary { background:#477c68; color:white; border-color:#62927f; }
-.lesson-start-card .lesson-dialog-status { color:#8c3f34; }
-.lesson-start-card .lesson-archive-group h3 { color:#705b26; }
-.lesson-start-card .lesson-archive-row {
-  background:rgba(255,255,255,.42); color:#3f382e; border-color:rgba(92,77,54,.15);
-}
-.lesson-start-card .lesson-archive-row:active { background:rgba(255,255,255,.65); }
-.lesson-start-card .lesson-archive-date,
-.lesson-start-card .lesson-archive-pages { color:rgba(63,56,46,.62); }
-.lesson-start-card .lesson-archive-open { background:#477c68; color:white; border-color:#62927f; }
-.lesson-start-card .lesson-archive-empty { color:rgba(63,56,46,.62); }
-
-/* Il contenitore Nuova materia occupa la prima riga; l'espansione non sposta
-   i pulsanti in modo imprevedibile e resta comoda per dito/Pencil. */
-.lesson-new-subject-wrap { grid-column:1 / -1; display:grid; gap:8px; }
-.lesson-new-subject-choice { width:min(240px,100%); }
-.lesson-new-subject-choice.selected {
-  background:#cfeecf !important; color:#204b2c !important; border-color:#86bd91 !important;
-  box-shadow:0 0 0 2px rgba(79,139,94,.14) !important;
-}
-.lesson-new-subject-creator {
-  display:grid; gap:6px; padding:10px; border:1px solid rgba(72,116,82,.24); border-radius:12px;
-  background:rgba(255,255,255,.42);
-}
-.lesson-new-subject-creator[hidden] { display:none !important; }
-.lesson-new-subject-creator > label { font-size:11px; font-weight:760; color:#40503f; }
-.lesson-new-subject-entry { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
-.lesson-new-subject-entry input {
-  min-height:46px; width:100%; border-radius:10px; border:1px solid rgba(72,116,82,.30);
-  background:rgba(255,255,255,.76); color:#302b25; padding:9px 11px; font-size:16px;
-  -webkit-user-select:text; user-select:text;
-}
-.lesson-new-subject-entry button {
-  min-width:92px; min-height:46px; border:1px solid #74a77e; border-radius:10px;
-  background:#477c68; color:#fff; font-weight:760; touch-action:manipulation;
-}
-.lesson-new-subject-creator small { color:rgba(63,56,46,.62); font-size:10px; }
-.lesson-start-card .lesson-subject-choice {
-  background:rgba(255,255,255,.46); color:#3f382e; border-color:rgba(92,77,54,.18);
-}
-.lesson-start-card .lesson-subject-choice.selected:not(.lesson-new-subject-choice) {
-  background:#e6d28a; color:#3c331d; border-color:#c7ad50; box-shadow:0 0 0 2px rgba(155,125,36,.12);
-}
-
-@media (max-width:760px) {
-  .lesson-new-subject-choice { width:100%; }
-  .lesson-new-subject-entry { grid-template-columns:1fr; }
-  .lesson-new-subject-entry button { width:100%; }
-}
-
-
-/* 0.1.32 — FINESTRE COERENTI CON IMPOSTAZIONI SU CARTA GIALLA.
-   Solo presentazione UI: nessuna regola coinvolge canvas, pointer events o Ink. */
-:root {
-  --note-settings-surface:#f7f1e4;
-  --note-settings-header:#ede3cf;
-  --note-settings-ink:#473d32;
-  --note-settings-border:rgba(80,65,45,.20);
-}
-html[data-note-ui-tone="yellow"] .report-card,
-html[data-note-ui-tone="yellow"] .lesson-dialog-card,
-html[data-note-ui-tone="yellow"] .lesson-archive-card,
-html[data-note-ui-tone="yellow"] .lesson-start-card,
-html[data-note-ui-tone="yellow"] .saint-detail-card,
-html[data-note-ui-tone="yellow"] .history-detail-card,
-html[data-note-ui-tone="yellow"] .weekly-timetable-card,
-html[data-note-ui-tone="yellow"] .weather-detail-card,
-html[data-note-ui-tone="yellow"] .audio-library-card,
-html[data-note-ui-tone="yellow"] .image-crop-dialog,
-html[data-note-ui-tone="yellow"] .style-panel,
-html[data-note-ui-tone="yellow"] .audio-panel,
-html[data-note-ui-tone="yellow"] .shape-palette,
-html[data-note-ui-tone="yellow"] .image-inspector,
-html[data-note-ui-tone="yellow"] .lasso-inspector {
-  background:var(--note-settings-surface) !important;
-  color:var(--note-settings-ink) !important;
-  border-color:var(--note-settings-border) !important;
-  color-scheme:light !important;
-}
-html[data-note-ui-tone="yellow"] .lesson-dialog-header,
-html[data-note-ui-tone="yellow"] .saint-detail-header,
-html[data-note-ui-tone="yellow"] .history-detail-header,
-html[data-note-ui-tone="yellow"] .weekly-timetable-header,
-html[data-note-ui-tone="yellow"] .weather-detail-header,
-html[data-note-ui-tone="yellow"] .audio-library-header {
-  background:var(--note-settings-header) !important;
-  color:var(--note-settings-ink) !important;
-  border-bottom-color:rgba(82,68,49,.15) !important;
-}
-html[data-note-ui-tone="yellow"] .lesson-dialog-header h2,
-html[data-note-ui-tone="yellow"] .lesson-dialog-header p,
-html[data-note-ui-tone="yellow"] .lesson-dialog-body label > span,
-html[data-note-ui-tone="yellow"] .lesson-setup-field-label,
-html[data-note-ui-tone="yellow"] .lesson-archive-date,
-html[data-note-ui-tone="yellow"] .lesson-archive-pages,
-html[data-note-ui-tone="yellow"] .lesson-archive-empty {
-  color:var(--note-settings-ink) !important;
-}
-html[data-note-ui-tone="yellow"] .lesson-dialog-body input,
-html[data-note-ui-tone="yellow"] .lesson-dialog-body textarea,
-html[data-note-ui-tone="yellow"] .lesson-dialog-body select,
-html[data-note-ui-tone="yellow"] .lesson-subject-add-row input,
-html[data-note-ui-tone="yellow"] .audio-library-row,
-html[data-note-ui-tone="yellow"] .lesson-archive-row {
-  background:rgba(255,255,255,.62) !important;
-  color:#352f28 !important;
-  border-color:rgba(92,77,54,.20) !important;
-  color-scheme:light !important;
-}
-html[data-note-ui-tone="yellow"] .lesson-start-card .lesson-start-tabs {
-  background:var(--note-settings-header) !important;
-}
-html[data-note-ui-tone="yellow"] .lesson-setup-panel,
-html[data-note-ui-tone="yellow"] .lesson-archive-panel,
-html[data-note-ui-tone="yellow"] .report-panel,
-html[data-note-ui-tone="yellow"] .saint-detail-panel,
-html[data-note-ui-tone="yellow"] .history-detail-panel,
-html[data-note-ui-tone="yellow"] .weekly-timetable-panel,
-html[data-note-ui-tone="yellow"] .weather-detail-panel,
-html[data-note-ui-tone="yellow"] .audio-library-panel,
-html[data-note-ui-tone="yellow"] .image-crop-overlay {
-  background:rgba(255,242,168,.72) !important;
-}
-
-/* Tutti i campi che accettano testo hanno dimensioni/touch target coerenti con
-   l'uso della tastiera iPad completa. Non cambia il tipo dei campi numerici reali. */
-.expanded-keyboard-input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]) {
-  min-height:44px;
-  font-size:max(16px,1em);
-  -webkit-user-select:text;
-  user-select:text;
-}
-
-/* 0.1.33 — ALTEZZA UNIFORME CAMPI NUOVA LEZIONE.
-   Nome nuova materia e Argomento hanno la stessa altezza visiva.
-   Solo CSS: nessuna modifica a Ink, gesture, persistenza o sync. */
-.lesson-start-card {
-  --lesson-start-text-field-height: 90px;
-}
-#lessonSetupTopic,
-#lessonSetupNewSubjectInput {
-  box-sizing: border-box;
-  min-height: var(--lesson-start-text-field-height) !important;
-  height: var(--lesson-start-text-field-height) !important;
-}
-#lessonSetupNewSubjectInput {
-  padding: 14px 12px;
-}
-
-/* 0.1.34 — CONTINUOUS LESSON CORE
-   Una lezione viene presentata come un solo foglio verticale continuo fra header e footer.
-   I segmenti restano un dettaglio di virtualizzazione: un solo canvas Ink ad alta risoluzione è attivo. */
-.ink-surface {
-  position:absolute;
-  inset:0;
-  z-index:2;
-  pointer-events:none;
-  overflow:visible;
-}
-.ink-surface > #inkCanvas { pointer-events:auto; }
-.paper.image-edit-mode .ink-surface > #inkCanvas { pointer-events:none; }
-
-.lesson-continuous-viewport {
-  position:absolute;
-  left:0;
-  right:0;
-  top:var(--header-h);
-  bottom:var(--footer-h);
-  z-index:1;
-  overflow-y:auto;
-  overflow-x:hidden;
-  overscroll-behavior-y:contain;
-  -webkit-overflow-scrolling:touch;
-  scrollbar-width:none;
-  touch-action:none;
-  background:transparent;
-}
-.lesson-continuous-viewport::-webkit-scrollbar { display:none; width:0; height:0; }
-.lesson-continuous-track {
+.password-vault-notebook-card {
   position:relative;
   width:100%;
-  min-height:100%;
-  background-color:transparent;
-  background-repeat:repeat;
-  background-attachment:local;
+  height:100%;
+  max-width:none;
+  max-height:none;
+  min-width:0;
+  min-height:0;
+  padding:0;
+  gap:0;
+  border-radius:16px;
+  overflow:hidden;
+  background:#fbf7ed;
+  border:1px solid rgba(98,77,50,.22);
+  box-shadow:0 18px 60px rgba(46,37,25,.24);
 }
-.paper.continuous-lesson-mode::before { display:none !important; }
-.paper.continuous-lesson-mode .hours { display:none !important; }
-.paper.continuous-lesson-mode .lesson-board-progress { display:none !important; }
-.paper.continuous-lesson-mode .page-kind-label,
-.paper.continuous-lesson-mode .note-counter { display:none !important; }
-.paper.continuous-lesson-mode .lesson-continuous-viewport { display:block; }
-.paper.continuous-lesson-mode[data-page-template="grid"] .lesson-continuous-track {
-  background-image:
-    repeating-linear-gradient(to right, transparent 0, transparent 35px, var(--line) 36px, transparent 37px),
-    repeating-linear-gradient(to bottom, transparent 0, transparent 35px, var(--line) 36px, transparent 37px);
+.password-vault-notebook-head {
+  flex:0 0 54px;
+  min-height:54px;
+  padding:0 14px 0 22px;
+  border-bottom:1px solid rgba(98,77,50,.20);
+  background:#f4eddf;
 }
-.paper.continuous-lesson-mode[data-page-template="ruled"] .lesson-continuous-track {
-  background-image:repeating-linear-gradient(to bottom, transparent 0, transparent 35px, var(--line) 36px, transparent 37px);
+.password-vault-notebook-head h2 {
+  margin:0;
+  font-family:Georgia, 'Times New Roman', serif;
+  font-size:25px;
+  font-weight:700;
+  color:#42382d;
 }
-.paper.continuous-lesson-mode[data-page-template="millimeter"] .lesson-continuous-track {
-  background-image:
-    repeating-linear-gradient(to right, transparent 0, transparent 8px, color-mix(in srgb, var(--line) 72%, transparent) 9px, transparent 10px),
-    repeating-linear-gradient(to bottom, transparent 0, transparent 8px, color-mix(in srgb, var(--line) 72%, transparent) 9px, transparent 10px),
-    repeating-linear-gradient(to right, transparent 0, transparent 44px, var(--line) 45px, transparent 46px),
-    repeating-linear-gradient(to bottom, transparent 0, transparent 44px, var(--line) 45px, transparent 46px);
+.password-vault-notebook-head .password-vault-head-actions {
+  margin-left:auto;
 }
-.paper.continuous-lesson-mode[data-page-template="blank"] .lesson-continuous-track { background-image:none; }
-
-.continuous-segment-slot {
+.password-vault-notebook-head .password-vault-head-actions button {
+  width:38px;
+  height:38px;
+  min-width:38px;
+  padding:0;
+  display:grid;
+  place-items:center;
+  border-radius:50%;
+  font-size:18px;
+}
+#passwordVaultCloseButton { font-size:25px; }
+.password-vault-toast {
   position:absolute;
-  left:0;
-  right:0;
-  overflow:visible;
-  contain:layout style;
+  z-index:6;
+  left:50%;
+  top:66px;
+  transform:translateX(-50%) translateY(-5px);
+  width:auto;
+  max-width:min(620px,80vw);
+  min-height:0;
+  margin:0;
+  padding:7px 12px;
+  opacity:0;
+  pointer-events:none;
+  white-space:normal;
+  text-align:center;
+  transition:opacity .15s ease, transform .15s ease;
+  box-shadow:0 5px 18px rgba(42,34,24,.10);
 }
-.continuous-segment-slot.is-active { z-index:3; }
-.continuous-segment-slot:not(.is-active) { z-index:1; }
-.continuous-static-canvas,
-.continuous-static-images {
+.password-vault-toast.visible {
+  opacity:1;
+  transform:translateX(-50%) translateY(0);
+}
+.password-vault-auth-page {
+  width:min(520px, calc(100% - 36px));
+  max-width:520px;
+  margin:auto;
+  padding:28px 30px 30px;
+  box-sizing:border-box;
+  border-radius:14px;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(102,137,164,.20) 32px, transparent 33px),
+    #fffdf7;
+  border:1px solid rgba(99,77,50,.16);
+  box-shadow:0 10px 26px rgba(55,44,30,.08);
+}
+.password-vault-auth-page h3 { color:#42382d; }
+.password-vault-notebook {
+  position:relative;
+  flex:1 1 auto;
+  min-width:0;
+  min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) clamp(34px,4.2vw,46px);
+  grid-template-rows:auto minmax(0,1fr);
+  gap:0;
+  overflow:hidden;
+  background:#fffdf7;
+}
+.password-vault-toolbar {
+  grid-column:1 / -1;
+  grid-row:1;
+  position:relative;
+  inset:auto;
+  z-index:8;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0;
+  min-height:50px;
+  padding:4px 8px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-width:none;
+  border:0;
+  border-bottom:1px solid rgba(86,72,53,.18);
+  border-radius:0;
+  background:rgba(249,242,225,.97);
+  box-shadow:none;
+  -webkit-overflow-scrolling:touch;
+}
+.password-vault-toolbar::-webkit-scrollbar { display:none; }
+.password-vault-toolbar .tool-button { flex:0 0 auto; touch-action:manipulation; }
+.password-vault-tool-popover {
+  position:absolute;
+  z-index:12;
+  top:54px;
+  left:10px;
+  right:calc(clamp(34px,4.2vw,46px) + 10px);
+  max-height:46%;
+  overflow:auto;
+  padding:8px;
+  border:1px solid rgba(89,70,47,.22);
+  border-radius:12px;
+  background:rgba(255,253,247,.98);
+  box-shadow:0 10px 28px rgba(47,36,24,.18);
+}
+.password-vault-tool-popover[hidden],
+.password-vault-shape-palette[hidden],
+.password-vault-style-palette[hidden] { display:none !important; }
+.password-vault-shape-palette { display:grid; grid-template-columns:repeat(auto-fit,minmax(116px,1fr)); gap:6px; }
+.password-vault-shape-palette button,
+.password-vault-style-widths button {
+  min-height:34px;
+  border:1px solid rgba(83,66,46,.18);
+  border-radius:8px;
+  background:#faf4e8;
+  color:#514536;
+  font-weight:700;
+  touch-action:manipulation;
+}
+.password-vault-shape-palette button.active { background:#e4d3bc; border-color:#9b7650; }
+.password-vault-style-title { margin:2px 0 6px; color:#5b4c3a; font-size:12px; font-weight:800; }
+.password-vault-style-colors { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }
+.password-vault-style-colors .color-swatch { width:30px; height:30px; min-width:30px; border-radius:50%; }
+.password-vault-style-widths { display:flex; flex-wrap:wrap; gap:6px; }
+.password-vault-style-widths button { min-width:46px; padding:5px 9px; }
+.password-vault-page {
+  grid-column:1;
+  grid-row:2;
+  position:relative;
+  min-width:0;
+  min-height:0;
+  overflow:hidden;
+  background:
+    linear-gradient(to right, transparent 0, transparent 54px, rgba(210,98,88,.20) 55px, transparent 56px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(92,132,164,.22) 32px, transparent 33px),
+    #fffdf7;
+}
+.password-vault-canvas {
   position:absolute;
   inset:0;
   width:100%;
   height:100%;
-  pointer-events:none !important;
-}
-.continuous-static-canvas { z-index:1; }
-.continuous-static-images {
-  z-index:0;
-  overflow:hidden;
+  display:block;
   touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+  cursor:crosshair;
 }
-.continuous-static-images .image-object { pointer-events:none !important; }
-.continuous-active-surface {
-  position:absolute;
-  inset:0;
+.password-vault-tabs {
+  grid-column:2;
+  grid-row:2;
+  position:relative;
   z-index:4;
-  overflow:visible;
+  min-height:0;
+  display:grid;
+  grid-template-rows:repeat(26, minmax(0,1fr));
+  align-items:stretch;
+  border-left:1px solid rgba(92,71,47,.20);
+  background:#efe4d1;
+  overflow:hidden;
 }
-.continuous-active-surface .image-layer,
-.continuous-active-surface .lasso-input-shield {
-  top:0 !important;
-  bottom:0 !important;
+.password-vault-tabs button {
+  appearance:none;
+  width:100%;
+  min-width:0;
+  min-height:0;
+  padding:0;
+  border:0;
+  border-bottom:1px solid rgba(90,70,48,.14);
+  border-radius:0;
+  background:#f3ead9;
+  color:#544738;
+  font:700 clamp(9px,1.25vh,13px)/1 Georgia, serif;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
 }
-.continuous-active-surface .image-layer { overflow:hidden; }
-.continuous-active-surface #inkCanvas,
-.continuous-active-surface .lasso-overlay,
-.continuous-active-surface .shape-overlay,
-.continuous-active-surface .voice-script-overlay {
-  inset:0 !important;
-  width:100% !important;
-  height:100% !important;
+.password-vault-tabs button:nth-child(4n+2) { background:#eee1cd; }
+.password-vault-tabs button:nth-child(4n+3) { background:#f6edde; }
+.password-vault-tabs button:nth-child(4n+4) { background:#eadbc4; }
+.password-vault-tabs button.active {
+  position:relative;
+  z-index:2;
+  background:#d7bea0;
+  color:#2f2821;
+  box-shadow:inset 4px 0 0 #8e6747;
+  font-weight:800;
 }
-.paper.continuous-lesson-mode .page-header,
-.paper.continuous-lesson-mode .baseline-footer,
-.paper.continuous-lesson-mode .quick-toolbar,
-.paper.continuous-lesson-mode .image-inspector,
-.paper.continuous-lesson-mode .style-panel,
-.paper.continuous-lesson-mode .shape-palette,
-.paper.continuous-lesson-mode .lasso-inspector { position:absolute; }
+.password-vault-page-tools {
+  position:absolute;
+  z-index:5;
+  left:12px;
+  bottom:10px;
+  display:flex;
+  gap:8px;
+  pointer-events:auto;
+}
+.password-vault-page-tools button,
+.password-vault-biometric-setup {
+  appearance:none;
+  border:1px solid rgba(79,64,47,.20);
+  background:rgba(255,253,247,.88);
+  color:#4b4034;
+  border-radius:10px;
+  min-width:42px;
+  min-height:38px;
+  padding:6px 10px;
+  font-weight:700;
+  touch-action:manipulation;
+  box-shadow:0 3px 10px rgba(49,38,25,.08);
+}
+.password-vault-biometric-setup {
+  position:absolute;
+  z-index:6;
+  right:calc(clamp(34px,4.2vw,46px) + 12px);
+  bottom:10px;
+  font-size:12px;
+}
+.password-vault-biometric-setup[hidden] { display:none !important; }
+.password-vault-panel input { font-size:16px; }
+.password-vault-pin-grid input,
+.password-vault-pin-entry input { font-size:25px; }
+@media (max-height:700px) {
+  .password-vault-notebook-head { flex-basis:48px; min-height:48px; }
+  .password-vault-notebook-head h2 { font-size:22px; }
+  .password-vault-tabs button { font-size:9px; }
+  .password-vault-page { background:
+    linear-gradient(to right, transparent 0, transparent 48px, rgba(210,98,88,.20) 49px, transparent 50px),
+    repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(92,132,164,.22) 28px, transparent 29px),
+    #fffdf7; }
+}
 
-/* La barra titolo segue rigorosamente il colore del foglio continuo. */
-.paper.continuous-lesson-mode[data-paper-color="yellow"] .page-header { background:#f3e8cd !important; }
-.paper.continuous-lesson-mode[data-paper-color="white"] .page-header { background:#fbfaf6 !important; }
-.paper.continuous-lesson-mode[data-paper-color="black"] .page-header { background:#25282a !important; }
 
-/* 0.1.34 — viewport strumenti continuo.
-   Durante Lazo/Immagini i tile statici vengono temporaneamente nascosti e la
-   composizione visibile è resa sul layer interattivo unico. Nessun confine tecnico è esposto. */
-.paper.continuous-lesson-mode.continuous-tool-preview .continuous-segment-slot > .continuous-static-canvas,
-.paper.continuous-lesson-mode.continuous-tool-preview .continuous-segment-slot > .continuous-static-images {
-  visibility:hidden !important;
+/* 0.1.101 — Copertina, crediti full-screen e accesso Note libere. */
+.cover-card { overflow:hidden; }
+/* L'anno e' incorporato nell'immagine storica: lo copriamo con una placchetta decorativa,
+   senza modificare il file sorgente della copertina. */
+.cover-card::after {
+  content:"";
+  position:absolute;
+  left:38.5%;
+  width:23%;
+  height:3.7%;
+  bottom:4%;
+  border-radius:999px;
+  background:
+    radial-gradient(circle at 50% 45%, rgba(224,153,77,.16), transparent 56%),
+    linear-gradient(180deg,#a63f3d 0%,#8f302f 100%);
+  box-shadow:inset 0 0 0 1px rgba(229,173,86,.34);
+  pointer-events:none;
 }
-/* 0.1.40 — one visible image layer, including the transition on reopening. */
-.paper.continuous-lesson-mode.continuous-eraser-preview .continuous-segment-slot > .continuous-static-canvas {
-  visibility:hidden !important;
+/* 0.1.101-fix2 — la copertina segue sempre l’orientamento naturale del dispositivo.
+   Nessuna rotazione aggiuntiva in landscape: evita il capovolgimento di 180° su iPad. */
+
+.credits-screen img,
+.info-credits-screen img {
+  width:100vw !important;
+  height:100dvh !important;
+  max-width:none !important;
+  max-height:none !important;
+  object-fit:contain !important;
+  object-position:center center;
 }
-.paper.continuous-lesson-mode:not(.continuous-tool-preview) .image-layer {
-  visibility:hidden !important;
-  pointer-events:none !important;
+.info-credits-overlay { padding:0 !important; }
+.info-credits-screen { width:100vw; height:100dvh; overflow:hidden; }
+
+.free-notes-footer-button { color:#6d8db1; }
+.free-notes-icon { width:28px; height:28px; overflow:visible; }
+.free-notes-footer-button[aria-pressed="true"] {
+  background:rgba(91,128,170,.16);
+  box-shadow:inset 0 0 0 1px rgba(91,128,170,.22);
 }
-.paper.continuous-lesson-mode .continuous-static-images,
-.paper.continuous-lesson-mode .image-layer {
-  overflow:visible;
+.paper[data-paper-color="black"] .free-notes-footer-button { color:#a9c8ef; }
+.paper[data-paper-color="black"] .free-notes-footer-button[aria-pressed="true"] { background:rgba(169,200,239,.15); }
+
+/* Note libere: pagina manoscritta indipendente dalla data, senza scala oraria. */
+.paper.free-note-view .hours { display:none !important; }
+.paper.free-note-view .weather-badge,
+.paper.free-note-view .date-block { display:none !important; }
+.paper.free-note-view .page-header {
+  justify-content:center;
+  align-items:center;
+}
+.paper.free-note-view .page-kind-label {
+  position:relative !important;
+  top:8px;
+  margin:0;
+  min-height:0;
+  font-family:Georgia, "Times New Roman", serif;
+  font-size:clamp(20px,2.2vw,28px);
+  letter-spacing:.03em;
+  color:rgba(67,55,43,.88);
+  text-transform:none;
+}
+.paper.free-note-view .page-meta {
+  position:absolute;
+  right:18px;
+  top:50%;
+  transform:translateY(-50%);
+  min-width:0;
+}
+.paper.free-note-view .note-counter {
+  font-size:clamp(13px,1.45vw,17px);
+  color:rgba(88,72,55,.62);
+}
+.paper.free-note-view .planner-mode-bar,
+.paper.free-note-view .planner-layer { display:none !important; }
+.paper[data-paper-color="black"].free-note-view .page-kind-label,
+.paper[data-paper-color="black"].free-note-view .note-counter { color:rgba(255,255,255,.82); }
+
+/* 0.1.101 — Note libere: titolo più grande e corsivo elegante. */
+.paper.free-note-view .page-kind-label {
+  font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+  font-size:clamp(30px,4.1vw,46px);
+  font-weight:600;
+  letter-spacing:.015em;
+  line-height:1;
 }
 
-/* 0.1.42 — RIGHELLO / GONIOMETRO / SQUADRE
-   Overlay puramente grafico: pointer-events:none, quindi Apple Pencil raggiunge
-   sempre il canvas Ink. Il dito viene intercettato geometricamente da main.js.
-   Le estremità ruotano; la zona centrale trasla. */
+/* 0.1.101 — Rubrica sullo stesso motore pagina di Note/Agenda. */
+.rubrica-tabs[hidden] { display:none !important; }
+.rubrica-tabs {
+  position:absolute;
+  z-index:36;
+  top:52px;
+  right:0;
+  bottom:46px;
+  width:clamp(34px,4.1vw,44px);
+  display:grid;
+  grid-template-rows:repeat(26,minmax(0,1fr));
+  overflow:hidden;
+  border-left:1px solid rgba(91,70,48,.22);
+  background:#efe4d1;
+  box-shadow:-2px 0 7px rgba(55,43,29,.08);
+}
+.rubrica-tabs button {
+  appearance:none;
+  width:100%;
+  min-width:0;
+  min-height:0;
+  margin:0;
+  padding:0;
+  border:0;
+  border-bottom:1px solid rgba(90,70,48,.14);
+  border-radius:0;
+  background:#f3ead9;
+  color:#544738;
+  font:700 clamp(9px,1.2vh,13px)/1 Georgia,serif;
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+}
+.rubrica-tabs button:nth-child(4n+2) { background:#eee1cd; }
+.rubrica-tabs button:nth-child(4n+3) { background:#f6edde; }
+.rubrica-tabs button:nth-child(4n+4) { background:#eadbc4; }
+.rubrica-tabs button.active {
+  background:#d7bea0;
+  color:#2f2821;
+  box-shadow:inset 4px 0 0 #8e6747;
+  font-weight:800;
+}
+.paper.rubrica-view .hours,
+.paper.rubrica-view .weather-badge,
+.paper.rubrica-view .date-block,
+.paper.rubrica-view .planner-mode-bar,
+.paper.rubrica-view .planner-layer { display:none !important; }
+.paper.rubrica-view .page-header {
+  justify-content:center;
+  align-items:center;
+  padding-left:52px !important;
+  padding-right:52px !important;
+}
+.paper.rubrica-view .page-kind-label {
+  position:relative !important;
+  top:8px;
+  margin:0;
+  min-height:0;
+  font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+  font-size:clamp(30px,4vw,44px);
+  font-weight:600;
+  letter-spacing:.015em;
+  line-height:1;
+  text-transform:none;
+  color:rgba(67,55,43,.90);
+}
+.paper.rubrica-view .page-meta {
+  position:absolute;
+  right:calc(clamp(34px,4.1vw,44px) + 14px);
+  top:50%;
+  transform:translateY(-50%);
+  min-width:0;
+  margin:0 !important;
+}
+.paper.rubrica-view .note-counter { display:none !important; }
+.rubrica-page-counter {
+  position:absolute;
+  right:calc(clamp(34px,4.1vw,44px) + 14px);
+  bottom:calc(var(--footer-h) + 10px);
+  z-index:6;
+  min-width:0;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  font-family:"Snell Roundhand", "Apple Chancery", "Segoe Script", cursive;
+  font-size:clamp(18px,2.2vw,26px);
+  font-weight:600;
+  font-style:italic;
+  line-height:1;
+  letter-spacing:.015em;
+  text-align:right;
+  color:rgba(75,61,48,.88);
+  box-sizing:border-box;
+  pointer-events:none;
+}
+.paper[data-paper-color="black"] .rubrica-page-counter { color:rgba(255,255,255,.88); background:transparent; border:0; }
+.paper[data-paper-color="black"].rubrica-view .page-kind-label,
+.paper[data-paper-color="black"].rubrica-view .note-counter { color:rgba(255,255,255,.84); }
+
+/* Nella Rubrica cifrata il Lazo resta selezione/spostamento; il clipboard persistente
+   del Lazo non viene esposto per evitare copie non cifrate fuori dal Vault. */
+.paper.rubrica-view .lasso-inspector #lassoCutButton,
+.paper.rubrica-view .lasso-inspector #lassoPasteButton { display:none !important; }
+/* In modalità Rubrica si esce dalla stessa icona chiave: gli altri accessi di footer
+   restano nascosti per non lasciare la chiave del Vault sbloccata passando ad altre viste. */
+.paper.rubrica-view .baseline-footer #settingsButton,
+.paper.rubrica-view .baseline-footer #audioButton,
+.paper.rubrica-view .baseline-footer #freeNotesButton,
+.paper.rubrica-view .baseline-footer #calendarButton { display:none !important; }
+.paper.rubrica-view .password-vault-footer-button {
+  background:rgba(95,141,166,.16);
+  box-shadow:inset 0 0 0 1px rgba(95,141,166,.28);
+}
+
+/* 0.1.101-fix7 — Figure Contorno/Piena + Righello virtuale. */
+.shape-fill-controls {
+  grid-column: 1 / -1;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:2px 1px 5px;
+  border-bottom:1px solid rgba(255,255,255,.12);
+  margin-bottom:2px;
+}
+.shape-palette .shape-fill-controls .shape-fill-choice {
+  width:auto;
+  min-width:82px;
+  height:31px;
+  padding:3px 11px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  font-size:11px;
+  font-weight:850;
+  letter-spacing:.02em;
+  color:#fff;
+  border:2px solid rgba(255,255,255,.72);
+  border-radius:8px;
+  text-shadow:0 1px 1px rgba(0,0,0,.28);
+  box-shadow:0 2px 8px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.shape-palette .shape-fill-controls .shape-fill-choice[data-shape-fill="outline"] {
+  background:#0a84ff;
+  border-color:#73bdff;
+}
+.shape-palette .shape-fill-controls .shape-fill-choice[data-shape-fill="filled"] {
+  background:#ff375f;
+  border-color:#ff8aa2;
+}
+.shape-palette .shape-fill-controls .shape-fill-choice.selected {
+  border-color:#fff;
+  box-shadow:0 0 0 2px rgba(255,255,255,.38), 0 3px 11px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.32);
+  transform:translateY(-1px);
+}
+
 .ruler-overlay {
-  --ruler-width:620px;
-  --ruler-height:76px;
   position:absolute;
   left:0;
-  top:0;
-  width:var(--ruler-width);
-  height:var(--ruler-height);
-  z-index:5;
-  transform-origin:50% 50%;
-  pointer-events:none !important;
-  will-change:transform,width,height;
-  filter:drop-shadow(0 5px 9px rgba(59,45,20,.20));
+  right:0;
+  z-index:8;
+  width:100%;
+  pointer-events:none;
+  overflow:visible;
+  touch-action:none;
 }
 .ruler-overlay[hidden] { display:none !important; }
-.ruler-shape { display:none; position:absolute; inset:0; width:100%; height:100%; box-sizing:border-box; }
-.ruler-overlay[data-ruler-mode="ruler"] [data-ruler-shape="ruler"],
-.ruler-overlay[data-ruler-mode="protractor"] [data-ruler-shape="protractor"],
-.ruler-overlay[data-ruler-mode="triangle306090"] [data-ruler-shape="triangle306090"],
-.ruler-overlay[data-ruler-mode="triangle4545"] [data-ruler-shape="triangle4545"] { display:block; }
-.ruler-face {
-  border:1.5px solid rgba(112,88,42,.72);
-  border-radius:7px;
-  overflow:hidden;
-  background:
-    repeating-linear-gradient(to right, rgba(74,58,32,.70) 0 1px, transparent 1px 6px) 8px 0 / calc(100% - 16px) 12px no-repeat,
-    repeating-linear-gradient(to right, rgba(74,58,32,.60) 0 1px, transparent 1px 6px) 8px 100% / calc(100% - 16px) 12px no-repeat,
-    repeating-linear-gradient(to right, rgba(74,58,32,.82) 0 1.5px, transparent 1.5px 30px) 8px 0 / calc(100% - 16px) 19px no-repeat,
-    repeating-linear-gradient(to right, rgba(74,58,32,.76) 0 1.5px, transparent 1.5px 30px) 8px 100% / calc(100% - 16px) 19px no-repeat,
-    linear-gradient(180deg, rgba(255,244,190,.91), rgba(234,207,120,.82));
-  backdrop-filter:blur(1.2px);
-  -webkit-backdrop-filter:blur(1.2px);
+.ruler-line-layer {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  overflow:visible;
+  pointer-events:none;
 }
+.ruler-preview-path {
+  fill:none;
+  stroke:#2376a8;
+  stroke-width:2.4;
+  stroke-linecap:round;
+  vector-effect:non-scaling-stroke;
+  stroke-dasharray:5 3;
+}
+.ruler-body {
+  position:absolute;
+  left:50%;
+  top:48%;
+  width:clamp(260px,64vw,720px);
+  height:76px;
+  transform:translate(-50%,-50%) rotate(0deg);
+  transform-origin:50% 50%;
+  pointer-events:auto;
+  touch-action:none;
+  -webkit-user-select:none;
+  user-select:none;
+  box-sizing:border-box;
+}
+.ruler-face {
+  position:absolute;
+  left:0;
+  right:42px;
+  top:6px;
+  bottom:6px;
+  border:1px solid rgba(103,78,38,.72);
+  border-radius:6px;
+  background:linear-gradient(to bottom,rgba(246,222,153,.94),rgba(221,183,93,.91));
+  box-shadow:0 5px 16px rgba(66,49,24,.20), inset 0 1px 0 rgba(255,255,255,.42);
+  overflow:hidden;
+  pointer-events:none;
+}
+.ruler-face::before,
 .ruler-face::after {
   content:"";
   position:absolute;
-  left:8px;
-  right:8px;
-  top:50%;
-  height:1px;
-  background:rgba(120,92,42,.24);
+  left:12px;
+  right:12px;
+  pointer-events:none;
 }
-.ruler-number-row { position:absolute; inset:21px 11px auto 11px; height:22px; }
+.ruler-face::before {
+  top:0;
+  height:27px;
+  background:
+    repeating-linear-gradient(to right, rgba(83,62,29,.76) 0 1px, transparent 1px 10px),
+    repeating-linear-gradient(to right, transparent 0 49px, rgba(83,62,29,.94) 49px 51px, transparent 51px 100px);
+}
+.ruler-face::after {
+  bottom:0;
+  height:19px;
+  background:
+    repeating-linear-gradient(to right, rgba(83,62,29,.72) 0 1px, transparent 1px 10px),
+    repeating-linear-gradient(to right, transparent 0 49px, rgba(83,62,29,.88) 49px 51px, transparent 51px 100px);
+  transform:scaleY(-1);
+}
+.ruler-number-row {
+  position:absolute;
+  left:12px;
+  right:12px;
+  top:27px;
+  height:20px;
+  font:600 10px/1.1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:rgba(79,59,29,.88);
+  pointer-events:none;
+}
 .ruler-number-row span {
   position:absolute;
   transform:translateX(-50%);
-  font:600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color:rgba(74,58,32,.88);
-  letter-spacing:-.2px;
+  white-space:nowrap;
 }
 .ruler-center-line {
   position:absolute;
-  left:10px;
-  right:10px;
+  left:12px;
+  right:12px;
   top:50%;
-  border-top:1px dashed rgba(112,88,42,.22);
+  height:1px;
+  background:rgba(92,68,31,.42);
+  transform:translateY(-50%);
+  pointer-events:none;
 }
-.ruler-end-mark {
+.ruler-rotate-arm {
   position:absolute;
-  top:12px;
-  bottom:12px;
-  width:8px;
-  border-top:2px solid rgba(112,88,42,.58);
-  border-bottom:2px solid rgba(112,88,42,.58);
-  opacity:.72;
+  right:28px;
+  top:50%;
+  width:20px;
+  height:3px;
+  transform:translateY(-50%);
+  border-radius:999px;
+  background:rgba(79,103,116,.58);
+  pointer-events:none;
 }
-.ruler-end-mark-left { left:10px; border-left:2px solid rgba(112,88,42,.58); }
-.ruler-end-mark-right { right:10px; border-right:2px solid rgba(112,88,42,.58); }
-.geometry-face { overflow:visible; }
-.geometry-fill { fill:rgba(245,224,145,.79); stroke:none; }
-.geometry-stroke { fill:none; stroke:rgba(108,84,44,.84); stroke-width:4; vector-effect:non-scaling-stroke; }
-.geometry-ticks { fill:none; stroke:rgba(108,84,44,.70); stroke-width:3; vector-effect:non-scaling-stroke; }
-.geometry-face text {
-  fill:rgba(83,64,34,.88);
-  font:600 28px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  paint-order:stroke;
-  stroke:rgba(255,245,205,.65);
-  stroke-width:3px;
+.ruler-rotate-handle {
+  position:absolute;
+  right:0;
+  top:50%;
+  width:32px;
+  height:32px;
+  transform:translateY(-50%);
+  border-radius:50%;
+  border:2px solid rgba(72,91,102,.78);
+  background:#9ed6e9;
+  color:#395767;
+  box-shadow:0 2px 7px rgba(45,60,68,.24), inset 0 1px 0 rgba(255,255,255,.7);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font:700 18px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  pointer-events:auto;
+  touch-action:none;
+  box-sizing:border-box;
 }
-.geometry-triangle .geometry-fill { fill:rgba(245,224,145,.73); }
 .ruler-angle-badge {
   position:absolute;
-  left:50%;
-  top:calc(100% + 8px);
-  transform:translateX(-50%);
-  min-width:48px;
-  padding:4px 7px;
-  border-radius:10px;
+  right:50px;
+  top:9px;
+  min-width:38px;
+  padding:2px 6px;
+  box-sizing:border-box;
+  border-radius:999px;
+  background:rgba(255,255,255,.92);
+  border:1px solid rgba(72,91,102,.26);
+  color:#4b5c65;
+  font:700 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   text-align:center;
-  background:rgba(247,241,228,.94);
-  border:1px solid rgba(112,88,42,.32);
-  color:#5f4c2e;
-  font:700 11px/1.2 system-ui, sans-serif;
-  box-shadow:0 2px 5px rgba(59,45,20,.14);
+  box-shadow:0 1px 4px rgba(0,0,0,.12);
+  pointer-events:none;
 }
-.ruler-button.active {
-  background:rgba(239,216,142,.72) !important;
-  box-shadow:inset 0 0 0 2px rgba(142,116,65,.42);
+.paper[data-paper-color="black"] .ruler-face {
+  background:linear-gradient(to bottom,rgba(235,205,127,.95),rgba(199,159,74,.93));
 }
-.paper[data-paper-color="black"] .ruler-overlay { filter:drop-shadow(0 5px 10px rgba(0,0,0,.35)); }
+.paper.ruler-mode #inkCanvas { cursor:crosshair; }
+.paper[data-paper-color="black"] .ruler-body {
+  background:linear-gradient(to bottom,rgba(235,205,127,.94),rgba(199,159,74,.92));
+}
+.page-preview .ruler-overlay { display:none !important; }
 
-/* 0.1.36 — Backup disaster recovery: azioni per archivio e avviso reset iPad. */
-.backup-item-actions { flex-wrap:wrap; justify-content:flex-end; }
-.backup-item-actions .primary { background:#594a38; color:#fff9ed; border-color:#594a38; font-weight:700; }
-.backup-disaster-note { border:1px solid rgba(151,52,42,.22); background:rgba(255,243,205,.64); padding:10px 12px; border-radius:10px; }
-
-.backup-snapshot-guard {
-  position:fixed;
-  inset:0;
-  z-index:2147483000;
-  display:grid;
-  place-items:center;
-  background:rgba(255,242,168,.28);
-  backdrop-filter:blur(1px);
-  -webkit-backdrop-filter:blur(1px);
-  touch-action:none;
-  overscroll-behavior:none;
-  pointer-events:auto;
-}
-.backup-snapshot-guard > div {
-  display:flex;
-  flex-direction:column;
-  gap:4px;
+/* 0.1.101-fix8 — selettore backup nativo per Safari/iPadOS. */
+.backup-actions .backup-file-picker {
+  position:relative;
+  display:inline-flex;
   align-items:center;
-  padding:12px 18px;
-  border:1px solid rgba(80,66,48,.24);
-  border-radius:14px;
-  background:#f7f1e4;
-  box-shadow:0 8px 28px rgba(0,0,0,.12);
-  color:#3f352b;
-  font-size:14px;
-}
-.backup-snapshot-guard span { font-size:12px; opacity:.78; }
-
-/* 0.1.38 — Archivio opaco e leggibile, stessa tavolozza delle Impostazioni.
-   Nessun filtro/compositing sul pannello: evita il blur nelle superfici WebKit. */
-#lessonArchivePanel {
-  background:rgba(25,22,18,.48) !important;
-  -webkit-backdrop-filter:none !important;
-  backdrop-filter:none !important;
-  filter:none !important;
-  opacity:1;
-}
-#lessonArchivePanel .lesson-archive-card,
-.lesson-pdf-card {
-  background:var(--note-settings-surface) !important;
-  color:var(--note-settings-ink) !important;
-  border:1px solid var(--note-settings-border) !important;
-  color-scheme:light;
-  filter:none;
-  -webkit-backdrop-filter:none;
-  backdrop-filter:none;
-  opacity:1;
-  box-shadow:0 18px 70px rgba(0,0,0,.30);
-}
-#lessonArchivePanel .lesson-archive-card { width:min(1060px,97vw); }
-#lessonArchivePanel .lesson-dialog-header,
-.lesson-pdf-card .lesson-dialog-header {
-  background:var(--note-settings-header) !important;
-  color:var(--note-settings-ink) !important;
-  border-bottom:1px solid var(--note-settings-border);
-}
-#lessonArchivePanel .lesson-dialog-header h2,
-#lessonArchivePanel .lesson-dialog-header p,
-.lesson-pdf-card .lesson-dialog-header h2,
-.lesson-pdf-card .lesson-dialog-header p { color:var(--note-settings-ink) !important; }
-#lessonArchivePanel .lesson-dialog-header > button,
-.lesson-pdf-card .lesson-dialog-header > button {
-  flex:0 0 auto; min-width:44px; min-height:44px;
-  border:1px solid var(--note-settings-border);
-  background:#fffaf1; color:#473d32;
-}
-#lessonArchivePanel .lesson-archive-group h3,
-#lessonStartupArchiveBody .lesson-archive-group h3 { color:#6f501b; font-size:17px; }
-#lessonArchivePanel .lesson-archive-row,
-#lessonStartupArchiveBody .lesson-archive-row {
-  background:#fffdf8 !important; color:#352f28 !important;
-  border-color:#d8cbb3 !important;
-}
-#lessonArchivePanel .lesson-archive-date,
-#lessonArchivePanel .lesson-archive-pages,
-#lessonArchivePanel .lesson-archive-empty,
-#lessonStartupArchiveBody .lesson-archive-date,
-#lessonStartupArchiveBody .lesson-archive-pages { color:#625544 !important; font-size:13px; }
-.lesson-archive-topic { font-size:16px; line-height:1.35; }
-.lesson-archive-actions { flex-wrap:wrap; align-content:center; }
-.lesson-archive-actions > button {
-  appearance:none; min-height:44px; min-width:72px; padding:9px 12px;
-  border:1px solid transparent; border-radius:10px;
-  font:700 13px/1.2 system-ui,sans-serif;
-  touch-action:pan-y; cursor:pointer;
-}
-#lessonArchivePanel .lesson-archive-open,
-#lessonStartupArchiveBody .lesson-archive-open { background:#276b4d; border-color:#205e42; color:white; }
-.lesson-archive-actions .lesson-archive-open-pdf { background:#245f9b; border-color:#205387; color:white; }
-.lesson-archive-actions .lesson-archive-export-pdf { background:#865214; border-color:#76470f; color:white; }
-#lessonArchivePanel .lesson-archive-delete { background:#fff1ec; border-color:#d3a59a; color:#8e2e20; }
-.lesson-archive-actions > button:active { filter:brightness(.9); transform:translateY(1px); }
-.lesson-archive-actions > button:focus-visible,
-.lesson-pdf-card button:focus-visible,
-.lesson-pdf-card a:focus-visible { outline:3px solid #267bc0; outline-offset:2px; }
-@media (max-width:1000px) {
-  #lessonArchivePanel .lesson-archive-item,
-  #lessonStartupArchiveBody .lesson-archive-item { grid-template-columns:minmax(0,1fr); gap:7px; }
-  .lesson-archive-actions { justify-content:flex-end; }
-}
-@media (max-width:540px) {
-  #lessonArchivePanel { padding:8px; }
-  .lesson-archive-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .lesson-archive-actions > button { width:100%; }
-  #lessonArchivePanel .lesson-archive-row { grid-template-columns:84px minmax(0,1fr); gap:8px; }
-  #lessonArchivePanel .lesson-archive-pages { grid-column:2; }
-  .lesson-archive-topic { white-space:normal; }
-}
-.lesson-pdf-panel {
-  position:fixed; inset:0; z-index:240;
-  display:grid; place-items:center; padding:max(16px,env(safe-area-inset-top)) 16px;
-  background:rgba(25,22,18,.55); touch-action:manipulation;
-}
-.lesson-pdf-panel[hidden] { display:none !important; }
-.lesson-pdf-card { width:min(720px,96vw); max-height:92vh; overflow:hidden; border-radius:18px; display:flex; flex-direction:column; }
-.lesson-pdf-card .lesson-dialog-header { flex:0 0 auto; }
-.lesson-pdf-body { min-height:0; overflow:auto; padding:18px; touch-action:pan-y; -webkit-overflow-scrolling:touch; }
-#lessonPdfStatus { font-size:17px; font-weight:750; margin:0 0 12px; }
-#lessonPdfDetail { color:#625544; font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
-.lesson-pdf-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:20px 0; }
-.lesson-pdf-actions > button,
-.lesson-pdf-actions > a,
-.lesson-pdf-settings {
-  display:grid; place-items:center; min-height:48px; padding:10px 12px;
-  border:1px solid #bda98c; border-radius:11px; background:#fffdf8; color:#473d32;
-  font:700 14px/1.3 system-ui,sans-serif; text-align:center; text-decoration:none; cursor:pointer;
-}
-#lessonPdfOpenLink { grid-column:1 / -1; background:#245f9b; border-color:#205387; color:white; }
-#lessonPdfOpenLink[hidden] { display:none; }
-#lessonPdfSaveButton { background:#276b4d; border-color:#205e42; color:white; }
-#lessonPdfShareButton { background:#865214; border-color:#76470f; color:white; }
-.lesson-pdf-card button:disabled { opacity:.45; cursor:default; }
-.lesson-pdf-help { font-size:13px; line-height:1.55; color:#625544; }
-.lesson-pdf-settings { margin-top:16px; width:100%; }
-
-/* 0.1.39 — Materia e argomento: corsivo elegante e dimensioni più contenute. */
-.lesson-meta-display,
-.lesson-subject-label,
-.lesson-topic-label {
-  font-family:Georgia,"Times New Roman",serif;
-  font-style:italic;
-  font-weight:500 !important;
-}
-.lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-display {
-  font-size:29px !important;
-  font-weight:500 !important;
-  line-height:1.15 !important;
-}
-.lavagna-app .paper.lesson-note-view .lesson-meta-display { font-size:15px !important; }
-#lessonArchivePanel .lesson-archive-group h3,
-#lessonStartupArchiveBody .lesson-archive-group h3 {
-  font:italic 500 16px/1.4 Georgia,"Times New Roman",serif;
-}
-.lesson-archive-topic { font:italic 500 15px/1.4 Georgia,"Times New Roman",serif; }
-@media (max-width:760px) {
-  .lavagna-app .paper:not(.planner-view):not(.note-view) .lesson-meta-display { font-size:25px !important; }
-  .lavagna-app .paper.lesson-note-view .lesson-meta-display { font-size:14px !important; }
-}
-
-/* PDF integrato: nessuna nuova scheda e nessun plugin PDF richiesto alla PWA. */
-#lessonPdfPanel[data-pdf-view="preview"] .lesson-pdf-card {
-  width:min(1120px,97vw); height:92vh; height:92dvh;
-}
-.lesson-pdf-viewer { display:flex; flex-direction:column; min-height:0; flex:1; }
-.lesson-pdf-viewer[hidden], #lessonPdfExportBody[hidden] { display:none !important; }
-.lesson-pdf-viewer-toolbar {
-  flex:0 0 auto; display:flex; align-items:center; justify-content:center; flex-wrap:wrap;
-  gap:8px; padding:10px; background:#f7f1e4; border-bottom:1px solid #d8cbb3;
-}
-.lesson-pdf-viewer-toolbar button {
-  min-width:44px; min-height:44px; padding:7px 12px;
-  border:1px solid #bda98c; border-radius:9px; background:#fffdf8; color:#473d32;
-  font:700 16px/1.2 system-ui,sans-serif;
-}
-.lesson-pdf-viewer-toolbar span { font:600 13px/1.2 system-ui,sans-serif; color:#473d32; font-variant-numeric:tabular-nums; }
-#lessonPdfExportOptionsButton { margin-left:auto; background:#276b4d; border-color:#205e42; color:#fff; font-size:13px; }
-.lesson-pdf-viewport {
-  flex:1; min-height:0; overflow:auto; padding:16px; background:#d9d4cb;
-  overscroll-behavior:contain; -webkit-overflow-scrolling:touch; touch-action:pan-x pan-y;
-}
-#lessonPdfPageImage { display:block; width:100%; max-width:none; height:auto; box-shadow:0 4px 18px rgba(0,0,0,.2); user-select:none; -webkit-user-drag:none; }
-@media (max-width:540px) {
-  .lesson-pdf-viewer-toolbar { gap:5px; padding:7px; }
-  #lessonPdfExportOptionsButton { margin-left:0; }
-  .lesson-pdf-viewport { padding:8px; }
-}
-
-
-/* 0.1.43 — WELCOME HOME.
-   Home non modale tra barra titolo e footer; blocca soltanto l'area centrale.
-   Nessuna modifica al percorso realtime Ink. */
-.lesson-home-screen {
-  position:absolute;
-  top:var(--header-h);
-  right:0;
-  bottom:var(--footer-h);
-  left:0;
-  z-index:5;
-  display:grid;
-  place-items:center;
+  justify-content:center;
+  min-height:42px;
+  padding:8px 13px;
+  box-sizing:border-box;
   overflow:hidden;
-  background:rgb(246,210,83);
-  pointer-events:auto;
+  border:1px solid rgba(75,61,43,.24);
+  border-radius:9px;
+  background:rgba(255,255,255,.63);
+  color:#493d31;
+  font-size:13px;
+  line-height:1.2;
+  font-weight:750;
   touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+  cursor:pointer;
 }
-.lesson-home-screen[hidden] { display:none !important; }
-.lesson-home-screen img {
-  display:block;
+.backup-actions .backup-file-picker > input[type="file"] {
+  position:absolute;
+  inset:0;
   width:100%;
   height:100%;
-  object-fit:contain;
-  object-position:center center;
-  pointer-events:none;
-  user-select:none;
-  -webkit-user-select:none;
+  opacity:0;
+  cursor:pointer;
+  font-size:100px;
 }
-.paper.lesson-home-mode::before { display:none !important; }
-.paper.lesson-home-mode .hours { visibility:hidden !important; }
-.paper.lesson-home-mode .page-header,
-.paper.lesson-home-mode .baseline-footer {
-  background:rgb(246,210,83) !important;
-  border-color:rgba(92,77,54,.18) !important;
-}
-.paper.lesson-home-mode .quick-toolbar { background:rgba(255,242,168,.94) !important; }

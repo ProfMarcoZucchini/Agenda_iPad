@@ -89,6 +89,17 @@ function closeThresholdForEvent(ev) {
   return 52;
 }
 
+function setSvgHidden(element, hidden) {
+  if (!element) return;
+  if (hidden) {
+    if (typeof element.setAttribute === 'function') element.setAttribute('hidden', '');
+    else element.hidden = true;
+  } else {
+    if (typeof element.removeAttribute === 'function') element.removeAttribute('hidden');
+    else element.hidden = false;
+  }
+}
+
 export function initLassoTool(options = {}) {
   const {
     button, overlay, path, boundsRect, inspector, cutButton, pasteButton, clearButton, hint,
@@ -125,16 +136,13 @@ export function initLassoTool(options = {}) {
   function updateUi() {
     const validSelection = selection && selection.pageKey === getPageKey();
     if (selection && !validSelection) selection = null;
-    if (inspector) {
-      if (active) { inspector.removeAttribute?.('hidden'); inspector.hidden = false; }
-      else { inspector.setAttribute?.('hidden', ''); inspector.hidden = true; }
-    }
+    if (inspector) inspector.hidden = !active;
     if (cutButton) cutButton.disabled = !validSelection || (!(selection.strokeIds?.length) && !(selection.imageIds?.length));
     if (pasteButton) pasteButton.disabled = !clipboard || (!(clipboard.strokes?.length) && !(clipboard.images?.length));
     if (clearButton) clearButton.disabled = !validSelection;
     if (hint) {
       hint.textContent = gesture?.points?.length
-        ? `Contorno in corso · ${gesture.points.length} ${gesture.points.length === 1 ? 'punto' : 'punti'} · torna al punto iniziale`
+        ? 'Contorno in corso · torna al punto iniziale'
         : validSelection
           ? `${selection.strokeIds.length + selection.imageIds.length} elementi · trascina per spostare`
           : clipboard ? 'Disegna un contorno chiuso · Incolla disponibile' : 'Disegna un contorno chiuso';
@@ -143,23 +151,10 @@ export function initLassoTool(options = {}) {
     onSelectionChanged?.(selection);
   }
 
-  function setSvgVisible(element, visible) {
-    if (!element) return;
-    if (visible) {
-      // Strategia Agenda 0.1.92: rimuove fisicamente hidden. Su Safari/iPadOS
-      // evita che un SVG rimanga display:none dopo un cambio stato/layer.
-      element.removeAttribute?.('hidden');
-      element.hidden = false;
-    } else {
-      element.setAttribute?.('hidden', '');
-      element.hidden = true;
-    }
-  }
-
   function hideOverlay() {
-    setSvgVisible(overlay, false);
+    setSvgHidden(overlay, true);
     if (path) path.setAttribute('d', '');
-    setSvgVisible(boundsRect, false);
+    setSvgHidden(boundsRect, true);
   }
 
   function drawSelectionOverlay() {
@@ -167,15 +162,15 @@ export function initLassoTool(options = {}) {
     const r = pageRect();
     overlay?.setAttribute('viewBox', `0 0 ${Math.max(1,r.width)} ${Math.max(1,r.height)}`);
     if (gesture?.points?.length) {
-      setSvgVisible(overlay, true);
+      setSvgHidden(overlay, false);
       path.setAttribute('d', svgPath(gesture.points, r.width, r.height, false));
       path.classList.remove('closed');
       path.classList.toggle('close-ready', isClosedLasso(gesture.points, r.width, r.height, gesture.closeThreshold || 48));
-      setSvgVisible(boundsRect, false);
+      setSvgHidden(boundsRect, true);
       return;
     }
     if (!selection || selection.pageKey !== getPageKey() || !selection.bounds) { hideOverlay(); return; }
-    setSvgVisible(overlay, true);
+    setSvgHidden(overlay, false);
     if (selection.polygon?.length) {
       path.setAttribute('d', svgPath(selection.polygon, r.width, r.height, true));
       path.classList.add('closed');
@@ -186,7 +181,7 @@ export function initLassoTool(options = {}) {
     boundsRect.setAttribute('y', String(b.y0 * r.height));
     boundsRect.setAttribute('width', String(Math.max(1, (b.x1 - b.x0) * r.width)));
     boundsRect.setAttribute('height', String(Math.max(1, (b.y1 - b.y0) * r.height)));
-    setSvgVisible(boundsRect, true);
+    setSvgHidden(boundsRect, false);
   }
 
   function setActive(value) {
@@ -222,8 +217,11 @@ export function initLassoTool(options = {}) {
   }
 
   function selectFromPolygon(points) {
+    // La chiusura del Lazo è una operazione esclusivamente di selezione:
+    // non deve mai modificare né rimuovere stroke o immagini.
     const currentStrokes = getStrokes();
     const currentImages = getImages();
+    const imageIdsBefore = currentImages.map((item) => String(item?.id || ''));
     const selectedStrokes = currentStrokes.filter((item) => strokeIntersectsPolygon(item, points));
     const selectedImages = currentImages.filter((item) => imageIntersectsPolygon(item, points));
     if (!selectedStrokes.length && !selectedImages.length) {
@@ -240,6 +238,17 @@ export function initLassoTool(options = {}) {
     };
     drawSelectionOverlay();
     updateUi();
+
+    // Ripristino visivo difensivo del layer immagini dopo la composizione SVG
+    // della selezione. Su Safari/iPadOS evita che il cambio di compositing del
+    // layer Lazo faccia apparire le immagini come rimosse. I dati non cambiano.
+    renderImages?.();
+
+    const imageIdsAfter = getImages().map((item) => String(item?.id || ''));
+    if (imageIdsAfter.length !== imageIdsBefore.length || imageIdsAfter.some((id, i) => id !== imageIdsBefore[i])) {
+      console.error('Lazo invariant violation: la selezione ha alterato l’elenco immagini');
+    }
+
     if (statusLabel) statusLabel.textContent = `Lazo · ${selectedStrokes.length + selectedImages.length} elementi selezionati`;
     return true;
   }
@@ -342,6 +351,8 @@ export function initLassoTool(options = {}) {
     const dx=(p.x-last.x)*r.width, dy=(p.y-last.y)*r.height;
     if (dx*dx+dy*dy >= 2.25) gesture.points.push(p);
     drawSelectionOverlay();
+    if (hint && gesture?.points?.length) hint.textContent = `Contorno in corso · ${gesture.points.length} punti · torna al punto iniziale`;
+    if (statusLabel && gesture?.points?.length > 1) statusLabel.textContent = `lazo · ${gesture.points.length} punti acquisiti`;
     ev.preventDefault?.();
     return true;
   }
@@ -421,7 +432,11 @@ export function initLassoTool(options = {}) {
     return true;
   }
 
-  async function cutSelection() {
+  async function cutSelection(userInitiated = false) {
+    // Protezione anti-rimozione: il solo completamento di un Lazo non può mai
+    // trasformarsi in Taglia. La rimozione è ammessa esclusivamente da una
+    // pressione esplicita del pulsante Taglia.
+    if (!userInitiated) return false;
     if (!selection || selection.pageKey!==getPageKey()) return false;
     const items=currentSelectionItems();
     if (!items.strokes.length && !items.images.length) return false;
@@ -566,7 +581,6 @@ export function initLassoTool(options = {}) {
     setActive, syncPage, clearSelection, updateUi,
     handlePointerDown, handlePointerMove, handlePointerUp,
     cutSelection, pasteClipboard, applyHistory,
-    getGesturePointCount:()=>gesture?.points?.length || 0,
     hasSelection:()=>Boolean(selection && selection.pageKey===getPageKey()),
     hasClipboard:()=>Boolean(clipboard),
     isActive:()=>active
