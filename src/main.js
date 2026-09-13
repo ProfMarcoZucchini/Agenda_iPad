@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.101';
+const APP_VERSION = '0.1.102';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -1971,7 +1971,7 @@ async function closeWeeklyTimetable() {
   pageTurning = true;
   cancelPendingSave();
   const currentDescriptor = pageDescriptor();
-  // 0.1.101-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
+  // 0.1.102-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
   // prima di uscire dalla scheda, indipendentemente dal flag dirty.
   const saveOk = await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images);
   if (!saveOk) {
@@ -1981,13 +1981,13 @@ async function closeWeeklyTimetable() {
     return;
   }
   const fallback = pageDescriptor(currentDate, 'planner-weekly', 0, 0);
-  const target = isPlannerKind(weeklyTimetableReturnDescriptor?.kind) && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
+  const target = weeklyTimetableReturnDescriptor?.kind && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
     ? weeklyTimetableReturnDescriptor
     : fallback;
   weeklyTimetableReturnDescriptor = null;
   try {
     await loadDescriptorAsCurrentPage(target, null, true);
-    statusLabel.textContent = 'Planner settimanale';
+    statusLabel.textContent = target.kind === 'agenda' ? 'Agenda' : 'Planner settimanale';
   } catch (err) {
     session.storageErrors++;
     console.warn('Ritorno al Planner settimanale non riuscito', err);
@@ -2016,11 +2016,20 @@ function registerPageDoubleTap(target, x, y) {
   if (!closeInTime || !closeInSpace || !samePage) return false;
   pageDoubleTapLastTap = null;
 
-  // 0.1.50 — nessun doppio tap apre più l'Orario settimanale.
-  // L'Orario si richiama esclusivamente con swipe verso il basso dal Planning settimanale.
+  // 0.1.102 — navigazione rapida Agenda ↔ Orario settimanale.
+  // Il doppio tap sul corpo dell'Agenda memorizza esattamente la pagina di origine
+  // tramite openWeeklyTimetable(); il doppio tap su qualunque scheda Orario la ripristina.
+  if (currentPageKind === 'agenda') {
+    void openWeeklyTimetable();
+    return true;
+  }
+  if (currentPageKind === 'planner-timetable') {
+    void closeWeeklyTimetable();
+    return true;
+  }
 
-  // Agenda, Note e qualunque Planner: doppio tap sul corpo pagina = copertina privacy.
-  if (currentPageKind === 'agenda' || currentPageKind === 'note' || isPlannerKind(currentPageKind)) {
+  // Note e gli altri Planner mantengono il comportamento privacy preesistente.
+  if (currentPageKind === 'note' || (isPlannerKind(currentPageKind) && currentPageKind !== 'planner-timetable')) {
     showIdleCover(true);
     return true;
   }
@@ -2303,7 +2312,7 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
   };
 }
 
-// 0.1.101-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
+// 0.1.102-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
 // La Rubrica viene persistita esclusivamente nel Vault cifrato; tutte le altre
 // pagine continuano a usare il normale Sync. Questa funzione deve restare
 // fuori dal percorso pointermove e non modifica il motore realtime Ink.
@@ -4396,7 +4405,7 @@ function sizeImageCropStage() {
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
 
-  // 0.1.101 — usa il viewport realmente visibile su iPadOS e riserva spazio
+  // 0.1.102 — usa il viewport realmente visibile su iPadOS e riserva spazio
   // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
   // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
   const viewport = cropViewportSize();
@@ -5584,7 +5593,7 @@ function cancelPendingSave() {
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
   let syncCommit = null;
   try {
-    // 0.1.101 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
+    // 0.1.102 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
     // scritta in chiaro nello store pagine. Lo snapshot viene consegnato al Vault,
     // cifrato e sincronizzato come unico involucro opaco AES-GCM.
     if (descriptor?.kind === 'rubrica') {
@@ -7041,8 +7050,8 @@ async function commitPageTurn() {
   const target = swipe.target;
   const enteringTimetable = oldDescriptor.kind !== 'planner-timetable' && target.kind === 'planner-timetable';
   const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
-  // 0.1.101-fix1 — quando si lascia una scheda Orario settimanale, persiste
-  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.101.
+  // 0.1.102-fix1 — quando si lascia una scheda Orario settimanale, persiste
+  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.102.
   const mustPersistOldPage = dirty || oldDescriptor.kind === 'planner-timetable';
   const savePromise = mustPersistOldPage
     ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages)
@@ -7207,7 +7216,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.101 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.102 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -7312,8 +7321,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.101 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.101 questi campioni venivano scartati perché il canale
+  // 0.1.102 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.102 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -7348,7 +7357,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.101 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.102 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -7415,7 +7424,7 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.101 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // 0.1.102 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
   // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
   // logico già aperto nel controller Lazo.
   if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
@@ -7446,7 +7455,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.101 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  // 0.1.102 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
   if (lassoTouchId == null && lassoPointerId != null) {
     const id = lassoPointerId;
     const ended = ev.changedTouches?.[0] || null;
@@ -7825,7 +7834,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.101 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
+// 0.1.102 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
 // del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
 // shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
 function handleLassoShieldPointerDown(ev) {
@@ -7859,7 +7868,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.101 — listener diretti sullo shield mantenuti solo come fallback.
+// 0.1.102 — listener diretti sullo shield mantenuti solo come fallback.
 // Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
@@ -7870,7 +7879,7 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.101 — Window capture è il percorso primario iPad/Pencil/dito.
+// 0.1.102 — Window capture è il percorso primario iPad/Pencil/dito.
 // Non viene più saltato quando event.target è lo shield.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
