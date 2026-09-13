@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Agenda iPad",
-  "short_name": "Agenda iPad",
-  "description": "Agenda iPad 0.1.103 - Rubrica Password A-Z cifrata con Touch ID/biometria o PIN, Backup e Sync protetti",
+  "name": "Note",
+  "short_name": "Note",
+  "description": "Note 0.1.43 - una lezione su foglio verticale continuo virtualizzato; Apple Pencil, backup e sync ottimizzati",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -11,8 +11,8 @@
     "fullscreen"
   ],
   "orientation": "any",
-  "background_color": "#e9dfc8",
-  "theme_color": "#e9dfc8",
+  "background_color": "#fff2a8",
+  "theme_color": "#fff2a8",
   "categories": [
     "productivity",
     "utilities"

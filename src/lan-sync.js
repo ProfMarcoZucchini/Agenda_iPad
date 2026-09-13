@@ -115,6 +115,7 @@ export function initLanSyncTransport(options = {}) {
         headers: {
           'Accept': 'application/json',
           'X-Agenda-Sync-Key': syncKey,
+          'X-Agenda-Restore-Protocol': '2',
           ...((!init.skipEpoch && String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch() || '').trim())
             ? { 'X-Agenda-Group-Epoch': String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch()).trim() } : {}),
           ...((String(init.restoreId || activeRestoreId || '').trim())
@@ -231,6 +232,7 @@ export function initLanSyncTransport(options = {}) {
         method: 'GET', cache: 'no-store', signal: controller.signal,
         headers: {
           'X-Agenda-Sync-Key': syncKey,
+          'X-Agenda-Restore-Protocol': '2',
           ...((String(activeRestoreEpoch || await getGroupEpoch() || '').trim()) ? { 'X-Agenda-Group-Epoch': String(activeRestoreEpoch || await getGroupEpoch()).trim() } : {}),
           ...((String(activeRestoreId || '').trim()) ? { 'X-Agenda-Restore-ID': String(activeRestoreId).trim() } : {})
         }
@@ -421,12 +423,14 @@ export function initLanSyncTransport(options = {}) {
     if (!rid) throw new Error('Identificatore ripristino globale mancante.');
     const health = await healthCheck();
     const hubId = assertProtocol(health);
+    if (Number(health.restoreProtocolVersion) !== 2) throw new Error('Aggiorna il server LAN alla versione 0.1.37 prima del ripristino di gruppo.');
     if (String(health?.restoreState || 'ready') === 'pending') {
       if (String(health?.restoreId || '') !== rid) throw new Error('Il gruppo LAN è già in ripristino globale da un altro dispositivo.');
       activeRestoreId = rid; activeRestoreEpoch = String(health?.groupEpoch || '');
       await setGroupEpoch(hubId, activeRestoreEpoch);
       return { ...health, hubId };
     }
+    if (health.committedRestoreId === rid) { await setGroupEpoch(hubId, health.groupEpoch); return { ...health, hubId, alreadyCommitted:true }; }
     const currentEpoch = String(health?.groupEpoch || 'legacy-1');
     const reset = await request('/group/reset', {
       method: 'POST', skipEpoch: true, body: JSON.stringify({ protocolVersion, confirm: 'RESTORE_GROUP', restoreId: rid, expectedEpoch: currentEpoch, replicaId: String(getReplicaId() || '') })
@@ -444,6 +448,7 @@ export function initLanSyncTransport(options = {}) {
     running = true; suspendedForInk = false; stats.state = 'restoring-group'; stats.lastError = ''; emit();
     try {
       const group = await beginOrResumeGlobalRestore(restoreId);
+      if (group.alreadyCommitted) { stats.state='idle'; stats.restoreState='ready'; emit(); return { pushed:0, pulled:0, globalRestore:true, alreadyCommitted:true, groupEpoch:group.groupEpoch, hubId:group.hubId }; }
       activeRestoreId = String(restoreId || ''); activeRestoreEpoch = String(group.groupEpoch || activeRestoreEpoch || '');
       const pushed = await pushPending();
       const commit = await request('/group/restore-commit', {
@@ -482,6 +487,7 @@ export function initLanSyncTransport(options = {}) {
     publishAndCommitGlobalRestore,
     suspendForInk,
     resumeAfterInk,
+    isRunning: () => running,
     getDiagnostics: () => ({ ...stats }),
     normalizeEndpoint
   };

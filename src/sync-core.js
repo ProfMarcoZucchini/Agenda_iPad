@@ -68,13 +68,16 @@ function serializableDescriptor(descriptor) {
     date: String(descriptor?.date || ''),
     kind: String(descriptor?.kind || 'agenda'),
     plannerMode: descriptor?.plannerMode ?? null,
-    noteIndex: Number(descriptor?.noteIndex) || 0
+    noteIndex: Number(descriptor?.noteIndex) || 0,
+    lessonId: String(descriptor?.lessonId || ''),
+    lessonBoardIndex: Number(descriptor?.lessonBoardIndex) || 0
   };
 }
 
 export function initSyncFoundation(options = {}) {
   const appVersion = String(options.appVersion || 'unknown');
   const onStats = typeof options.onStats === 'function' ? options.onStats : () => {};
+  const onEventQueued = typeof options.onEventQueued === 'function' ? options.onEventQueued : () => {};
   const saved = options.persistedState && typeof options.persistedState === 'object' ? options.persistedState : {};
   const replicaId = saved.replicaId || newReplicaId();
 
@@ -191,6 +194,7 @@ export function initSyncFoundation(options = {}) {
       createdAt: new Date().toISOString()
     };
     memoryQueue.push(event);
+    try { onEventQueued(event); } catch {}
     stats.queued++;
     stats.lastEventHlc = hlc.text;
     stats.maxQueueCallMs = Math.max(stats.maxQueueCallMs, performance.now() - started);
@@ -199,7 +203,6 @@ export function initSyncFoundation(options = {}) {
   }
 
   function recordStrokeAdded(descriptor, stroke) {
-    if (descriptor?.kind === 'rubrica') return null;
     if (!stroke?.id) return null;
     return queueEvent({
       entityId: `stroke:${stroke.id}`,

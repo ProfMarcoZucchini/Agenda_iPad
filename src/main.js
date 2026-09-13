@@ -1,4 +1,5 @@
 import { initBackupFoundation } from './backup.js';
+import { initLessonPdf } from './lesson-pdf.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
 import { initCloudSyncTransport } from './cloud-sync.js';
@@ -8,16 +9,21 @@ import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
 import { initAudioRecorder } from './audio-recorder.js';
 import { initVoiceScript } from './voice-script.js';
 import { initLassoTool } from './lasso-tool.js';
-import { initPasswordVault, VAULT_CONFIG_KEY, VAULT_DATA_KEY, VAULT_LOCAL_AUTH_KEY, VAULT_LOCAL_STATE_KEY, VAULT_SYNC_KEY, portableVaultRow, isPortableVaultRow, buildVaultBackupPayload, rowsFromVaultBackupPayload } from './password-vault.js';
-import { SHAPE_TYPES as WINDOWS_SHAPE_TYPES, SHAPE_LABELS as WINDOWS_SHAPE_LABELS, buildShapePoints as buildWindowsShapePoints, shapePathData, shapeIconPathData as windowsShapeIconPathData } from './shapes.js';
+import { buildBeautifyPlan } from './beautify.js';
+import { VAULT_CONFIG_KEY, VAULT_DATA_KEY, VAULT_LOCAL_AUTH_KEY, VAULT_LOCAL_STATE_KEY, VAULT_SYNC_KEY, portableVaultRow, isPortableVaultRow, buildVaultBackupPayload, rowsFromVaultBackupPayload } from './password-vault.js';
+import { SHAPE_TYPES as BASE_SHAPE_TYPES, SHAPE_LABELS as BASE_SHAPE_LABELS, buildShapePoints as buildBaseShapePoints, shapePathData, shapeIconPathData as baseShapeIconPathData } from './shapes.js';
 import { EXTRA_SHAPE_TYPES, EXTRA_SHAPE_LABELS, buildExtraShapePoints, extraShapeIconPathData } from './extra-shapes.js';
-const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
-const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
-const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
-const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.103';
+import { initRulerTool, projectNormalizedPointToGuide } from './ruler.js';
+const SHAPE_TYPES = Object.freeze([...BASE_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]);
+const SHAPE_LABELS = Object.freeze({ ...BASE_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
+const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildBaseShapePoints(type, bounds);
+const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : baseShapeIconPathData(type);
+const APP_VERSION = '0.1.43';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
+// 0.1.32 — CONTRATTO UPDATE NON DISTRUTTIVO: mantenere DB_NAME, DB_VERSION e chiavi storage compatibili.
+// La sostituzione dei file in dist deve aggiornare il codice/PWA senza cancellare contenuti locali esistenti.
+const DATA_COMPATIBILITY_GENERATION = 'note-continuous-v2';
 const STORE = 'pages';
 const LOCAL_IMAGE_CLIPBOARD_DB = 'AgendaIPadLocalImageClipboardDB';
 const LOCAL_IMAGE_CLIPBOARD_STORE = 'clipboard';
@@ -33,6 +39,7 @@ const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SYNC_RESTORE_GUARD_STORAGE_KEY = 'agenda-ipad-sync-restore-guard-v1';
+const LOCAL_RESTORE_SYNC_QUARANTINE_KEY = 'agenda-ipad-local-restore-sync-quarantine-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v3';
@@ -54,11 +61,10 @@ const PEN_COLOR = '#111111';
 const PEN_WIDTH = 2.5;
 const HIGHLIGHTER_COLOR = '#f0d84f';
 const HIGHLIGHTER_WIDTH = 15;
-const HIGHLIGHTER_OPACITY = 0.42;
+const HIGHLIGHTER_OPACITY = 0.30;
 const ERASER_WIDTH = 22;
 const TOOL_STYLE_STORAGE_KEY = 'agenda-ipad-reintegration-tool-style-v1';
 const SHAPE_TYPE_STORAGE_KEY = 'agenda-ipad-shape-type-v1';
-const SHAPE_FILL_STORAGE_KEY = 'agenda-ipad-shape-fill-v1';
 const CALENDAR_VISIBILITY_STORAGE_KEY = 'agenda-ipad-calendar-visible-v1';
 const ALLOWED_STYLE_VALUES = Object.freeze({
   pen: { colors: ['#111111','#8e8e8e','#a52b2b','#f02f37','#f07f31','#f2d21b','#23724b','#1698cf','#174f9b','#9c4ca8','#f5f3eb','#c7c7c7','#bd845f','#ef9fb6','#f3b82f','#eadca7','#9ccf24','#8fc9d8','#7696b7','#c1b6d6'], widths: [1.4, 1.8, 2.5, 3.6, 5] },
@@ -69,9 +75,9 @@ const UNDO_LIMIT = 10;
 const REDO_LIMIT = 10;
 const CROSS_PLATFORM_TEXT_FONT_PX = 38;
 
-const DEFAULT_PAGE_STYLE = Object.freeze({ color: 'yellow', template: 'ruled' });
+const DEFAULT_PAGE_STYLE = Object.freeze({ color: 'black', template: 'ruled' });
 const ALLOWED_PAGE_COLORS = Object.freeze(['yellow', 'white', 'black']);
-const ALLOWED_PAGE_TEMPLATES = Object.freeze(['ruled', 'grid', 'blank']);
+const ALLOWED_PAGE_TEMPLATES = Object.freeze(['ruled', 'grid', 'millimeter', 'blank']);
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
 const MIN_DATE = '2026-01-01';
@@ -79,10 +85,14 @@ const MAX_DATE = '2028-12-31';
 const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
-const FREE_NOTE_KEY_PREFIX = '::free-note::';
-const RUBRICA_KEY_PREFIX = '::rubrica::';
 const GLOBAL_PAGE_STYLE_KEY = '::global-page-style';
-const PLANNER_MODES = Object.freeze(['daily', 'weekly', 'monthly', 'yearly']);
+const LAVAGNA_PAPER_COLOR_STORAGE_KEY = 'lavagna-ipad-paper-color-v1';
+const LESSON_SUBJECTS_STORAGE_KEY = 'lavagna-ipad-lesson-subjects-v1';
+const LESSON_INDEX_STORAGE_KEY = 'lavagna-ipad-lesson-index-v1';
+const ACTIVE_LESSON_STORAGE_KEY = 'lavagna-ipad-active-lesson-v1';
+const DEFAULT_LESSON_SUBJECTS = Object.freeze(['Informatica 3G','Informatica 4G','Informatica 5G','Sistemi 3G','Sistemi 5I','TPSIT 5I','Note','Generica']);
+const LESSON_SUBJECTS_DEFAULT_MIGRATION_KEY = 'lavagna-ipad-lesson-subjects-defaults-v0114';
+const PLANNER_MODES = Object.freeze(['daily', 'weekly']);
 const PAPER_TOOL_DEFAULTS = Object.freeze({
   yellow: { pen: '#111111', highlighter: '#7fc8e8' },
   white: { pen: '#111111', highlighter: '#f0d84f' },
@@ -94,12 +104,14 @@ const paper = document.getElementById('paper');
 const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
+const continuousViewport = document.getElementById('lessonContinuousViewport');
+const continuousTrack = document.getElementById('lessonContinuousTrack');
+const lessonHomeScreen = document.getElementById('lessonHomeScreen');
 const versionButton = document.getElementById('versionButton');
 const authorCreditsButton = document.getElementById('authorCreditsButton');
 const infoCreditsOverlay = document.getElementById('infoCreditsOverlay');
 const idleCoverOverlay = document.getElementById('idleCoverOverlay');
 const statusLabel = document.getElementById('statusLabel');
-const rubricaPageCounter = document.getElementById('rubricaPageCounter');
 const reportPanel = document.getElementById('reportPanel');
 const reportText = document.getElementById('reportText');
 const copyReportButton = document.getElementById('copyReportButton');
@@ -123,21 +135,14 @@ const voiceScriptToolButton = document.getElementById('voiceScriptToolButton');
 const shapeToolButton = document.getElementById('shapeToolButton');
 const shapePalette = document.getElementById('shapePalette');
 const shapeChoiceButtons = [...document.querySelectorAll('[data-shape-type]')];
-const shapeFillButtons = [...document.querySelectorAll('[data-shape-fill]')];
 const shapeOverlay = document.getElementById('shapeOverlay');
 const shapePreviewPath = document.getElementById('shapePreviewPath');
-const rulerToolButton = document.getElementById('rulerToolButton');
+const rulerButton = document.getElementById('rulerButton');
 const rulerOverlay = document.getElementById('rulerOverlay');
-const rulerBody = document.getElementById('rulerBody');
-const rulerRotateHandle = document.getElementById('rulerRotateHandle');
 const rulerAngleBadge = document.getElementById('rulerAngleBadge');
-const rulerPreviewPath = document.getElementById('rulerPreviewPath');
 const undoButton = document.getElementById('undoButton');
 const redoButton = document.getElementById('redoButton');
 const calendarButton = document.getElementById('calendarButton');
-const freeNotesButton = document.getElementById('freeNotesButton');
-const rubricaAzTabs = document.getElementById('rubricaAzTabs');
-const rubricaTabButtons = [...document.querySelectorAll('[data-rubrica-letter]')];
 const miniCalendar = document.getElementById('miniCalendar');
 const styleButton = document.getElementById('styleButton');
 const stylePanel = document.getElementById('stylePanel');
@@ -149,6 +154,7 @@ const pageColorChoices = [...document.querySelectorAll('[data-page-color]')];
 const pageTemplateChoices = [...document.querySelectorAll('[data-page-template]')];
 const pageScopeChoices = [...document.querySelectorAll('[data-page-scope]')];
 const pageStyleGroup = document.getElementById('pageStyleGroup');
+const quickPaperChoices = [...document.querySelectorAll('[data-quick-template], [data-quick-color]')];
 const plannerModeBar = document.getElementById('plannerModeBar');
 const plannerLayer = document.getElementById('plannerLayer');
 const plannerModeButtons = [...document.querySelectorAll('[data-planner-mode]')];
@@ -192,6 +198,43 @@ const weatherBadge = document.getElementById('weatherBadge');
 const weatherIcon = document.getElementById('weatherIcon');
 const audioPageIndicator = document.getElementById('audioPageIndicator');
 const audioButton = document.getElementById('audioButton');
+const beautifyButton = document.getElementById('beautifyButton');
+const beautifyFeedback = document.getElementById('beautifyFeedback');
+const newLessonButton = document.getElementById('newLessonButton');
+const closeLessonButton = document.getElementById('closeLessonButton');
+const lessonArchiveButton = document.getElementById('lessonArchiveButton');
+const lessonHeader = document.getElementById('lessonHeader');
+const lessonDateLabel = document.getElementById('lessonDateLabel');
+const lessonMetaDisplay = document.getElementById('lessonMetaDisplay');
+const lessonSubjectLabel = document.getElementById('lessonSubjectLabel');
+const lessonTopicLabel = document.getElementById('lessonTopicLabel');
+const lessonMetaEditor = document.getElementById('lessonMetaEditor');
+const lessonSubjectSelect = document.getElementById('lessonSubjectSelect');
+const lessonTopicInput = document.getElementById('lessonTopicInput');
+const lessonNoteLabel = document.getElementById('lessonNoteLabel');
+const lessonBoardProgress = document.getElementById('lessonBoardProgress');
+const lessonSetupPanel = document.getElementById('lessonSetupPanel');
+const lessonSetupDate = document.getElementById('lessonSetupDate');
+const lessonSetupSubject = document.getElementById('lessonSetupSubject');
+const lessonSetupTopic = document.getElementById('lessonSetupTopic');
+const lessonSetupStartButton = document.getElementById('lessonSetupStartButton');
+const lessonSetupResumeButton = document.getElementById('lessonSetupResumeButton');
+const lessonSetupNewTabButton = document.getElementById('lessonSetupNewTabButton');
+const lessonSetupOpenTabButton = document.getElementById('lessonSetupOpenTabButton');
+const lessonSetupNewPanel = document.getElementById('lessonSetupNewPanel');
+const lessonSetupOpenPanel = document.getElementById('lessonSetupOpenPanel');
+const lessonSubjectPicker = document.getElementById('lessonSubjectPicker');
+const lessonStartupArchiveBody = document.getElementById('lessonStartupArchiveBody');
+const lessonSetupCloseButton = document.getElementById('lessonSetupCloseButton');
+const lessonSetupStatus = document.getElementById('lessonSetupStatus');
+const lessonArchivePanel = document.getElementById('lessonArchivePanel');
+const lessonArchiveBody = document.getElementById('lessonArchiveBody');
+const lessonArchiveCloseButton = document.getElementById('lessonArchiveCloseButton');
+const settingsTabSubjectsButton = document.getElementById('settingsTabSubjectsButton');
+const settingsSubjectsTab = document.getElementById('settingsSubjectsTab');
+const lessonSubjectNewInput = document.getElementById('lessonSubjectNewInput');
+const lessonSubjectAddButton = document.getElementById('lessonSubjectAddButton');
+const lessonSubjectSettingsList = document.getElementById('lessonSubjectSettingsList');
 const weatherLocationLabel = document.getElementById('weatherLocationLabel');
 const weatherDetailPanel = document.getElementById('weatherDetailPanel');
 const weatherDetailTitle = document.getElementById('weatherDetailTitle');
@@ -221,19 +264,15 @@ const closeHistoryDetailButton = document.getElementById('closeHistoryDetailButt
 let db = null;
 let currentDate = localISODate(new Date());
 let currentPageKind = 'agenda';
+let lessonSubjects = loadLessonSubjects();
+let lessonIndex = loadLessonIndex();
+let activeLesson = loadActiveLesson();
+let currentLessonBoardIndex = Math.max(1, Number(activeLesson?.currentBoardIndex) || 1);
+if (activeLesson?.acquisitionDate) currentDate = activeLesson.acquisitionDate;
+let lessonMetaRenderTimer = 0;
+let lessonStartupPromptShown = false;
 let currentNoteIndex = 0;
 let currentNoteTotal = 0;
-let currentFreeNoteIndex = 1;
-let currentFreeNoteTotal = 1;
-let freeNoteCountLoaded = false;
-let currentRubricaLetter = 'A';
-let currentRubricaPageIndex = 1;
-let currentRubricaPageTotal = 1;
-let rubricaTouchSwipe = null;
-let rubricaReturnDescriptor = null;
-let rubricaExitInProgress = false;
-let rubricaPageSwitchBusy = false;
-let rubricaImageClipboard = null;
 const notesCountCache = new Map();
 let strokes = [];
 let images = [];
@@ -253,23 +292,21 @@ const pencilUiPointers = new Map();
 const recentPencilUiActivation = new WeakMap();
 const PENCIL_UI_TAP_MAX_DISTANCE = 28;
 const PENCIL_UI_TAP_MAX_DURATION_MS = 1400;
-// 0.1.44 — triplo tap Apple Pencil sulla Gomma = pulizia completa della pagina corrente.
-// Il gesto viene riconosciuto solo sulla toolbar, mai nel pointermove Ink.
+// 0.1.42 — triplo tap/click sulla Gomma = pulizia completa del foglio corrente.
+// Nel foglio continuo vengono rimossi TUTTI i segmenti tecnici della lezione;
+// il gesto resta confinato alla toolbar e non entra mai nel pointermove Ink.
 const ERASER_TRIPLE_TAP_WINDOW_MS = 1200;
-const ERASER_TRIPLE_TAP_MIN_INTERVAL_MS = 130;
+const ERASER_TRIPLE_TAP_MIN_INTERVAL_MS = 75;
 let eraserPenTapTimes = [];
 let eraserPenTapPageKey = '';
 let eraserClearBusy = false;
 
 let rect = null;
 let protectedTop = 0;
+let inkBottomInset = FOOTER_PX;
 let lastPoint = null;
 let activeStroke = null;
 let saveTimer = 0;
-// fix5: revisione monotona delle richieste di salvataggio. Impedisce a un
-// persistNow precedente di azzerare dirty dopo che una nuova modifica è stata
-// programmata mentre la transazione IndexedDB precedente era ancora in corso.
-let saveRequestSerial = 0;
 let idleHandle = 0;
 let dpr = 1;
 let storageBusy = false;
@@ -299,6 +336,7 @@ let historyDetailFetchController = null;
 let historyRefreshTimer = 0;
 let historyRequestSerial = 0;
 let weeklyTimetableReturnDescriptor = null;
+let lessonGoalsReturnDescriptor = null;
 let currentTimetableIndex = 1;
 let pageDoubleTapLastTap = null;
 let ready = false;
@@ -309,6 +347,35 @@ let lagMarks = [];
 let lastHandlerArrival = 0;
 let dirty = false;
 let pageSwipe = null;
+// 0.1.34 — Continuous Lesson. Una lezione è un solo foglio verticale; i segmenti
+// sono unità tecniche invisibili di virtualizzazione/persistenza.
+let continuousLessonActive = false;
+let continuousSegmentHeight = 0;
+let continuousVirtualCount = 3;
+let continuousScrollRaf = 0;
+let continuousPrefetchWindowKey = '';
+let continuousPrefetchGeneration = 0;
+let continuousScrollSettleTimer = 0;
+let continuousMomentumRaf = 0;
+let continuousTouch = null;
+let continuousStrokeScrollTop = 0;
+let continuousSwitchPromise = Promise.resolve();
+let continuousPendingSwitchIndex = 0;
+const continuousPendingInkStarts = new Map();
+const continuousSegmentCache = new Map();
+const continuousSegmentSlots = new Map();
+const continuousDirtySegments = new Set();
+let continuousSaveChain = Promise.resolve();
+// 0.1.34 — sessione viewport per strumenti che devono ignorare i confini tecnici
+// dei segmenti (Lazo/Immagini). I dati persistenti restano segmentati; la UI vede
+// una sola superficie continua. Nessuna di queste strutture viene usata nel pointermove Ink.
+let continuousViewportToolState = null;
+let continuousPendingLassoUndoProxyAction = null;
+let continuousInteractionCommitInProgress = false;
+const CONTINUOUS_CACHE_RADIUS = 2;
+const CONTINUOUS_STATIC_DPR = 1;
+const CONTINUOUS_GROW_AHEAD = 2;
+const CONTINUOUS_SCROLL_SETTLE_MS = 120;
 let pageTurning = false;
 let previewPage = null;
 let nativeTouchGestureId = null;
@@ -317,17 +384,15 @@ let lassoPointerCaptureElement = null;
 let lassoTouchId = null;
 let lassoLastTouch = null;
 let lastLassoPointerDownAt = -Infinity;
+// 0.1.7 — stato autorevole del Lazo, indipendente da DOM/CSS/activeTool.
+// Viene armato esclusivamente dalla scelta Lazo e disarmato scegliendo un altro strumento.
+let lassoSessionArmed = false;
 let shapeGesture = null;
 let lastPenPointerDownAt = -Infinity;
 const NATIVE_TOUCH_POINTER_ID = -2147483000;
 const NATIVE_LASSO_TOUCH_POINTER_ID = -2147482999;
 let activeTool = 'pen';
 let selectedShapeType = loadSelectedShapeType();
-let selectedShapeFill = loadSelectedShapeFill();
-let lastInkTool = 'pen';
-let rulerGesture = null;
-let rulerState = { x:.5, y:.48, angle:0 };
-let rulerInkTool = 'pen';
 let undoHistory = [];
 let redoHistory = [];
 let toolStyles = loadToolStyles();
@@ -338,9 +403,13 @@ let backupFoundation = null;
 let audioRecorder = null;
 let voiceScript = null;
 let lassoTool = null;
+let rulerTool = null;
+let rulerInkGuide = null;
 let passwordVault = null;
 let lastVoicePlacementTouchAt = -Infinity;
 let syncFoundation = null;
+let beautifyBusy = false;
+let beautifyAbortController = null;
 let syncStats = null;
 let lanTransport = null;
 let lanStats = null;
@@ -348,7 +417,22 @@ let cloudTransport = null;
 let cloudStats = null;
 let cloudHeartbeatTimer = 0;
 let syncRestoreGuard = loadSyncRestoreGuard();
+let localRestoreSyncQuarantine = loadLocalRestoreSyncQuarantine();
 let syncRecoveryRebuildActive = false;
+let backupSnapshotFreeze = false;
+let restoreOperationLocked = false;
+let restoreMutationActive = false;
+let lessonPdfController = null;
+let lessonPdfBusy = false;
+let lessonPdfSnapshotBusy = false;
+for (const type of ['pointerdown', 'touchstart', 'click', 'keydown', 'input', 'change']) {
+  window.addEventListener(type, event => {
+    if (event.target?.closest?.('[data-restore-recovery-action]')) return;
+    if (!restoreOperationLocked && document.documentElement.dataset.restoreCritical !== '1') return;
+    event.preventDefault(); event.stopImmediatePropagation();
+  }, { capture:true, passive:false });
+}
+let syncRemoteApplyBusy = false;
 const syncRecoveryRebuiltPages = new Set();
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
@@ -395,6 +479,2181 @@ function localISODate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function cleanLessonText(value, max = 160) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function loadLessonSubjects() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LESSON_SUBJECTS_STORAGE_KEY) || '[]');
+    const items = Array.isArray(raw) ? raw.map((v) => cleanLessonText(v, 80)).filter(Boolean) : [];
+    const unique = [...new Set(items)];
+    // Migrazione una tantum dalla vecchia baseline che proponeva soltanto "Informatica".
+    // Eventuali materie personalizzate dall'utente non vengono mai eliminate.
+    const oldDefaultOnly = unique.length === 1 && unique[0] === 'Informatica';
+    let migrated = !unique.length || oldDefaultOnly ? [...DEFAULT_LESSON_SUBJECTS] : unique;
+    // 0.1.14: aggiunge Note e Generica anche alle installazioni già esistenti,
+    // senza rimuovere né riordinare le materie personalizzate dall'utente.
+    for (const required of ['Note','Generica']) if (!migrated.includes(required)) migrated.push(required);
+    if (!localStorage.getItem(LESSON_SUBJECTS_DEFAULT_MIGRATION_KEY) || oldDefaultOnly || !unique.length || migrated.length !== unique.length) {
+      localStorage.setItem(LESSON_SUBJECTS_STORAGE_KEY, JSON.stringify(migrated));
+      localStorage.setItem(LESSON_SUBJECTS_DEFAULT_MIGRATION_KEY, '1');
+    }
+    return migrated;
+  } catch { return [...DEFAULT_LESSON_SUBJECTS]; }
+}
+
+function saveLessonSubjects() {
+  lessonSubjects = [...new Set(lessonSubjects.map((v) => cleanLessonText(v, 80)).filter(Boolean))];
+  if (!lessonSubjects.length) lessonSubjects = [...DEFAULT_LESSON_SUBJECTS];
+  try { localStorage.setItem(LESSON_SUBJECTS_STORAGE_KEY, JSON.stringify(lessonSubjects)); } catch {}
+}
+
+function normalizeBeautifyLessonFontSize(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 14 && n <= 76 ? n : null;
+}
+
+function normalizeLesson(value) {
+  if (!value || typeof value !== 'object') return null;
+  const id = cleanLessonText(value.id, 120);
+  if (!id) return null;
+  const acquisitionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(value.acquisitionDate || '')) ? String(value.acquisitionDate) : localISODate(new Date());
+  return {
+    id,
+    acquisitionDate,
+    createdAt: String(value.createdAt || new Date().toISOString()),
+    lastEditedAt: String(value.lastEditedAt || value.createdAt || new Date().toISOString()),
+    subject: cleanLessonText(value.subject, 80) || lessonSubjects[0] || 'Informatica 3G',
+    topic: cleanLessonText(value.topic, 160) || 'Nuova lezione',
+    // 0.1.27: baseline Beautify persistente a livello di lezione.
+    // null finché la prima conversione utile non stabilisce la misura.
+    beautifyFontSizePx: normalizeBeautifyLessonFontSize(value.beautifyFontSizePx),
+    dataGeneration: DATA_COMPATIBILITY_GENERATION,
+    // 0.1.34: boardCount/currentBoardIndex diventano segmentCount/currentSegmentIndex
+    // a livello semantico, ma manteniamo i nomi dei campi per ridurre la superficie
+    // di modifica nei sottosistemi (backup/sync/strumenti). I segmenti non sono UI.
+    boardCount: Math.max(1, Number(value.boardCount) || 1),
+    currentBoardIndex: Math.max(1, Number(value.currentBoardIndex) || Number(value.lastScrollSegment) || 1),
+    lastScrollSegment: Math.max(1, Number(value.lastScrollSegment) || Number(value.currentBoardIndex) || 1),
+    lastScrollOffset: Math.max(0, Math.min(0.999999, Number(value.lastScrollOffset) || 0)),
+    lastPageKind: ['agenda','planner-daily','planner-timetable'].includes(String(value.lastPageKind || '')) ? String(value.lastPageKind) : 'agenda',
+    lastNoteIndex: 0,
+    lastTimetableIndex: Math.max(1, Number(value.lastTimetableIndex) || 1)
+  };
+}
+
+function loadLessonIndex() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LESSON_INDEX_STORAGE_KEY) || '[]');
+    return Array.isArray(raw) ? raw.map(normalizeLesson).filter(Boolean) : [];
+  } catch { return []; }
+}
+
+function saveLessonIndex() {
+  try { localStorage.setItem(LESSON_INDEX_STORAGE_KEY, JSON.stringify(lessonIndex)); } catch {}
+}
+
+function loadActiveLesson() {
+  try { return normalizeLesson(JSON.parse(localStorage.getItem(ACTIVE_LESSON_STORAGE_KEY) || 'null')); }
+  catch { return null; }
+}
+
+function lessonBoardKey(lessonId, boardIndex = 1) {
+  return `lesson::${String(lessonId)}::segment::${String(Math.max(1, Number(boardIndex) || 1)).padStart(5, '0')}`;
+}
+
+function lessonGoalsKey(lessonId) {
+  return `lesson::${String(lessonId)}::goals`;
+}
+
+function lessonBoardNotesMetaKey(lessonId, boardIndex = 1) {
+  return `${lessonBoardKey(lessonId, boardIndex)}${NOTES_META_SUFFIX}`;
+}
+
+function notesCacheKey(dateString, lessonId = '', boardIndex = 0) {
+  return lessonId ? lessonBoardNotesMetaKey(lessonId, boardIndex) : `${dateString}${NOTES_META_SUFFIX}`;
+}
+
+function saveActiveLesson({ touch = false } = {}) {
+  if (restoreMutationActive) return;
+  if (!activeLesson) return;
+  const scrollPosition = continuousLessonActive
+    ? continuousCurrentScrollPosition()
+    : {
+        segment:Math.max(1, Number(activeLesson.lastScrollSegment) || Number(currentLessonBoardIndex) || 1),
+        offset:Math.max(0, Math.min(.999999, Number(activeLesson.lastScrollOffset) || 0))
+      };
+  activeLesson = normalizeLesson({
+    ...activeLesson,
+    currentBoardIndex: currentLessonBoardIndex,
+    boardCount: Math.max(Number(activeLesson.boardCount) || 1, currentLessonBoardIndex, scrollPosition.segment),
+    lastScrollSegment: scrollPosition.segment,
+    lastScrollOffset: scrollPosition.offset,
+    lastPageKind: ['agenda','planner-daily','planner-timetable'].includes(currentPageKind) ? currentPageKind : (activeLesson.lastPageKind || 'agenda'),
+    lastNoteIndex: 0,
+    lastTimetableIndex: currentPageKind === 'planner-timetable' ? Math.max(1, Number(currentTimetableIndex) || 1) : Math.max(1, Number(activeLesson.lastTimetableIndex) || 1),
+    lastEditedAt: touch ? new Date().toISOString() : activeLesson.lastEditedAt
+  });
+  const index = lessonIndex.findIndex((item) => item.id === activeLesson.id);
+  if (index >= 0) lessonIndex[index] = { ...activeLesson };
+  else lessonIndex.push({ ...activeLesson });
+  saveLessonIndex();
+  try { localStorage.setItem(ACTIVE_LESSON_STORAGE_KEY, JSON.stringify(activeLesson)); } catch {}
+}
+
+function makeLessonId() {
+  const stamp = localISODate(new Date()).replaceAll('-', '');
+  if (globalThis.crypto?.randomUUID) return `lesson-${stamp}-${crypto.randomUUID()}`;
+  return `lesson-${stamp}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatLessonDate(dateString) {
+  try {
+    const d = new Date(`${dateString}T12:00:00`);
+    return new Intl.DateTimeFormat('it-IT', { day:'2-digit', month:'long', year:'numeric' }).format(d);
+  } catch { return String(dateString || ''); }
+}
+
+function fillSubjectSelect(select, selected = '') {
+  if (!(select instanceof HTMLSelectElement)) return;
+  const value = cleanLessonText(selected, 80);
+  const values = [...lessonSubjects];
+  if (value && !values.includes(value)) values.unshift(value);
+  select.replaceChildren();
+  for (const subject of values) {
+    const option = document.createElement('option');
+    option.value = subject;
+    option.textContent = subject;
+    select.appendChild(option);
+  }
+  if (value) select.value = value;
+}
+
+let lessonSetupNewSubjectSelected = true;
+let lessonSetupNewSubjectExpanded = false;
+
+function lessonSetupNewSubjectInput() {
+  return document.getElementById('lessonSetupNewSubjectInput');
+}
+
+function setLessonSetupNewSubjectExpanded(expanded, { focus = false } = {}) {
+  lessonSetupNewSubjectExpanded = Boolean(expanded);
+  const creator = document.getElementById('lessonNewSubjectCreator');
+  const toggle = lessonSubjectPicker?.querySelector?.('[data-lesson-new-subject]');
+  if (creator) creator.hidden = !lessonSetupNewSubjectExpanded;
+  if (toggle) toggle.setAttribute('aria-expanded', lessonSetupNewSubjectExpanded ? 'true' : 'false');
+  if (focus && lessonSetupNewSubjectExpanded) {
+    window.setTimeout(() => {
+      const input = lessonSetupNewSubjectInput();
+      if (!input) return;
+      requestExpandedKeyboardFor(input);
+      try { input.focus({ preventScroll:true }); } catch { input.focus(); }
+    }, 30);
+  }
+}
+
+function selectLessonSetupNewSubject({ expand = false, focus = false } = {}) {
+  lessonSetupNewSubjectSelected = true;
+  if (lessonSetupSubject) lessonSetupSubject.value = '';
+  for (const button of lessonSubjectPicker?.querySelectorAll?.('[data-lesson-setup-subject]') || []) {
+    button.classList.remove('selected');
+    button.setAttribute('aria-selected', 'false');
+  }
+  const newButton = lessonSubjectPicker?.querySelector?.('[data-lesson-new-subject]');
+  newButton?.classList.add('selected');
+  newButton?.setAttribute('aria-selected', 'true');
+  if (expand) setLessonSetupNewSubjectExpanded(true, { focus });
+}
+
+function commitLessonSetupNewSubject() {
+  const input = lessonSetupNewSubjectInput();
+  const value = cleanLessonText(input?.value, 80);
+  if (!value) {
+    if (lessonSetupStatus) lessonSetupStatus.textContent = 'Inserisci il nome della nuova materia.';
+    setLessonSetupNewSubjectExpanded(true, { focus:true });
+    return false;
+  }
+  const existing = lessonSubjects.find((subject) => subject.localeCompare(value, 'it', { sensitivity:'base' }) === 0);
+  const subject = existing || value;
+  if (!existing) {
+    lessonSubjects.unshift(subject);
+    saveLessonSubjects();
+  }
+  lessonSetupNewSubjectSelected = false;
+  lessonSetupNewSubjectExpanded = false;
+  renderLessonSubjectPicker(subject);
+  selectLessonSetupSubject(subject);
+  if (lessonSetupStatus) lessonSetupStatus.textContent = existing ? 'Materia già presente: selezionata.' : 'Nuova materia aggiunta e selezionata.';
+  return true;
+}
+
+function renderLessonSubjectPicker(selected = '', { preferNew = false } = {}) {
+  if (!lessonSubjectPicker) return;
+  const preferred = cleanLessonText(selected, 80) || lessonSetupSubject?.value || lessonSubjects[0] || '';
+  fillSubjectSelect(lessonSetupSubject, preferred);
+  lessonSubjectPicker.replaceChildren();
+
+  const newWrap = document.createElement('div');
+  newWrap.className = 'lesson-new-subject-wrap';
+  const newButton = document.createElement('button');
+  newButton.type = 'button';
+  newButton.className = 'lesson-subject-choice lesson-new-subject-choice';
+  newButton.dataset.lessonNewSubject = 'true';
+  newButton.textContent = '＋ Nuova materia';
+  newButton.setAttribute('role', 'option');
+  newButton.setAttribute('aria-expanded', lessonSetupNewSubjectExpanded ? 'true' : 'false');
+  const newSelected = preferNew || lessonSetupNewSubjectSelected;
+  newButton.classList.toggle('selected', newSelected);
+  newButton.setAttribute('aria-selected', newSelected ? 'true' : 'false');
+
+  const creator = document.createElement('div');
+  creator.id = 'lessonNewSubjectCreator';
+  creator.className = 'lesson-new-subject-creator';
+  creator.hidden = !lessonSetupNewSubjectExpanded;
+  creator.innerHTML = `<label for="lessonSetupNewSubjectInput">Nome nuova materia</label><div class="lesson-new-subject-entry"><input id="lessonSetupNewSubjectInput" class="expanded-keyboard-input" type="text" inputmode="text" maxlength="80" autocomplete="off" autocapitalize="sentences" enterkeyhint="done" placeholder="Scrivi con tastiera o Apple Pencil"><button id="lessonSetupAddNewSubjectButton" type="button">Aggiungi</button></div><small>Tastiera testuale estesa · compatibile con Scribble/Apple Pencil.</small>`;
+  newWrap.append(newButton, creator);
+  lessonSubjectPicker.appendChild(newWrap);
+
+  for (const subject of lessonSubjects) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'lesson-subject-choice';
+    button.dataset.lessonSetupSubject = subject;
+    button.textContent = subject;
+    const isSelected = !newSelected && subject === (lessonSetupSubject?.value || preferred);
+    button.classList.toggle('selected', isSelected);
+    button.setAttribute('role', 'option');
+    button.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    lessonSubjectPicker.appendChild(button);
+  }
+  if (newSelected && lessonSetupSubject) lessonSetupSubject.value = '';
+  prepareExpandedKeyboards(creator);
+}
+
+function selectLessonSetupSubject(subject) {
+  const value = cleanLessonText(subject, 80);
+  if (!value || !lessonSubjects.includes(value)) return;
+  lessonSetupNewSubjectSelected = false;
+  lessonSetupNewSubjectExpanded = false;
+  if (lessonSetupSubject) lessonSetupSubject.value = value;
+  const creator = document.getElementById('lessonNewSubjectCreator');
+  if (creator) creator.hidden = true;
+  const newButton = lessonSubjectPicker?.querySelector?.('[data-lesson-new-subject]');
+  newButton?.classList.remove('selected');
+  newButton?.setAttribute('aria-selected', 'false');
+  newButton?.setAttribute('aria-expanded', 'false');
+  for (const button of lessonSubjectPicker?.querySelectorAll?.('[data-lesson-setup-subject]') || []) {
+    const selected = button.dataset.lessonSetupSubject === value;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+  }
+}
+
+function renderLessonHeaderFor(root = document, descriptor = null, forceStatic = false) {
+  const desc = descriptor || pageDescriptor();
+  const host = root?.classList?.contains?.('paper') ? root : root?.querySelector?.('.paper') || root;
+  const wrap = host?.querySelector?.('.lesson-header');
+  if (!wrap) return;
+  const lessonSurface = (desc?.kind === 'agenda' || desc?.kind === 'note') && Boolean(activeLesson);
+  wrap.hidden = !lessonSurface;
+  if (closeLessonButton) closeLessonButton.hidden = !activeLesson;
+  const progress = host?.querySelector?.('.lesson-board-progress');
+  if (progress) progress.hidden = !lessonSurface;
+  if (!lessonSurface) return;
+  const dateEl = wrap.querySelector('.lesson-date-label');
+  const display = wrap.querySelector('.lesson-meta-display');
+  const editor = wrap.querySelector('.lesson-meta-editor');
+  const subjectLabel = wrap.querySelector('.lesson-subject-label');
+  const topicLabel = wrap.querySelector('.lesson-topic-label');
+  const noteLabel = wrap.querySelector('.lesson-note-label');
+  if (dateEl) dateEl.textContent = formatLessonDate(activeLesson.acquisitionDate);
+  if (subjectLabel) subjectLabel.textContent = activeLesson.subject;
+  if (topicLabel) topicLabel.textContent = activeLesson.topic;
+  const boardIndex = Math.max(1, Number(desc.lessonBoardIndex) || currentLessonBoardIndex || 1);
+  const boardCount = Math.max(boardIndex, Number(activeLesson.boardCount) || 1);
+  // 0.1.20: nelle schermate Lavagna i metadati della lezione sono solo informativi.
+  // Materia e Argomento si impostano esclusivamente in "Nuova lezione".
+  const editable = false;
+  if (display) display.hidden = false;
+  if (editor) editor.hidden = true;
+  if (noteLabel) {
+    // Le continuazioni verticali sono segmenti tecnici della stessa pagina Note:
+    // non vengono esposte come pagine Nota separate nell'interfaccia.
+    noteLabel.hidden = true;
+    noteLabel.textContent = '';
+  }
+  if (progress) { progress.textContent = `${boardIndex}/${boardCount}`; progress.setAttribute('aria-label', `Pagina Note ${boardIndex}/${boardCount}`); }
+}
+function notifyLessonSurfaceChanged(reason = 'lesson-meta') {
+  clearTimeout(lessonMetaRenderTimer);
+  lessonMetaRenderTimer = window.setTimeout(() => renderLessonHeaderFor(document), 120);
+}
+
+function updateActiveLessonMetadata(subject, topic, { touch = true, notify = true } = {}) {
+  if (!activeLesson) return;
+  const cleanSubject = cleanLessonText(subject, 80) || activeLesson.subject;
+  const cleanTopic = cleanLessonText(topic, 160) || activeLesson.topic;
+  activeLesson = { ...activeLesson, subject:cleanSubject, topic:cleanTopic };
+  if (!lessonSubjects.includes(cleanSubject)) { lessonSubjects.push(cleanSubject); saveLessonSubjects(); renderLessonSubjectSettings(); }
+  saveActiveLesson({ touch });
+  renderLessonHeaderFor(document);
+  if (notify) notifyLessonSurfaceChanged('lesson-meta-change');
+}
+
+function renderLessonSubjectSettings() {
+  if (!lessonSubjectSettingsList) return;
+  lessonSubjectSettingsList.replaceChildren();
+  for (const subject of lessonSubjects) {
+    const row = document.createElement('div');
+    row.className = 'lesson-subject-settings-row';
+    const label = document.createElement('span');
+    label.textContent = subject;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.dataset.lessonSubjectRemove = subject;
+    remove.textContent = 'Rimuovi';
+    row.append(label, remove);
+    lessonSubjectSettingsList.appendChild(row);
+  }
+  fillSubjectSelect(lessonSetupSubject, activeLesson?.subject || lessonSubjects[0]);
+  renderLessonSubjectPicker(lessonSetupSubject?.value || activeLesson?.subject || lessonSubjects[0], { preferNew:false });
+  fillSubjectSelect(lessonSubjectSelect, activeLesson?.subject || lessonSubjects[0]);
+}
+
+function createLessonRecord(subject, topic) {
+  const now = new Date();
+  return normalizeLesson({
+    id: makeLessonId(),
+    acquisitionDate: localISODate(now),
+    createdAt: now.toISOString(),
+    lastEditedAt: now.toISOString(),
+    subject: cleanLessonText(subject, 80) || lessonSubjects[0] || 'Informatica 3G',
+    topic: cleanLessonText(topic, 160) || 'Nuova lezione',
+    boardCount: 1,
+    currentBoardIndex: 1,
+    lastScrollSegment: 1,
+    lastScrollOffset: 0,
+    lastPageKind: 'agenda',
+    lastNoteIndex: 0,
+    lastTimetableIndex: 1
+  });
+}
+
+
+// -----------------------------------------------------------------------------
+// 0.1.34 — CONTINUOUS LESSON CORE
+// -----------------------------------------------------------------------------
+// Un solo canvas Ink Retina rimane attivo. Il documento verticale è spezzato in
+// segmenti tecnici della stessa altezza dell'area scrivibile: i segmenti vicini
+// vengono mostrati con canvas statici DPR=1 e caricati fuori dal pointermove.
+// La pipeline Apple Pencil (normalizeEvent -> drawBatch) non conosce lo scroll.
+
+function continuousIsLessonSurface(kind = currentPageKind) {
+  return Boolean(activeLesson?.id) && kind === 'agenda';
+}
+
+function continuousMetrics() {
+  const paperRect = paper.getBoundingClientRect();
+  const headerRect = header.getBoundingClientRect();
+  const top = Math.max(0, Math.min(paperRect.height, protectedTop || (headerRect.bottom - paperRect.top)));
+  const bottom = FOOTER_PX;
+  const height = Math.max(160, paperRect.height - top - bottom);
+  return { width:Math.max(1, paperRect.width), paperHeight:Math.max(1, paperRect.height), top, bottom, height };
+}
+
+function continuousCurrentScrollPosition() {
+  const segmentHeight = Math.max(1, continuousSegmentHeight || continuousMetrics().height);
+  if (!continuousViewport || !continuousLessonActive) {
+    return {
+      segment: Math.max(1, Number(currentLessonBoardIndex) || 1),
+      offset: Math.max(0, Math.min(.999999, Number(activeLesson?.lastScrollOffset) || 0))
+    };
+  }
+  const logical = Math.max(0, Number(continuousViewport.scrollTop) || 0) / segmentHeight;
+  const floor = Math.floor(logical);
+  return { segment:floor + 1, offset:Math.max(0, Math.min(.999999, logical - floor)) };
+}
+
+function continuousInteractiveLayers() {
+  // 0.1.34: tutti i layer interattivi restano fissi alla viewport. I confini
+  // di persistenza non devono mai spostare Lazo/Figure/Voce/Immagini rispetto
+  // alla Pencil o al dito; la conversione verso i segmenti avviene a fine gesto.
+  return [];
+}
+
+function continuousResetInteractiveTransforms() {
+  if (canvas) { canvas.style.transform = ''; canvas.style.willChange = ''; }
+  for (const element of continuousInteractiveLayers()) {
+    element.style.transform = '';
+    element.style.willChange = '';
+  }
+  rect = canvas.getBoundingClientRect();
+}
+
+function continuousApplyInteractiveTransform() {
+  if (!continuousLessonActive || !continuousViewport || !continuousSegmentHeight) return;
+  const segmentTop = (Math.max(1, Number(currentLessonBoardIndex) || 1) - 1) * continuousSegmentHeight;
+  const offset = segmentTop - continuousViewport.scrollTop;
+  const transform = `translate3d(0, ${offset}px, 0)`;
+  for (const element of continuousInteractiveLayers()) {
+    element.style.willChange = 'transform';
+    element.style.transform = transform;
+  }
+  // startStroke aggiorna comunque rect al PEN DOWN; questo valore serve agli
+  // strumenti che possono essere armati subito dopo lo scroll.
+  rect = canvas.getBoundingClientRect();
+}
+
+function continuousUpdateTrackHeight() {
+  if (!continuousTrack || !continuousSegmentHeight) return;
+  const count = Math.max(3, continuousVirtualCount, Number(activeLesson?.boardCount) || 1);
+  continuousVirtualCount = count;
+  continuousTrack.style.height = `${Math.ceil(count * continuousSegmentHeight)}px`;
+}
+
+function continuousEnsureVirtualGrowth(scrollTop = continuousViewport?.scrollTop || 0) {
+  if (!continuousLessonActive || !continuousViewport || !continuousSegmentHeight) return;
+  const viewportHeight = Math.max(1, continuousViewport.clientHeight || continuousSegmentHeight);
+  const lastVisible = Math.floor((scrollTop + viewportHeight - 1) / continuousSegmentHeight) + 1;
+  if (lastVisible >= continuousVirtualCount - 1) {
+    continuousVirtualCount = Math.max(continuousVirtualCount + CONTINUOUS_GROW_AHEAD, lastVisible + CONTINUOUS_GROW_AHEAD);
+    continuousUpdateTrackHeight();
+  }
+}
+
+function continuousSegmentDescriptor(index) {
+  return pageDescriptor(activeLesson?.acquisitionDate || currentDate, 'agenda', 0, 0, currentTimetableIndex, Math.max(1, Number(index) || 1));
+}
+
+function continuousCaptureActiveEntry() {
+  if (!activeLesson?.id || currentPageKind !== 'agenda') return null;
+  const index = Math.max(1, Number(currentLessonBoardIndex) || 1);
+  const previous = continuousSegmentCache.get(index);
+  const entry = {
+    index,
+    lessonId:String(activeLesson.id),
+    key:lessonBoardKey(activeLesson.id, index),
+    strokes,
+    images,
+    pageStyle:{ ...pageStyle },
+    undoHistory:[...undoHistory],
+    redoHistory:[...redoHistory],
+    revision:Math.max(0, Number(previous?.revision) || 0),
+    loaded:true
+  };
+  continuousSegmentCache.set(index, entry);
+  if (dirty) {
+    continuousDirtySegments.add(index);
+    const slot = continuousSegmentSlots.get(index);
+    if (slot) slot.renderedKey = '';
+  }
+  return entry;
+}
+
+async function continuousLoadSegment(index) {
+  index = Math.max(1, Number(index) || 1);
+  const lessonIdAtStart = String(activeLesson?.id || '');
+  if (!lessonIdAtStart || !continuousLessonActive || currentPageKind !== 'agenda') return null;
+  if (index === currentLessonBoardIndex && activeLesson?.id && String(activeLesson.id) === lessonIdAtStart) {
+    return continuousCaptureActiveEntry();
+  }
+  const cached = continuousSegmentCache.get(index);
+  if (cached?.loaded && String(cached.lessonId || lessonIdAtStart) === lessonIdAtStart) return cached;
+  await openDb();
+  // Un prefetch può terminare dopo chiusura/cambio lezione: non deve mai
+  // contaminare la cache della nuova sessione.
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || String(activeLesson?.id || '') !== lessonIdAtStart) return null;
+  const descriptor = continuousSegmentDescriptor(index);
+  const record = await getRecord(descriptor.key).catch(() => null);
+  session.storageReads++;
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || String(activeLesson?.id || '') !== lessonIdAtStart) return null;
+  // A concurrent prefetch may already have populated this segment, followed by
+  // Beautify/Lazo/eraser edits. A late disk snapshot must never replace it.
+  if (index === currentLessonBoardIndex) return continuousCaptureActiveEntry();
+  const current = continuousSegmentCache.get(index);
+  if (current?.loaded && String(current.lessonId || lessonIdAtStart) === lessonIdAtStart) return current;
+  const entry = {
+    index,
+    lessonId:lessonIdAtStart,
+    key:descriptor.key,
+    strokes:Array.isArray(record?.strokes) ? record.strokes : [],
+    images:imagesFromRecord(record),
+    pageStyle:pageStyleForDescriptor(record, descriptor),
+    undoHistory:[],
+    redoHistory:[],
+    revision:0,
+    loaded:true
+  };
+  continuousSegmentCache.set(index, entry);
+  return entry;
+}
+
+function continuousDrawStaticStroke(targetCtx, width, height, topInset, bottomInset, stroke, paperColor) {
+  targetCtx.save();
+  targetCtx.beginPath();
+  targetCtx.rect(0, topInset, width, Math.max(0, height - topInset - bottomInset));
+  targetCtx.clip();
+  if (isCrossPlatformTextItem(stroke)) {
+    drawCrossPlatformText(stroke, targetCtx, width, height, paperColor);
+    targetCtx.restore();
+    return;
+  }
+  const points = stroke?.points ?? [];
+  if (!points.length) { targetCtx.restore(); return; }
+  setupStoredStrokeStyle(stroke, targetCtx, paperColor);
+  if (points.length === 1) {
+    const point = points[0];
+    targetCtx.beginPath();
+    targetCtx.arc(point.x * width, point.y * height, Math.max(.7, (stroke.width ?? PEN_WIDTH) / 2), 0, Math.PI * 2);
+    targetCtx.fill();
+    targetCtx.restore();
+    return;
+  }
+  targetCtx.beginPath();
+  targetCtx.moveTo(points[0].x * width, points[0].y * height);
+  for (let i = 1; i < points.length; i++) targetCtx.lineTo(points[i].x * width, points[i].y * height);
+  targetCtx.stroke();
+  targetCtx.restore();
+}
+
+function continuousCreateSlot(index) {
+  if (!continuousTrack) return null;
+  let slot = continuousSegmentSlots.get(index);
+  if (slot?.root?.isConnected) return slot;
+  const root = document.createElement('div');
+  root.className = 'continuous-segment-slot';
+  root.dataset.segmentIndex = String(index);
+  const staticCanvas = document.createElement('canvas');
+  staticCanvas.className = 'continuous-static-canvas';
+  const imageHost = document.createElement('div');
+  imageHost.className = 'continuous-static-images';
+  root.append(imageHost, staticCanvas);
+  continuousTrack.appendChild(root);
+  slot = { root, canvas:staticCanvas, imageHost, index, renderedKey:'' };
+  continuousSegmentSlots.set(index, slot);
+  return slot;
+}
+
+function continuousPositionSlot(slot) {
+  if (!slot || !continuousSegmentHeight) return;
+  const m = continuousMetrics();
+  slot.root.style.top = `${(slot.index - 1) * continuousSegmentHeight}px`;
+  slot.root.style.height = `${continuousSegmentHeight}px`;
+  slot.root.style.width = `${m.width}px`;
+  slot.canvas.style.left = '0px';
+  slot.canvas.style.top = `${-m.top}px`;
+  slot.canvas.style.width = `${m.width}px`;
+  slot.canvas.style.height = `${m.paperHeight}px`;
+}
+
+function continuousRenderStaticSegment(index, entry = continuousSegmentCache.get(index)) {
+  if (!continuousLessonActive || !entry?.loaded || !continuousTrack) return;
+  const slot = continuousCreateSlot(index);
+  if (!slot) return;
+  continuousPositionSlot(slot);
+  slot.root.hidden = false;
+  // Le immagini persistenti appartengono ai tile statici anche nel segmento corrente.
+  // Nasconderle qui causerebbe sparizioni al ritorno da Lazo/Immagini.
+  slot.imageHost.style.visibility = '';
+  const m = continuousMetrics();
+  const ratio = CONTINUOUS_STATIC_DPR;
+  const pxW = Math.max(1, Math.round(m.width * ratio));
+  const pxH = Math.max(1, Math.round(m.paperHeight * ratio));
+  const renderKey = `${entry.key}|${(entry.strokes||[]).length}|${(entry.images||[]).length}|${entry.pageStyle?.color}|${entry.pageStyle?.template}|${pxW}x${pxH}`;
+  if (slot.renderedKey === renderKey) return;
+  if (slot.canvas.width !== pxW) slot.canvas.width = pxW;
+  if (slot.canvas.height !== pxH) slot.canvas.height = pxH;
+  const targetCtx = slot.canvas.getContext('2d', { alpha:true, desynchronized:true });
+  targetCtx.setTransform(1,0,0,1,0,0);
+  targetCtx.clearRect(0,0,slot.canvas.width,slot.canvas.height);
+  targetCtx.setTransform(ratio,0,0,ratio,0,0);
+  for (const stroke of entry.strokes || []) continuousDrawStaticStroke(targetCtx, m.width, m.paperHeight, m.top, m.bottom, stroke, entry.pageStyle?.color || pageStyle.color);
+  slot.imageHost.replaceChildren();
+  renderImages(slot.imageHost, entry.images || [], false);
+  slot.renderedKey = renderKey;
+}
+
+function continuousHideActiveStaticSlot() {
+  // In modalità normale TUTTO il contenuto persistito (Ink + immagini) resta
+  // nei tile statici, compreso il segmento corrente. Quando Lazo/Immagini sono
+  // attivi la classe continuous-tool-preview nasconde i tile via CSS e mostra
+  // la composizione unificata della viewport. Nessuna immagine deve quindi
+  // sparire semplicemente perché il suo segmento è quello attivo.
+  for (const [, slot] of continuousSegmentSlots) {
+    slot.root.hidden = false;
+    if (slot.imageHost) slot.imageHost.style.visibility = '';
+  }
+}
+
+function continuousTrimCache(centerIndex) {
+  const keepRadius = CONTINUOUS_CACHE_RADIUS + 2;
+  for (const [index] of continuousSegmentCache) {
+    if (index === currentLessonBoardIndex || continuousDirtySegments.has(index) || Math.abs(index - centerIndex) <= keepRadius) continue;
+    continuousSegmentCache.delete(index);
+    const slot = continuousSegmentSlots.get(index);
+    slot?.root?.remove();
+    continuousSegmentSlots.delete(index);
+  }
+}
+
+async function continuousPrefetchAroundScroll({ force = false } = {}) {
+  if (!continuousLessonActive || !continuousViewport || !continuousSegmentHeight || !activeLesson?.id) return;
+  const lessonIdAtStart = String(activeLesson.id);
+  const viewportHeight = Math.max(1, continuousViewport.clientHeight || continuousSegmentHeight);
+  const first = Math.max(1, Math.floor(continuousViewport.scrollTop / continuousSegmentHeight) + 1);
+  const last = Math.max(first, Math.floor((continuousViewport.scrollTop + viewportHeight - 1) / continuousSegmentHeight) + 1);
+  const low = Math.max(1, first - CONTINUOUS_CACHE_RADIUS);
+  const high = Math.min(continuousVirtualCount, last + CONTINUOUS_CACHE_RADIUS);
+  const windowKey = `${lessonIdAtStart}:${low}:${high}:${continuousVirtualCount}`;
+  if (!force && windowKey === continuousPrefetchWindowKey) return;
+  continuousPrefetchWindowKey = windowKey;
+  const generation = ++continuousPrefetchGeneration;
+  const jobs = [];
+  for (let index = low; index <= high; index++) {
+    jobs.push(continuousLoadSegment(index).then((entry) => {
+      if (entry && generation === continuousPrefetchGeneration && String(activeLesson?.id || '') === lessonIdAtStart) continuousRenderStaticSegment(index, entry);
+    }).catch((err) => console.warn('Prefetch segmento continuo non riuscito', index, err)));
+  }
+  await Promise.all(jobs);
+  // Un prefetch obsoleto non può effettuare trim sulla finestra più recente.
+  if (generation !== continuousPrefetchGeneration || !continuousLessonActive || String(activeLesson?.id || '') !== lessonIdAtStart) return;
+  continuousTrimCache(Math.floor((first + last) / 2));
+}
+
+function continuousQueueSave(index, entry) {
+  if (!entry?.loaded || !activeLesson?.id) return continuousSaveChain;
+  continuousDirtySegments.add(index);
+  continuousSaveChain = continuousSaveChain.catch(() => {}).then(async () => {
+    const current = continuousSegmentCache.get(index) || entry;
+    if (!current?.loaded) return false;
+    // Snapshot stabile + revisione: una modifica avvenuta mentre IndexedDB sta
+    // scrivendo non può essere "coperta" dal completamento di un salvataggio più
+    // vecchio. Il clone è fuori dal loop Ink e rende atomico il contenuto logico.
+    const saveRevision = Math.max(0, Number(current.revision) || 0);
+    const snapshot = {
+      strokes:continuousDeepClone(current.strokes || []),
+      images:continuousDeepClone(current.images || []),
+      pageStyle:{ ...(current.pageStyle || pageStyle) }
+    };
+    // La revisione copre tutte le mutazioni native del nuovo core. Il fingerprint
+    // completo copre anche eventuali percorsi legacy che modificano il record
+    // mantenendo la stessa revisione: un commit vecchio non può mai pulire dati nuovi.
+    const snapshotFingerprint = continuousObjectJson(snapshot);
+    const descriptor = continuousSegmentDescriptor(index);
+    const ok = await persistSnapshot(descriptor, snapshot.strokes, false, snapshot.pageStyle, snapshot.images);
+    const latest = continuousSegmentCache.get(index) || current;
+    const latestFingerprint = continuousObjectJson({
+      strokes:latest.strokes || [],
+      images:latest.images || [],
+      pageStyle:{ ...(latest.pageStyle || pageStyle) }
+    });
+    const unchanged = Math.max(0, Number(latest.revision) || 0) === saveRevision && latestFingerprint === snapshotFingerprint;
+    if (ok && unchanged) continuousDirtySegments.delete(index);
+    else continuousDirtySegments.add(index);
+    if (!ok) throw new Error(`Salvataggio segmento ${index} non riuscito`);
+    return ok;
+  }).catch((err) => {
+    console.warn('Salvataggio foglio continuo non riuscito', err);
+    return false;
+  });
+  return continuousSaveChain;
+}
+
+async function flushContinuousSegmentSaves() {
+  if (continuousLessonActive && dirty) continuousCaptureActiveEntry();
+  if (activeLesson?.id && currentPageKind === 'agenda') {
+    for (const index of [...continuousDirtySegments]) {
+      const entry = continuousSegmentCache.get(index);
+      if (entry?.loaded) continuousQueueSave(index, entry);
+    }
+  }
+  await continuousSaveChain.catch(() => false);
+  const ok = continuousDirtySegments.size === 0;
+  if (ok && currentPageKind === 'agenda') dirty = false;
+  return ok;
+}
+
+async function continuousSwitchToSegment(index, { savePrevious = true, status = false } = {}) {
+  if (!continuousLessonActive || !activeLesson?.id || currentPageKind !== 'agenda' || drawing) return false;
+  index = Math.max(1, Number(index) || 1);
+  if (index === currentLessonBoardIndex) {
+    continuousApplyInteractiveTransform();
+    return true;
+  }
+  continuousPendingSwitchIndex = index;
+  continuousSwitchPromise = continuousSwitchPromise.catch(() => {}).then(async () => {
+    if (!continuousLessonActive || continuousPendingSwitchIndex !== index) return false;
+    const target = await continuousLoadSegment(index);
+    if (!target || continuousPendingSwitchIndex !== index) return false;
+
+    const oldIndex = currentLessonBoardIndex;
+    const oldEntry = continuousCaptureActiveEntry();
+    if (oldEntry) {
+      continuousRenderStaticSegment(oldIndex, oldEntry);
+      if (savePrevious && (dirty || continuousDirtySegments.has(oldIndex))) continuousQueueSave(oldIndex, oldEntry);
+    }
+
+    currentLessonBoardIndex = index;
+    activeLesson = normalizeLesson({
+      ...activeLesson,
+      boardCount:Math.max(Number(activeLesson.boardCount) || 1, index),
+      currentBoardIndex:index,
+      lastScrollSegment:index
+    });
+    strokes = target.strokes || [];
+    images = target.images || [];
+    pageStyle = normalizePageStyle(target.pageStyle || pageStyle);
+    undoHistory = Array.isArray(target.undoHistory) ? [...target.undoHistory] : [];
+    redoHistory = Array.isArray(target.redoHistory) ? [...target.redoHistory] : [];
+    dirty = continuousDirtySegments.has(index);
+    selectedImageId = null;
+    applyPageStyle();
+    updatePageStyleUi();
+    renderAll();
+    renderImages();
+    continuousHideActiveStaticSlot();
+    continuousApplyInteractiveTransform();
+    updateUndoRedoUi();
+    saveActiveLesson({ touch:false });
+    void continuousPrefetchAroundScroll();
+    if (status) statusLabel.textContent = `foglio continuo · posizione ${index}`;
+    return true;
+  });
+  return continuousSwitchPromise;
+}
+
+function continuousSegmentAtClientY(clientY) {
+  if (!continuousViewport || !continuousSegmentHeight) return currentLessonBoardIndex;
+  const vr = continuousViewport.getBoundingClientRect();
+  const local = Math.max(0, Math.min(vr.height - 0.001, clientY - vr.top));
+  return Math.max(1, Math.floor((continuousViewport.scrollTop + local) / continuousSegmentHeight) + 1);
+}
+
+function continuousScheduleSettleSwitch() {
+  clearTimeout(continuousScrollSettleTimer);
+  continuousScrollSettleTimer = window.setTimeout(() => {
+    continuousScrollSettleTimer = 0;
+    if (!continuousLessonActive || continuousTouch || drawing || !continuousSegmentHeight) return;
+    const vr = continuousViewport.getBoundingClientRect();
+    const index = continuousSegmentAtClientY(vr.top + vr.height * .5);
+    void continuousSwitchToSegment(index, { savePrevious:true }).then(() => {
+      if (activeTool === 'lasso' || activeTool === 'image') {
+        continuousEnsureViewportToolState({ force:true });
+        continuousSetToolPreview(true);
+        renderAll();
+        renderImages();
+        lassoTool?.syncPage?.();
+      }
+    });
+  }, CONTINUOUS_SCROLL_SETTLE_MS);
+}
+
+function continuousHandleScroll() {
+  if (!continuousLessonActive || !continuousViewport) return;
+  continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+  if (continuousScrollRaf) return;
+  continuousScrollRaf = requestAnimationFrame(() => {
+    continuousScrollRaf = 0;
+    continuousApplyInteractiveTransform();
+    void continuousPrefetchAroundScroll();
+    continuousScheduleSettleSwitch();
+  });
+}
+
+function continuousStopMomentum() {
+  if (continuousMomentumRaf) cancelAnimationFrame(continuousMomentumRaf);
+  continuousMomentumRaf = 0;
+}
+
+function continuousStartMomentum(velocityPxMs) {
+  continuousStopMomentum();
+  let velocity = Number(velocityPxMs) || 0;
+  let last = performance.now();
+  const frame = (now) => {
+    if (!continuousLessonActive || drawing || Math.abs(velocity) < .018) {
+      continuousMomentumRaf = 0;
+      continuousScheduleSettleSwitch();
+      return;
+    }
+    const dt = Math.min(32, Math.max(1, now - last));
+    last = now;
+    const before = continuousViewport.scrollTop;
+    continuousViewport.scrollTop = Math.max(0, before + velocity * dt);
+    continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+    continuousHandleScroll();
+    if (continuousViewport.scrollTop === before && velocity < 0) velocity = 0;
+    else velocity *= Math.pow(.93, dt / 16.67);
+    continuousMomentumRaf = requestAnimationFrame(frame);
+  };
+  if (Math.abs(velocity) >= .018) continuousMomentumRaf = requestAnimationFrame(frame);
+}
+
+function continuousBeginTouchScroll(touch) {
+  continuousStopMomentum();
+  clearTimeout(continuousScrollSettleTimer);
+  // Lo scroll cambia il sistema di coordinate viewport degli strumenti. Una
+  // selezione Lazo non viene trascinata implicitamente durante lo swipe: viene
+  // chiusa e ricostruita a scroll concluso, mentre i dati persistenti restano intatti.
+  if (continuousViewportToolState) continuousClearViewportToolState({ clearSelection:true });
+  continuousTouch = {
+    id:touch.identifier,
+    startX:touch.clientX,
+    startY:touch.clientY,
+    lastX:touch.clientX,
+    lastY:touch.clientY,
+    lastAt:performance.now(),
+    startScrollTop:continuousViewport.scrollTop,
+    moved:false,
+    velocity:0
+  };
+}
+
+function continuousMoveTouchScroll(touch) {
+  const g = continuousTouch;
+  if (!g || touch.identifier !== g.id) return false;
+  const now = performance.now();
+  const dy = touch.clientY - g.lastY;
+  const dxTotal = touch.clientX - g.startX;
+  const dyTotal = touch.clientY - g.startY;
+  if (!g.moved && Math.hypot(dxTotal, dyTotal) > 7) g.moved = true;
+  if (g.moved) {
+    const dt = Math.max(1, now - g.lastAt);
+    const instantaneous = (-dy) / dt;
+    g.velocity = g.velocity * .72 + instantaneous * .28;
+    continuousViewport.scrollTop = Math.max(0, continuousViewport.scrollTop - dy);
+    continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+    continuousHandleScroll();
+  }
+  g.lastX = touch.clientX;
+  g.lastY = touch.clientY;
+  g.lastAt = now;
+  return g.moved;
+}
+
+function continuousEndTouchScroll(touch, cancelled = false) {
+  const g = continuousTouch;
+  if (!g || (touch && touch.identifier !== g.id)) return { handled:false, moved:false };
+  continuousTouch = null;
+  if (!cancelled && g.moved) continuousStartMomentum(g.velocity);
+  else continuousScheduleSettleSwitch();
+  return { handled:true, moved:g.moved };
+}
+
+function continuousClearRuntime({ keepLesson = false } = {}) {
+  continuousStopMomentum();
+  clearTimeout(continuousScrollSettleTimer);
+  continuousScrollSettleTimer = 0;
+  if (continuousScrollRaf) cancelAnimationFrame(continuousScrollRaf);
+  continuousScrollRaf = 0;
+  continuousPrefetchWindowKey = '';
+  continuousPrefetchGeneration++;
+  continuousTouch = null;
+  continuousPendingInkStarts.clear();
+  continuousClearViewportToolState({ clearSelection:true });
+  continuousResetInteractiveTransforms();
+  continuousLessonActive = false;
+  paper.classList.remove('continuous-lesson-mode');
+  if (continuousViewport) continuousViewport.hidden = true;
+  if (!keepLesson) {
+    continuousSegmentCache.clear();
+    continuousDirtySegments.clear();
+    for (const slot of continuousSegmentSlots.values()) slot.root?.remove();
+    continuousSegmentSlots.clear();
+    if (continuousTrack) continuousTrack.replaceChildren();
+  }
+}
+
+async function continuousActivate({ segmentIndex = currentLessonBoardIndex, offset = 0, preserveCache = false } = {}) {
+  if (!activeLesson?.id || currentPageKind !== 'agenda' || !continuousViewport || !continuousTrack) return false;
+  continuousStopMomentum();
+  if (!preserveCache) {
+    continuousSegmentCache.clear();
+    for (const slot of continuousSegmentSlots.values()) slot.root?.remove();
+    continuousSegmentSlots.clear();
+    continuousTrack.replaceChildren();
+  }
+  continuousLessonActive = true;
+  // The ordinary page was drawn before activation. Remove that image layer
+  // before showing the continuous tiles, and discard its old viewport geometry.
+  continuousClearViewportToolState({ clearSelection:true });
+  continuousPrefetchWindowKey = '';
+  continuousPrefetchGeneration++;
+  paper.classList.add('continuous-lesson-mode');
+  continuousViewport.hidden = false;
+  if (lessonBoardProgress) lessonBoardProgress.hidden = true;
+  // Canvas resta della dimensione originale della paper: drawBatch/normalizeEvent
+  // mantengono così la geometria e il clipping già collaudati.
+  continuousResetInteractiveTransforms();
+  resizeCanvas();
+  const m = continuousMetrics();
+  continuousSegmentHeight = m.height;
+  segmentIndex = Math.max(1, Number(segmentIndex) || 1);
+  offset = Math.max(0, Math.min(.999999, Number(offset) || 0));
+  currentLessonBoardIndex = segmentIndex;
+  activeLesson = normalizeLesson({
+    ...activeLesson,
+    boardCount:Math.max(Number(activeLesson.boardCount) || 1, segmentIndex),
+    currentBoardIndex:segmentIndex,
+    lastScrollSegment:segmentIndex,
+    lastScrollOffset:offset
+  });
+  continuousVirtualCount = Math.max(3, Number(activeLesson.boardCount) || 1, segmentIndex + CONTINUOUS_GROW_AHEAD);
+  continuousUpdateTrackHeight();
+  continuousSegmentCache.set(segmentIndex, {
+    index:segmentIndex,
+    lessonId:String(activeLesson.id),
+    key:lessonBoardKey(activeLesson.id, segmentIndex),
+    strokes,
+    images,
+    pageStyle:{ ...pageStyle },
+    undoHistory:[...undoHistory],
+    redoHistory:[...redoHistory],
+    revision:Math.max(0, Number(continuousSegmentCache.get(segmentIndex)?.revision) || 0),
+    loaded:true
+  });
+  continuousViewport.scrollTop = (segmentIndex - 1 + offset) * continuousSegmentHeight;
+  continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+  continuousApplyInteractiveTransform();
+  continuousHideActiveStaticSlot();
+  const prefetch = continuousPrefetchAroundScroll({ force:true });
+  const generation = continuousPrefetchGeneration;
+  const lessonIdAtStart = String(activeLesson.id);
+  saveActiveLesson({ touch:false });
+  await prefetch;
+  // A late activation must not redraw the document opened in the meantime.
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || generation !== continuousPrefetchGeneration || String(activeLesson?.id || '') !== lessonIdAtStart) return false;
+  if (!continuousTouch && !drawing && !imageGesture && lassoPointerId == null && lassoTouchId == null && (activeTool === 'image' || isLassoUiArmed())) {
+    continuousEnsureViewportToolState({ force:true });
+    continuousSetToolPreview(true);
+    renderAll();
+  }
+  renderImages();
+  return true;
+}
+
+
+function continuousRelayoutAfterResize(position = continuousCurrentScrollPosition()) {
+  if (!continuousLessonActive || !continuousViewport || !continuousTrack) return;
+  const safePosition = {
+    segment:Math.max(1, Number(position?.segment) || 1),
+    offset:Math.max(0, Math.min(.999999, Number(position?.offset) || 0))
+  };
+  const m = continuousMetrics();
+  continuousSegmentHeight = m.height;
+  continuousVirtualCount = Math.max(3, continuousVirtualCount, Number(activeLesson?.boardCount) || 1, safePosition.segment + CONTINUOUS_GROW_AHEAD);
+  continuousUpdateTrackHeight();
+  for (const slot of continuousSegmentSlots.values()) {
+    slot.renderedKey = '';
+    continuousPositionSlot(slot);
+  }
+  continuousViewport.scrollTop = (safePosition.segment - 1 + safePosition.offset) * continuousSegmentHeight;
+  continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+  continuousPrefetchWindowKey = '';
+  continuousApplyInteractiveTransform();
+  continuousHideActiveStaticSlot();
+  void continuousPrefetchAroundScroll({ force:true });
+  saveActiveLesson({ touch:false });
+}
+
+
+function continuousVisibleSegmentRange(scrollTop = continuousViewport?.scrollTop || 0) {
+  const h = Math.max(1, continuousSegmentHeight || continuousMetrics().height);
+  const viewportHeight = Math.max(1, continuousViewport?.clientHeight || h);
+  const first = Math.max(1, Math.floor(Math.max(0, scrollTop) / h) + 1);
+  const last = Math.max(first, Math.floor((Math.max(0, scrollTop) + viewportHeight - 0.001) / h) + 1);
+  return { first, last };
+}
+
+function continuousGetEntrySync(index, { createEmpty = false } = {}) {
+  index = Math.max(1, Number(index) || 1);
+  if (index === currentLessonBoardIndex && currentPageKind === 'agenda' && activeLesson?.id) {
+    return continuousCaptureActiveEntry();
+  }
+  const cached = continuousSegmentCache.get(index);
+  if (cached?.loaded) return cached;
+  if (!createEmpty) return null;
+  const descriptor = continuousSegmentDescriptor(index);
+  const entry = {
+    index,
+    lessonId:String(activeLesson?.id || ''),
+    key:descriptor.key,
+    strokes:[],
+    images:[],
+    pageStyle:{ ...pageStyle },
+    undoHistory:[],
+    redoHistory:[],
+    revision:0,
+    loaded:true
+  };
+  continuousSegmentCache.set(index, entry);
+  return entry;
+}
+
+
+function continuousDeepClone(value) {
+  if (globalThis.structuredClone) return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
+
+function continuousStripRuntimeMeta(value) {
+  const copy = continuousDeepClone(value);
+  if (copy && typeof copy === 'object') {
+    delete copy.__continuousOwnerIndex;
+    delete copy.__continuousSourceId;
+    delete copy.__continuousSources;
+    delete copy.__continuousViewportProxy;
+  }
+  return copy;
+}
+
+function continuousStrokeToViewport(stroke, ownerIndex, scrollTop = continuousViewport?.scrollTop || 0, metrics = continuousMetrics()) {
+  const copy = continuousDeepClone(stroke);
+  const h = Math.max(1, continuousSegmentHeight || metrics.height);
+  const convertY = (localY) => {
+    const localPx = Number(localY || 0) * metrics.paperHeight - metrics.top;
+    const docPx = (ownerIndex - 1) * h + localPx;
+    return (metrics.top + docPx - scrollTop) / metrics.paperHeight;
+  };
+  if (isCrossPlatformTextItem(copy)) copy.y = convertY(copy.y);
+  else if (Array.isArray(copy?.points)) copy.points = copy.points.map((point) => ({ ...point, y:convertY(point.y) }));
+  copy.__continuousOwnerIndex = ownerIndex;
+  copy.__continuousSourceId = String(stroke?.id || '');
+  copy.__continuousSources = [{ id:String(stroke?.id || ''), ownerIndex }];
+  copy.__continuousViewportProxy = true;
+  return copy;
+}
+
+function continuousImageToViewport(image, ownerIndex, scrollTop = continuousViewport?.scrollTop || 0) {
+  const copy = cloneImageObject(image);
+  const h = Math.max(1, continuousSegmentHeight || continuousMetrics().height);
+  const scrollUnits = Math.max(0, Number(scrollTop) || 0) / h;
+  copy.y = (ownerIndex - 1) + Number(image?.y || 0) - scrollUnits;
+  copy.__continuousOwnerIndex = ownerIndex;
+  copy.__continuousSourceId = String(image?.id || '');
+  copy.__continuousViewportProxy = true;
+  return copy;
+}
+
+function continuousViewportTextToPersistent(stroke, scrollTop) {
+  const metrics = continuousMetrics();
+  const h = Math.max(1, continuousSegmentHeight || metrics.height);
+  const raw = continuousStripRuntimeMeta(stroke);
+  const docPx = Math.max(0, Number(scrollTop) + (Number(raw.y || 0) * metrics.paperHeight - metrics.top));
+  const index = Math.max(1, Math.floor(docPx / h) + 1);
+  const localPx = docPx - (index - 1) * h;
+  raw.y = Math.max(0, Math.min(1, (metrics.top + localPx) / metrics.paperHeight));
+  return [{ index, stroke:raw }];
+}
+
+function continuousViewportStrokeToPersistentPieces(stroke, scrollTop) {
+  if (isCrossPlatformTextItem(stroke)) return continuousViewportTextToPersistent(stroke, scrollTop);
+  return continuousSplitViewportStroke(continuousStripRuntimeMeta(stroke), scrollTop);
+}
+
+function continuousViewportImageToPersistent(image, scrollTop) {
+  const h = Math.max(1, continuousSegmentHeight || continuousMetrics().height);
+  const scrollUnits = Math.max(0, Number(scrollTop) || 0) / h;
+  const docUnits = Math.max(0, scrollUnits + Number(image?.y || 0));
+  const index = Math.max(1, Math.floor(docUnits) + 1);
+  const raw = continuousStripRuntimeMeta(image);
+  raw.y = Math.max(0, Math.min(.999999, docUnits - (index - 1)));
+  raw.continuousOverflow = true;
+  raw.modifiedAt = raw.modifiedAt || new Date().toISOString();
+  return { index, image:raw };
+}
+
+function continuousViewportProxyVisible(item, isImage = false) {
+  if (isImage) {
+    const y = Number(item?.y || 0), h = Math.max(0, Number(item?.h || 0));
+    return y + h >= -.08 && y <= 1.08;
+  }
+  if (isCrossPlatformTextItem(item)) return Number(item?.y || 0) >= -.08 && Number(item?.y || 0) <= 1.08;
+  const points = Array.isArray(item?.points) ? item.points : [];
+  if (!points.length) return false;
+  let min = Infinity, max = -Infinity;
+  for (const point of points) { const y = Number(point?.y || 0); min = Math.min(min, y); max = Math.max(max, y); }
+  return max >= -.08 && min <= 1.08;
+}
+
+function continuousBuildViewportToolState() {
+  if (!continuousLessonActive || !activeLesson?.id || !continuousViewport || !continuousSegmentHeight) return null;
+  const { first, last } = continuousVisibleSegmentRange();
+  const low = Math.max(1, first - 1);
+  const high = Math.min(continuousVirtualCount, last + 1);
+  const scrollTop = Math.max(0, Number(continuousViewport.scrollTop) || 0);
+  const viewStrokes = [], viewImages = [];
+  const grouped = new Map();
+  for (let index = low; index <= high; index++) {
+    const entry = continuousGetEntrySync(index);
+    if (!entry?.loaded) continue;
+    for (const stroke of entry.strokes || []) {
+      if (isCrossPlatformTextItem(stroke) || !stroke?.continuousStrokeGroupId) {
+        const proxy = continuousStrokeToViewport(stroke, index, scrollTop);
+        if (continuousViewportProxyVisible(proxy, false)) viewStrokes.push(proxy);
+        continue;
+      }
+      const groupId = String(stroke.continuousStrokeGroupId);
+      if (!grouped.has(groupId)) grouped.set(groupId, []);
+      grouped.get(groupId).push({ index, stroke });
+    }
+    for (const image of entry.images || []) {
+      const proxy = continuousImageToViewport(image, index, scrollTop);
+      if (continuousViewportProxyVisible(proxy, true)) viewImages.push(proxy);
+    }
+  }
+  // I frammenti creati esclusivamente dai confini tecnici del documento tornano
+  // a essere un unico oggetto logico per Lazo/trasformazioni. I punti di giunzione
+  // duplicati vengono eliminati, ma gli id persistenti dei frammenti restano tracciati.
+  for (const [groupId, fragments] of grouped) {
+    fragments.sort((a,b) => (Number(a.stroke?.continuousFragmentOrder) || 0) - (Number(b.stroke?.continuousFragmentOrder) || 0) || a.index - b.index);
+    let proxy = null;
+    const sources = [];
+    for (const fragment of fragments) {
+      const part = continuousStrokeToViewport(fragment.stroke, fragment.index, scrollTop);
+      sources.push({ id:String(fragment.stroke?.id || ''), ownerIndex:fragment.index });
+      if (!proxy) {
+        proxy = part;
+        proxy.id = groupId;
+        proxy.points = Array.isArray(part.points) ? part.points.map((point) => ({...point})) : [];
+      } else if (Array.isArray(part.points)) {
+        const incoming = part.points.map((point) => ({...point}));
+        if (proxy.points.length && incoming.length) {
+          const a = proxy.points.at(-1), b = incoming[0];
+          if (Math.abs(Number(a.x)-Number(b.x)) < 1e-8 && Math.abs(Number(a.y)-Number(b.y)) < 1e-8) incoming.shift();
+        }
+        proxy.points.push(...incoming);
+      }
+    }
+    if (!proxy) continue;
+    proxy.continuousStrokeGroupId = groupId;
+    proxy.__continuousSourceId = sources[0]?.id || '';
+    proxy.__continuousOwnerIndex = sources[0]?.ownerIndex || 1;
+    proxy.__continuousSources = sources;
+    proxy.__continuousViewportProxy = true;
+    if (continuousViewportProxyVisible(proxy, false)) viewStrokes.push(proxy);
+  }
+  return {
+    key:`lesson::${activeLesson.id}::viewport::${Math.round(scrollTop * 1000)}`,
+    scrollTop,
+    first, last, low, high,
+    strokes:viewStrokes,
+    images:viewImages,
+    baselineStrokes:continuousDeepClone(viewStrokes),
+    baselineImages:continuousDeepClone(viewImages)
+  };
+}
+
+function continuousEnsureViewportToolState({ force = false } = {}) {
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || !activeLesson?.id) return null;
+  if (!force && continuousViewportToolState) return continuousViewportToolState;
+  continuousViewportToolState = continuousBuildViewportToolState();
+  return continuousViewportToolState;
+}
+
+function continuousSetToolPreview(enabled) {
+  paper?.classList.toggle('continuous-tool-preview', Boolean(enabled));
+}
+
+function continuousBeginEraserPreview() {
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || !activeLesson?.id) return;
+  // Copy already-rendered Ink tiles once, at eraser DOWN. The existing live
+  // destination-out path now erases visible Ink immediately. Images keep their
+  // static owner; no database, cloning of point arrays or new work in drawBatch.
+  const m = continuousMetrics();
+  const scrollTop = Math.max(0, Number(continuousViewport?.scrollTop) || 0);
+  const { first, last } = continuousVisibleSegmentRange(scrollTop);
+  ctx.save();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.beginPath();
+  ctx.rect(0,m.top,m.width,m.height);
+  ctx.clip();
+  for (let index = first; index <= last; index++) {
+    const entry = continuousGetEntrySync(index);
+    if (!entry?.loaded) continue;
+    continuousRenderStaticSegment(index, entry);
+    const tile = continuousSegmentSlots.get(index)?.canvas;
+    if (tile) ctx.drawImage(tile,0,(index-1)*continuousSegmentHeight-scrollTop,m.width,m.paperHeight);
+  }
+  ctx.restore();
+  paper?.classList.toggle('continuous-eraser-preview', true);
+}
+
+function continuousClearViewportToolState({ clearSelection = false } = {}) {
+  continuousViewportToolState = null;
+  continuousPendingLassoUndoProxyAction = null;
+  continuousSetToolPreview(false);
+  paper?.classList.toggle('continuous-eraser-preview', false);
+  // The tiles own the images while scrolling/reading. Leaving the previous
+  // tool image nodes here would show a stationary copy over the moving tiles.
+  if (continuousLessonActive) {
+    imageLayer?.replaceChildren();
+    imageLayer?.classList.remove('interactive');
+  }
+  if (clearSelection) lassoTool?.clearSelection?.();
+}
+
+function continuousSnapshotSegment(index) {
+  const entry = continuousGetEntrySync(index, { createEmpty:true });
+  return {
+    index,
+    strokes:continuousDeepClone(entry?.strokes || []),
+    images:continuousDeepClone(entry?.images || []),
+    pageStyle:{ ...(entry?.pageStyle || pageStyle) }
+  };
+}
+
+function continuousObjectJson(value) {
+  try { return JSON.stringify(value); } catch { return ''; }
+}
+
+function continuousSyncSegmentReplacement(index, before, after, reason = 'continuous-tool') {
+  const descriptor = continuousSegmentDescriptor(index);
+  const beforeStrokes = new Map((before?.strokes || []).map((item) => [String(item?.id || ''), item]));
+  const afterStrokes = new Map((after?.strokes || []).map((item) => [String(item?.id || ''), item]));
+  for (const [id, item] of beforeStrokes) if (id && !afterStrokes.has(id)) syncFoundation?.recordStrokeDeleted(descriptor, id, reason);
+  for (const [id, item] of afterStrokes) {
+    const previous = beforeStrokes.get(id);
+    if (!previous || continuousObjectJson(previous) !== continuousObjectJson(item)) syncFoundation?.recordStrokeAdded(descriptor, item);
+  }
+  const beforeImages = new Map((before?.images || []).map((item) => [String(item?.id || ''), item]));
+  const afterImages = new Map((after?.images || []).map((item) => [String(item?.id || ''), item]));
+  for (const [id] of beforeImages) if (id && !afterImages.has(id)) syncFoundation?.recordImageDeleted(descriptor, id);
+  for (const [id, item] of afterImages) {
+    const previous = beforeImages.get(id);
+    if (!previous) syncFoundation?.recordImageMetadata(descriptor, 'image.add', item, { reason });
+    else if (continuousObjectJson(previous) !== continuousObjectJson(item)) syncFoundation?.recordImageMetadata(descriptor, 'image.update', item, { before:previous, reason });
+  }
+}
+
+function continuousApplySegmentSnapshots(snapshots, reason = 'history') {
+  if (!Array.isArray(snapshots) || !snapshots.length) return false;
+  for (const snapshot of snapshots) {
+    const index = Math.max(1, Number(snapshot?.index) || 1);
+    const entry = continuousGetEntrySync(index, { createEmpty:true });
+    if (!entry) continue;
+    const before = continuousSnapshotSegment(index);
+    entry.strokes = continuousDeepClone(snapshot.strokes || []);
+    entry.images = continuousDeepClone(snapshot.images || []);
+    entry.pageStyle = normalizePageStyle(snapshot.pageStyle || entry.pageStyle || pageStyle);
+    continuousMarkEntryChanged(index, entry);
+    const after = continuousSnapshotSegment(index);
+    continuousSyncSegmentReplacement(index, before, after, reason);
+    for (let slotIndex = Math.max(1, index - 1); slotIndex <= Math.min(continuousVirtualCount, index + 1); slotIndex++) {
+      const slot = continuousSegmentSlots.get(slotIndex); if (slot) slot.renderedKey = '';
+      continuousRenderStaticSegment(slotIndex, continuousSegmentCache.get(slotIndex));
+    }
+  }
+  continuousHideActiveStaticSlot();
+  continuousClearViewportToolState({ clearSelection:true });
+  if (continuousLessonActive && (activeTool === 'lasso' || activeTool === 'image')) {
+    continuousEnsureViewportToolState({ force:true });
+    continuousSetToolPreview(true);
+  }
+  renderAll();
+  renderImages();
+  lassoTool?.syncPage?.();
+  scheduleSave();
+  return true;
+}
+
+function continuousApplyToolHistory(action, direction = 'undo') {
+  if (action?.type !== 'continuous-tool-snapshot') return false;
+  return continuousApplySegmentSnapshots(direction === 'undo' ? action.before : action.after, `${direction}-${action.reason || 'continuous-tool'}`);
+}
+
+function continuousCommitDirectToolMutation(reason = 'continuous-tool') {
+  continuousPendingLassoUndoProxyAction = { type:reason };
+  const committed = continuousCommitViewportToolState(reason);
+  if (!committed) continuousPendingLassoUndoProxyAction = null;
+  return committed;
+}
+
+function continuousCommitViewportToolState(reason = 'continuous-tool') {
+  if (!continuousViewportToolState || continuousInteractionCommitInProgress) return false;
+  continuousInteractionCommitInProgress = true;
+  try {
+    const state = continuousViewportToolState;
+    const oldStrokeOwners = new Map();
+    const oldImageOwners = new Map();
+    for (const item of state.baselineStrokes || []) {
+      const sources = Array.isArray(item?.__continuousSources) && item.__continuousSources.length
+        ? item.__continuousSources
+        : [{ id:String(item?.__continuousSourceId || item?.id || ''), ownerIndex:Math.max(1, Number(item?.__continuousOwnerIndex) || 1) }];
+      for (const source of sources) {
+        const id = String(source?.id || '');
+        const owner = Math.max(1, Number(source?.ownerIndex) || 1);
+        if (id) oldStrokeOwners.set(id, owner);
+      }
+    }
+    for (const item of state.baselineImages || []) {
+      const id = String(item?.__continuousSourceId || item?.id || '');
+      const owner = Math.max(1, Number(item?.__continuousOwnerIndex) || 1);
+      if (id) oldImageOwners.set(id, owner);
+    }
+
+    const generatedStrokeGroups = [];
+    const generatedStrokes = [];
+    const generatedImages = [];
+    for (const proxy of state.strokes || []) {
+      const pieces = continuousViewportStrokeToPersistentPieces(proxy, state.scrollTop);
+      generatedStrokeGroups.push({ proxy, pieces });
+      generatedStrokes.push(...pieces);
+    }
+    for (const proxy of state.images || []) generatedImages.push({ proxy, ...continuousViewportImageToPersistent(proxy, state.scrollTop) });
+
+    const affected = new Set([...oldStrokeOwners.values(), ...oldImageOwners.values(), ...generatedStrokes.map((x) => x.index), ...generatedImages.map((x) => x.index)]);
+    if (!affected.size) return false;
+    // Capture the active segment ONCE. Re-reading it while replacing its arrays
+    // would copy the old global `strokes` back into the cache, resurrecting the
+    // handwriting that Beautify/Lazo just removed. Prepare every segment first,
+    // then publish the complete replacement to cache and active arrays together.
+    const workingEntries = new Map();
+    const snapshotOf = (index, entry) => ({ index,
+      strokes:continuousDeepClone(entry.strokes || []),
+      images:continuousDeepClone(entry.images || []),
+      pageStyle:{ ...(entry.pageStyle || pageStyle) }
+    });
+    const beforeSnapshots = [];
+    for (const index of [...affected].sort((a,b)=>a-b)) {
+      const original = continuousGetEntrySync(index, { createEmpty:true });
+      beforeSnapshots.push(snapshotOf(index, original));
+      workingEntries.set(index, { ...original,
+        strokes:continuousDeepClone(original.strokes || []),
+        images:continuousDeepClone(original.images || []),
+        pageStyle:{ ...(original.pageStyle || pageStyle) }
+      });
+    }
+
+    for (const [id, owner] of oldStrokeOwners) {
+      const entry = workingEntries.get(owner);
+      entry.strokes = (entry.strokes || []).filter((item) => String(item?.id || '') !== id);
+    }
+    for (const [id, owner] of oldImageOwners) {
+      const entry = workingEntries.get(owner);
+      entry.images = (entry.images || []).filter((item) => String(item?.id || '') !== id);
+    }
+    for (const piece of generatedStrokes) {
+      const entry = workingEntries.get(piece.index);
+      entry.strokes.push(piece.stroke);
+    }
+    for (const piece of generatedImages) {
+      const entry = workingEntries.get(piece.index);
+      entry.images.push(piece.image);
+    }
+    // Aggiorna la mappa runtime senza ricostruire la selezione: un proxy Lazo
+    // può corrispondere a più frammenti persistenti ma resta un solo oggetto UI.
+    for (const group of generatedStrokeGroups) {
+      group.proxy.__continuousSources = group.pieces.map((piece) => ({ id:String(piece.stroke?.id || ''), ownerIndex:piece.index }));
+      group.proxy.__continuousSourceId = String(group.pieces[0]?.stroke?.id || group.proxy.id || '');
+      group.proxy.__continuousOwnerIndex = Math.max(1, Number(group.pieces[0]?.index) || Number(group.proxy.__continuousOwnerIndex) || 1);
+    }
+    for (const piece of generatedImages) {
+      piece.proxy.__continuousSourceId = String(piece.image?.id || piece.proxy.id || '');
+      piece.proxy.__continuousOwnerIndex = piece.index;
+    }
+
+    const afterSnapshots = [...workingEntries].map(([index,entry]) => snapshotOf(index,entry));
+    let changed = false;
+    for (let i = 0; i < beforeSnapshots.length; i++) {
+      if (continuousObjectJson(beforeSnapshots[i]) !== continuousObjectJson(afterSnapshots[i])) { changed = true; break; }
+    }
+    if (!changed) {
+      state.baselineStrokes = continuousDeepClone(state.strokes || []);
+      state.baselineImages = continuousDeepClone(state.images || []);
+      continuousPendingLassoUndoProxyAction = null;
+      return false;
+    }
+
+    for (const index of affected) {
+      const entry = workingEntries.get(index);
+      continuousMarkEntryChanged(index, entry);
+      const before = beforeSnapshots.find((x) => x.index === index);
+      const after = afterSnapshots.find((x) => x.index === index);
+      continuousSyncSegmentReplacement(index, before, after, reason);
+      for (let slotIndex = Math.max(1, index - 1); slotIndex <= Math.min(continuousVirtualCount, index + 1); slotIndex++) {
+        const slot = continuousSegmentSlots.get(slotIndex); if (slot) slot.renderedKey = '';
+      }
+    }
+    if (continuousPendingLassoUndoProxyAction) {
+      rememberUndo({ type:'continuous-tool-snapshot', reason:continuousPendingLassoUndoProxyAction.type || reason, before:beforeSnapshots, after:afterSnapshots });
+      continuousPendingLassoUndoProxyAction = null;
+    }
+    state.baselineStrokes = continuousDeepClone(state.strokes || []);
+    state.baselineImages = continuousDeepClone(state.images || []);
+    for (const index of affected) continuousRenderStaticSegment(index, continuousSegmentCache.get(index));
+    continuousHideActiveStaticSlot();
+    dirty = true;
+    return true;
+  } finally {
+    continuousInteractionCommitInProgress = false;
+  }
+}
+
+async function continuousEnsureVisibleEntries() {
+  if (!continuousLessonActive || !continuousViewport || !activeLesson?.id) return true;
+  const { first, last } = continuousVisibleSegmentRange();
+  const jobs = [];
+  for (let index = first; index <= last; index++) {
+    if (continuousGetEntrySync(index)) continue;
+    jobs.push(continuousLoadSegment(index));
+  }
+  if (jobs.length) await Promise.all(jobs);
+  return true;
+}
+
+function continuousPointToDocument(point, scrollTop, metrics = continuousMetrics()) {
+  const localWritableY = Number(point?.y || 0) * metrics.paperHeight - metrics.top;
+  return {
+    x:Math.max(0, Math.min(1, Number(point?.x) || 0)),
+    docY:Math.max(0, Number(scrollTop) + localWritableY),
+    p:Number.isFinite(Number(point?.p)) ? Number(point.p) : .5,
+    t:Number.isFinite(Number(point?.t)) ? Number(point.t) : performance.now()
+  };
+}
+
+function continuousDocumentPointToSegment(point, index, metrics = continuousMetrics(), localOverride = null) {
+  const h = Math.max(1, continuousSegmentHeight || metrics.height);
+  const local = localOverride == null ? point.docY - (index - 1) * h : localOverride;
+  return {
+    x:Math.max(0, Math.min(1, point.x)),
+    y:Math.max(0, Math.min(1, (metrics.top + Math.max(0, Math.min(h, local))) / metrics.paperHeight)),
+    p:point.p,
+    t:point.t
+  };
+}
+
+function continuousInterpolateDocumentPoint(a, b, docY) {
+  const dy = b.docY - a.docY;
+  const u = Math.abs(dy) < 1e-9 ? 0 : Math.max(0, Math.min(1, (docY - a.docY) / dy));
+  return {
+    x:a.x + (b.x - a.x) * u,
+    docY,
+    p:a.p + (b.p - a.p) * u,
+    t:a.t + (b.t - a.t) * u
+  };
+}
+
+function continuousSplitViewportStroke(stroke, scrollTop = continuousStrokeScrollTop) {
+  const sourcePoints = Array.isArray(stroke?.points) ? stroke.points : [];
+  if (!sourcePoints.length || !continuousSegmentHeight) return [];
+  const metrics = continuousMetrics();
+  const h = Math.max(1, continuousSegmentHeight);
+  const globals = sourcePoints.map((point) => continuousPointToDocument(point, scrollTop, metrics));
+  const fragments = [];
+  let fragmentIndex = Math.max(1, Math.floor(globals[0].docY / h) + 1);
+  let fragmentPoints = [continuousDocumentPointToSegment(globals[0], fragmentIndex, metrics)];
+
+  const groupId = String(stroke?.continuousStrokeGroupId || stroke?.id || makeId());
+  const pushFragment = () => {
+    if (!fragmentPoints.length) return;
+    const order = fragments.length;
+    const fragment = {
+      ...stroke,
+      id:order ? makeId() : (stroke.id || makeId()),
+      continuousStrokeGroupId:groupId,
+      continuousFragmentOrder:order,
+      points:fragmentPoints.map((point) => ({ ...point }))
+    };
+    fragments.push({ index:fragmentIndex, stroke:fragment });
+  };
+
+  for (let i = 1; i < globals.length; i++) {
+    const a = globals[i - 1];
+    const b = globals[i];
+    const direction = Math.sign(b.docY - a.docY);
+    if (!direction) {
+      fragmentPoints.push(continuousDocumentPointToSegment(b, fragmentIndex, metrics));
+      continue;
+    }
+    let nextBoundary = direction > 0 ? fragmentIndex * h : (fragmentIndex - 1) * h;
+    const crosses = () => direction > 0 ? b.docY >= nextBoundary && a.docY < nextBoundary : b.docY <= nextBoundary && a.docY > nextBoundary;
+    while (crosses()) {
+      const boundaryPoint = continuousInterpolateDocumentPoint(a, b, nextBoundary);
+      const edgeLocal = direction > 0 ? h : 0;
+      fragmentPoints.push(continuousDocumentPointToSegment(boundaryPoint, fragmentIndex, metrics, edgeLocal));
+      pushFragment();
+      fragmentIndex += direction;
+      fragmentIndex = Math.max(1, fragmentIndex);
+      const nextLocal = direction > 0 ? 0 : h;
+      fragmentPoints = [continuousDocumentPointToSegment(boundaryPoint, fragmentIndex, metrics, nextLocal)];
+      nextBoundary = direction > 0 ? fragmentIndex * h : (fragmentIndex - 1) * h;
+      if (fragmentIndex === 1 && direction < 0) break;
+    }
+    fragmentPoints.push(continuousDocumentPointToSegment(b, fragmentIndex, metrics));
+  }
+  pushFragment();
+  return fragments;
+}
+
+function continuousMarkEntryChanged(index, entry) {
+  if (!entry) return;
+  entry.revision = Math.max(0, Number(entry.revision) || 0) + 1;
+  continuousSegmentCache.set(index, entry);
+  continuousDirtySegments.add(index);
+  const slot = continuousSegmentSlots.get(index);
+  if (slot) slot.renderedKey = '';
+  if (index === currentLessonBoardIndex) {
+    strokes = entry.strokes;
+    images = entry.images;
+    dirty = true;
+  }
+  if (activeLesson) {
+    activeLesson = normalizeLesson({
+      ...activeLesson,
+      boardCount:Math.max(Number(activeLesson.boardCount) || 1, index),
+      currentBoardIndex:currentLessonBoardIndex
+    });
+  }
+  continuousVirtualCount = Math.max(continuousVirtualCount, index + CONTINUOUS_GROW_AHEAD);
+  continuousUpdateTrackHeight();
+}
+
+function continuousCommitCompletedInkStroke(stroke) {
+  const pieces = continuousSplitViewportStroke(stroke, continuousStrokeScrollTop);
+  if (!pieces.length) return false;
+  const action = { type:'continuous-add-stroke', pieces:[] };
+  for (const piece of pieces) {
+    const entry = continuousGetEntrySync(piece.index, { createEmpty:piece.index > Number(activeLesson?.boardCount || 1) });
+    if (!entry) {
+      console.warn('Segmento continuo non disponibile al PEN UP', piece.index);
+      return false;
+    }
+    entry.strokes.push(piece.stroke);
+    continuousMarkEntryChanged(piece.index, entry);
+    syncFoundation?.recordStrokeAdded(continuousSegmentDescriptor(piece.index), piece.stroke);
+    action.pieces.push({ index:piece.index, stroke:piece.stroke });
+  }
+  rememberUndo(action);
+  for (const piece of pieces) continuousRenderStaticSegment(piece.index, continuousSegmentCache.get(piece.index));
+  continuousHideActiveStaticSlot();
+  renderAll();
+  return true;
+}
+
+function continuousRecordEraseChanges(index, changes, reason = 'eraser-structural') {
+  const descriptor = continuousSegmentDescriptor(index);
+  for (const change of changes || []) {
+    if (change?.original?.id) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
+    for (const fragment of change?.fragments || []) {
+      if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+    }
+  }
+}
+
+function continuousApplyCompletedEraser(eraserStroke) {
+  paper?.classList.toggle('continuous-eraser-preview', false);
+  const pieces = continuousSplitViewportStroke(eraserStroke, continuousStrokeScrollTop);
+  if (!pieces.length) return false;
+  const eraseStarted = performance.now();
+  const segmentActions = [];
+  let touchedTotal = 0;
+  let fragmentTotal = 0;
+
+  for (const piece of pieces) {
+    const entry = continuousGetEntrySync(piece.index);
+    if (!entry) continue;
+    const before = entry.strokes;
+    const result = structuralErase(before, piece.stroke, {
+      widthPx:Math.max(1, rect?.width || canvas.clientWidth || 1024),
+      heightPx:Math.max(1, rect?.height || canvas.clientHeight || 1366),
+      makeFragmentId:() => makeId(),
+      eligible:(item) => !isCrossPlatformTextItem(item)
+    });
+    const textChanges = [];
+    for (let index = 0; index < before.length; index++) {
+      const item = before[index];
+      if (!isCrossPlatformTextItem(item) || !item?.id) continue;
+      if (textItemHitByEraser(item, piece.stroke)) textChanges.push({ original:item, originalIndex:index, fragments:[] });
+    }
+    const removedTextIds = new Set(textChanges.map((change) => String(change.original?.id || '')));
+    const changes = [...result.changes, ...textChanges];
+    if (!changes.length) continue;
+    // Una cancellazione strutturale rompe intenzionalmente l'unità logica del
+    // tratto originario. I frammenti residui ricevono gruppi propri: in questo
+    // modo il Lazo non trascina parti ormai separate solo perché prima del colpo
+    // di gomma appartenevano allo stesso stroke multi-segmento.
+    for (const change of result.changes || []) {
+      for (const fragment of change.fragments || []) {
+        fragment.continuousStrokeGroupId = String(fragment.id || makeId());
+        fragment.continuousFragmentOrder = 0;
+      }
+    }
+    entry.strokes = result.strokes.filter((item) => !removedTextIds.has(String(item?.id || '')));
+    touchedTotal += (result.touched || 0) + textChanges.length;
+    fragmentTotal += result.fragments || 0;
+    segmentActions.push({ index:piece.index, changes });
+    continuousRecordEraseChanges(piece.index, changes);
+    continuousMarkEntryChanged(piece.index, entry);
+    continuousRenderStaticSegment(piece.index, entry);
+  }
+
+  const eraseMs = performance.now() - eraseStarted;
+  session.structuralErasures++;
+  session.structuralEraseTouched += touchedTotal;
+  session.structuralEraseFragments += fragmentTotal;
+  session.maxStructuralEraseMs = Math.max(session.maxStructuralEraseMs, eraseMs);
+  if (!segmentActions.length) { renderAll(); return false; }
+  rememberUndo({ type:'continuous-erase-strokes', segments:segmentActions });
+  continuousHideActiveStaticSlot();
+  renderAll();
+  return true;
+}
+
+function continuousApplyInkHistory(action, direction = 'undo') {
+  if (!action || !continuousLessonActive) return false;
+  if (action.type === 'continuous-add-stroke') {
+    for (const piece of action.pieces || []) {
+      const entry = continuousGetEntrySync(piece.index);
+      if (!entry) continue;
+      if (direction === 'undo') {
+        entry.strokes = entry.strokes.filter((item) => item?.id !== piece.stroke?.id);
+        if (piece.stroke?.id) syncFoundation?.recordStrokeDeleted(continuousSegmentDescriptor(piece.index), piece.stroke.id, 'undo');
+      } else if (piece.stroke?.id && !entry.strokes.some((item) => item?.id === piece.stroke.id)) {
+        entry.strokes.push(piece.stroke);
+        syncFoundation?.recordStrokeAdded(continuousSegmentDescriptor(piece.index), piece.stroke);
+      }
+      continuousMarkEntryChanged(piece.index, entry);
+      continuousRenderStaticSegment(piece.index, entry);
+    }
+    continuousHideActiveStaticSlot();
+    renderAll();
+    return true;
+  }
+  if (action.type === 'continuous-erase-strokes') {
+    for (const segment of action.segments || []) {
+      const entry = continuousGetEntrySync(segment.index);
+      if (!entry) continue;
+      const descriptor = continuousSegmentDescriptor(segment.index);
+      if (direction === 'undo') {
+        const fragmentIds = new Set((segment.changes || []).flatMap((change) => (change.fragments || []).map((fragment) => fragment?.id).filter(Boolean)));
+        entry.strokes = entry.strokes.filter((item) => !fragmentIds.has(item?.id));
+        for (const change of [...(segment.changes || [])].sort((a,b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))) {
+          const original = change?.original;
+          if (!original?.id || entry.strokes.some((item) => item.id === original.id)) continue;
+          const at = Math.max(0, Math.min(Number(change.originalIndex) || 0, entry.strokes.length));
+          entry.strokes.splice(at, 0, original);
+          syncFoundation?.recordStrokeAdded(descriptor, original);
+          for (const fragment of change.fragments || []) if (fragment?.id) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
+        }
+      } else {
+        for (const change of [...(segment.changes || [])].sort((a,b) => (a.originalIndex ?? 0) - (b.originalIndex ?? 0))) {
+          const original = change?.original;
+          if (!original?.id) continue;
+          const at = entry.strokes.findIndex((item) => item.id === original.id);
+          if (at < 0) continue;
+          entry.strokes.splice(at, 1, ...(change.fragments || []));
+          syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
+          for (const fragment of change.fragments || []) if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+        }
+      }
+      continuousMarkEntryChanged(segment.index, entry);
+      continuousRenderStaticSegment(segment.index, entry);
+    }
+    continuousHideActiveStaticSlot();
+    renderAll();
+    return true;
+  }
+  return false;
+}
+
+async function continuousPreparePointerSegment(ev) {
+  if (!continuousLessonActive || !activeLesson?.id || currentPageKind !== 'agenda') return true;
+  continuousStopMomentum();
+  clearTimeout(continuousScrollSettleTimer);
+  const targetIndex = continuousSegmentAtClientY(ev.clientY);
+  if (targetIndex === currentLessonBoardIndex) {
+    continuousApplyInteractiveTransform();
+    return true;
+  }
+  const cached = continuousSegmentCache.get(targetIndex);
+  if (!cached?.loaded) {
+    // Non avviamo un tratto su dati non ancora caricati. Il caricamento avviene
+    // al PEN DOWN, mai nel pointermove, e il prefetch rende questo caso eccezionale.
+    statusLabel.textContent = 'preparo area di scrittura…';
+    await continuousLoadSegment(targetIndex);
+  }
+  return continuousSwitchToSegment(targetIndex, { savePrevious:true });
+}
+
+async function loadLessonBoard(lesson, boardIndex = 1, statusText = 'lezione caricata') {
+  if (!lesson) return false;
+  await openDb();
+  if (drawing) finalizeStroke('lesson-switch');
+  // Voice/Lazo hanno stato runtime separato dal documento. Un cambio lavagna deve
+  // chiudere solo la gesture/sessione pendente, senza modificare il motore Ink.
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lesson-switch');
+  if (lassoPointerId != null || lassoTouchId != null) resetLassoInputCapture();
+  cancelPendingSave();
+  if (continuousLessonActive && activeLesson?.id && currentPageKind === 'agenda') {
+    const ok = await flushContinuousSegmentSaves();
+    if (!ok) { statusLabel.textContent = 'salvataggio lezione non riuscito'; scheduleSave(); return false; }
+  } else if (ready && dirty) {
+    const ok = await persistSnapshot(pageDescriptor(), strokes, false, pageStyle, images);
+    if (!ok) { statusLabel.textContent = 'salvataggio non riuscito'; scheduleSave(); return false; }
+  }
+  // Solo dopo conferma del flush la sessione può cambiare identità.
+  continuousClearRuntime({ keepLesson:false });
+  activeLesson = normalizeLesson(lesson);
+  currentLessonBoardIndex = Math.max(1, Math.min(Number(activeLesson.boardCount) || 1, Number(boardIndex) || 1));
+  currentDate = activeLesson.acquisitionDate;
+  currentPageKind = 'agenda';
+  currentNoteIndex = 0;
+  currentNoteTotal = 0;
+  saveActiveLesson();
+  const key = lessonBoardKey(activeLesson.id, currentLessonBoardIndex);
+  // 0.1.34 — una lezione usa esclusivamente segmenti virtuali del foglio continuo.
+  // Nessuna pagina/Nota secondaria viene creata o conteggiata.
+  const record = await getRecord(key).catch(() => null);
+  session.storageReads++;
+  currentNoteTotal = 0;
+  strokes = Array.isArray(record?.strokes) ? record.strokes : [];
+  images = imagesFromRecord(record);
+  selectedImageId = null;
+  pageStyle = pageStyleForDescriptor(record, pageDescriptor());
+  applyPageStyle();
+  applyToolDefaultsForPaper(pageStyle.color);
+  updatePageStyleUi();
+  resetUndoHistory();
+  dirty = false;
+  await migrateLegacyErasersOnCurrentPage();
+  updateHeader();
+  resizeCanvas();
+  renderAll();
+  renderImages();
+  restoreAgendaInteractiveTools('lesson-board-loaded');
+  await continuousActivate({ segmentIndex:currentLessonBoardIndex, offset:0, preserveCache:false });
+  hideLessonHomeScreen();
+  statusLabel.textContent = statusText;
+  return true;
+}
+
+function lastEditedLesson() {
+  const lessons = lessonIndex.map(normalizeLesson).filter(Boolean);
+  if (!lessons.length) return null;
+  lessons.sort((a, b) => String(b.lastEditedAt || b.createdAt).localeCompare(String(a.lastEditedAt || a.createdAt)));
+  return lessons[0] || null;
+}
+
+function setLessonSetupMode(mode = 'new') {
+  const openMode = mode === 'open';
+  if (lessonSetupNewPanel) lessonSetupNewPanel.hidden = openMode;
+  if (lessonSetupOpenPanel) lessonSetupOpenPanel.hidden = !openMode;
+  lessonSetupNewTabButton?.classList.toggle('selected', !openMode);
+  lessonSetupOpenTabButton?.classList.toggle('selected', openMode);
+  lessonSetupNewTabButton?.setAttribute('aria-selected', !openMode ? 'true' : 'false');
+  lessonSetupOpenTabButton?.setAttribute('aria-selected', openMode ? 'true' : 'false');
+  if (openMode) renderLessonStartupArchive();
+  else if (!lessonSetupNewSubjectSelected) window.setTimeout(() => lessonSetupTopic?.focus(), 60);
+}
+
+async function resumeLessonAtSavedPosition(lesson, statusText = 'lezione ripresa') {
+  const normalized = normalizeLesson(lesson);
+  if (!normalized) return false;
+  const boardIndex = Math.max(1, Math.min(Number(normalized.boardCount) || 1, Number(normalized.lastScrollSegment) || Number(normalized.currentBoardIndex) || 1));
+  const wantedKind = normalized.lastPageKind || 'agenda';
+  const wantedTimetableIndex = Math.max(1, Number(normalized.lastTimetableIndex) || 1);
+  const wantedOffset = Math.max(0, Math.min(.999999, Number(normalized.lastScrollOffset) || 0));
+  const ok = await loadLessonBoard(normalized, boardIndex, statusText);
+  if (!ok) return false;
+  try {
+    await continuousActivate({ segmentIndex:boardIndex, offset:wantedOffset, preserveCache:true });
+    if (wantedKind === 'planner-daily') {
+      await openLessonGoalsFromPage();
+    } else if (wantedKind === 'planner-timetable') {
+      await openLessonGoalsFromPage();
+      await openWeeklyTimetable();
+    }
+    saveActiveLesson({ touch:false });
+    statusLabel.textContent = statusText;
+    return true;
+  } catch (err) {
+    console.warn('Ripresa posizione lezione non riuscita, uso la pagina principale', err);
+    statusLabel.textContent = statusText;
+    return true;
+  }
+}
+
+async function resumeLastLessonFromStartup() {
+  const lesson = lastEditedLesson();
+  if (!lesson) {
+    if (lessonSetupStatus) lessonSetupStatus.textContent = 'Nessuna lezione precedente da riprendere.';
+    return;
+  }
+  if (lessonSetupStatus) lessonSetupStatus.textContent = 'Ripristino ultima posizione…';
+  const ok = await resumeLessonAtSavedPosition(lesson, 'ultima lezione ripresa');
+  if (!ok) return;
+  if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  restoreAgendaInteractiveTools('lesson-resumed-exact');
+}
+
+function showLessonHomeScreen(statusText = 'pronto') {
+  if (!paper || !lessonHomeScreen) return;
+  paper.classList.add('lesson-home-mode');
+  lessonHomeScreen.hidden = false;
+  lessonHomeScreen.setAttribute('aria-hidden', 'false');
+  if (statusLabel && statusText) statusLabel.textContent = statusText;
+}
+
+function hideLessonHomeScreen() {
+  if (!paper || !lessonHomeScreen) return;
+  paper.classList.remove('lesson-home-mode');
+  lessonHomeScreen.hidden = true;
+  lessonHomeScreen.setAttribute('aria-hidden', 'true');
+}
+
+function nextGenericLessonTopic() {
+  let maxTopic = 0;
+  let genericCount = 0;
+  for (const item of lessonIndex.map(normalizeLesson).filter(Boolean)) {
+    if (String(item.subject || '').localeCompare('Generica', 'it', { sensitivity:'base' }) !== 0) continue;
+    genericCount += 1;
+    const match = /^Argomento\s+(\d+)$/i.exec(String(item.topic || '').trim());
+    if (match) maxTopic = Math.max(maxTopic, Number(match[1]) || 0);
+  }
+  return `Argomento ${Math.max(maxTopic + 1, genericCount + 1, 1)}`;
+}
+
+function ensureGenericLessonSubject() {
+  const existing = lessonSubjects.find((subject) => String(subject).localeCompare('Generica', 'it', { sensitivity:'base' }) === 0);
+  if (existing) return existing;
+  lessonSubjects.push('Generica');
+  saveLessonSubjects();
+  return 'Generica';
+}
+
+async function closeCurrentLessonToStartup() {
+  if (!activeLesson) {
+    showLessonHomeScreen('pronto');
+    return;
+  }
+  if (drawing) finalizeStroke('lesson-close');
+  if (continuousLessonActive) {
+    const continuousSaved = await flushContinuousSegmentSaves();
+    if (!continuousSaved) {
+      statusLabel.textContent = 'salvataggio lezione non riuscito';
+      scheduleSave();
+      return;
+    }
+  }
+  cancelPendingSave();
+  if (ready && dirty) {
+    await persistNow();
+    if (dirty) {
+      statusLabel.textContent = 'salvataggio lezione non riuscito';
+      scheduleSave();
+      return;
+    }
+  }
+  saveActiveLesson({ touch:true });
+  const closedId = activeLesson.id;
+  continuousClearRuntime({ keepLesson:false });
+  activeLesson = null;
+  try { localStorage.removeItem(ACTIVE_LESSON_STORAGE_KEY); } catch {}
+  renderLessonHeaderFor(document);
+  closeLessonButton?.setAttribute('hidden', '');
+  statusLabel.textContent = 'lezione salvata e chiusa';
+  showLessonHomeScreen('lezione salvata e chiusa');
+  if (lessonSetupStatus) lessonSetupStatus.textContent = lessonIndex.some((item) => item.id === closedId) ? 'Lezione salvata automaticamente.' : '';
+}
+
+async function startNewLessonFromDialog() {
+  const requestedNewSubject = cleanLessonText(lessonSetupNewSubjectInput()?.value, 80);
+  if (lessonSetupNewSubjectSelected && requestedNewSubject) {
+    if (!commitLessonSetupNewSubject()) return;
+  }
+  let subject = cleanLessonText(lessonSetupSubject?.value, 80);
+  let topic = cleanLessonText(lessonSetupTopic?.value, 160);
+
+  // 0.1.43: Nuova lezione può partire senza selezioni. In quel caso viene
+  // creata automaticamente Generica / Argomento N, senza modificare il flusso
+  // delle lezioni per cui l'utente sceglie esplicitamente materia/argomento.
+  const noExplicitSubject = !subject && !requestedNewSubject;
+  if (noExplicitSubject) subject = ensureGenericLessonSubject();
+  if (!topic && String(subject).localeCompare('Generica', 'it', { sensitivity:'base' }) === 0) {
+    topic = nextGenericLessonTopic();
+  }
+  if (!subject) { if (lessonSetupStatus) lessonSetupStatus.textContent = 'Seleziona una materia.'; return; }
+  if (!topic) { if (lessonSetupStatus) lessonSetupStatus.textContent = 'Inserisci l’argomento della lezione.'; lessonSetupTopic?.focus(); return; }
+
+  const lesson = createLessonRecord(subject, topic);
+  lessonIndex.push({ ...lesson });
+  saveLessonIndex();
+  const loaded = await loadLessonBoard(lesson, 1, 'nuova lezione');
+  if (!loaded) return;
+  if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  restoreAgendaInteractiveTools('new-lesson-started');
+}
+
+function openLessonSetup({ startup = false, tab = 'new' } = {}) {
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lesson-setup');
+  if (isLassoUiArmed()) {
+    resetLassoInputCapture();
+    lassoTool?.setActive?.(false);
+    setLassoInputShieldActive(false);
+    if (activeTool === 'lasso') activeTool = 'pen';
+    lassoSessionArmed = false;
+  }
+  renderLessonSubjectSettings();
+  if (lessonSetupDate) lessonSetupDate.textContent = formatLessonDate(localISODate(new Date()));
+  const defaultSubject = activeLesson?.subject || lastEditedLesson()?.subject || lessonSubjects[0] || '';
+  lessonSetupNewSubjectSelected = true;
+  lessonSetupNewSubjectExpanded = false;
+  if (lessonSetupSubject) lessonSetupSubject.value = '';
+  renderLessonSubjectPicker(defaultSubject, { preferNew:true });
+  if (lessonSetupTopic) lessonSetupTopic.value = '';
+  if (lessonSetupStatus) lessonSetupStatus.textContent = '';
+  const resumable = Boolean(lastEditedLesson());
+  if (lessonSetupResumeButton) {
+    lessonSetupResumeButton.disabled = !resumable;
+    lessonSetupResumeButton.setAttribute('aria-disabled', resumable ? 'false' : 'true');
+  }
+  if (lessonSetupCloseButton) lessonSetupCloseButton.hidden = startup;
+  if (lessonSetupPanel) {
+    lessonSetupPanel.dataset.startup = startup ? 'true' : 'false';
+    lessonSetupPanel.hidden = false;
+  }
+  setLessonSetupMode(tab === 'open' ? 'open' : 'new');
+}
+
+function closeLessonSetup() {
+  if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  if (!activeLesson || paper?.classList.contains('lesson-home-mode')) showLessonHomeScreen('pronto');
+  restoreAgendaInteractiveTools('lesson-dialog-close');
+}
+
+function renderLessonArchiveInto(body) {
+  if (!body) return;
+  body.replaceChildren();
+  const lessons = lessonIndex.map(normalizeLesson).filter(Boolean);
+  if (!lessons.length) {
+    const empty = document.createElement('div'); empty.className='lesson-archive-empty'; empty.textContent='Nessuna lezione memorizzata.'; body.appendChild(empty); return;
+  }
+  const groups = new Map();
+  for (const lesson of lessons) {
+    const key = lesson.subject || 'Senza materia';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(lesson);
+  }
+  for (const subject of [...groups.keys()].sort((a,b) => a.localeCompare(b,'it',{sensitivity:'base'}))) {
+    const section = document.createElement('section'); section.className='lesson-archive-group';
+    const title = document.createElement('h3'); title.textContent=subject; section.appendChild(title);
+    const list = document.createElement('div'); list.className='lesson-archive-list';
+    groups.get(subject).sort((a,b) => a.acquisitionDate.localeCompare(b.acquisitionDate) || a.createdAt.localeCompare(b.createdAt)).forEach((lesson) => {
+      const item = document.createElement('div'); item.className='lesson-archive-item';
+      // 0.1.18: la riga e' solo informativa. L'apertura non deve piu' essere
+      // associata al tap/click della voce: esiste il pulsante Apri dedicato.
+      const row = document.createElement('div'); row.className='lesson-archive-row'; row.setAttribute('role','group');
+      const date = document.createElement('span'); date.className='lesson-archive-date'; date.textContent=formatLessonDate(lesson.acquisitionDate);
+      const topic = document.createElement('span'); topic.className='lesson-archive-topic'; topic.textContent=lesson.topic;
+      const pages = document.createElement('span'); pages.className='lesson-archive-pages'; pages.textContent='Foglio continuo';
+      row.append(date,topic,pages);
+      const actions = document.createElement('div'); actions.className='lesson-archive-actions';
+      const open = document.createElement('button'); open.type='button'; open.className='lesson-archive-open'; open.dataset.lessonOpen=lesson.id; open.textContent='Apri'; open.setAttribute('aria-label',`Apri lezione ${lesson.subject} - ${lesson.topic}`);
+      const openPdf = document.createElement('button'); openPdf.type='button'; openPdf.className='lesson-archive-open-pdf'; openPdf.dataset.lessonPdfOpen=lesson.id; openPdf.textContent='Apri PDF'; openPdf.setAttribute('aria-label',`Apri PDF della lezione ${lesson.subject} - ${lesson.topic}`);
+      const exportPdf = document.createElement('button'); exportPdf.type='button'; exportPdf.className='lesson-archive-export-pdf'; exportPdf.dataset.lessonPdfExport=lesson.id; exportPdf.textContent='Esporta PDF'; exportPdf.setAttribute('aria-label',`Esporta PDF della lezione ${lesson.subject} - ${lesson.topic}`);
+      const remove = document.createElement('button'); remove.type='button'; remove.className='lesson-archive-delete'; remove.dataset.lessonDelete=lesson.id; remove.textContent='Elimina'; remove.setAttribute('aria-label',`Elimina lezione ${lesson.subject} - ${lesson.topic}`);
+      actions.append(open,openPdf,exportPdf,remove);
+      item.append(row,actions);
+      // I pulsanti Archivio NON usano bindDirectUiButton: quel percorso attiva
+      // al pointerdown e impedirebbe alla Pencil di iniziare uno scroll.
+      list.appendChild(item);
+    });
+    section.appendChild(list); body.appendChild(section);
+  }
+}
+
+
+function renderLessonArchive() { renderLessonArchiveInto(lessonArchiveBody); }
+function renderLessonStartupArchive() { renderLessonArchiveInto(lessonStartupArchiveBody); }
+
+// A read-only export of one lesson. Persist pending edits before taking a
+// consistent pages/Blob snapshot; never navigate the active lesson to export it.
+async function captureLessonForPdf(lessonId) {
+  if (!ready || backupSnapshotFreeze || restoreOperationLocked || isSyncRestorePending()) throw new Error('Attendi il completamento dell’avvio o del ripristino in corso.');
+  if (beautifyBusy || imageBusy || imageGesture || shapeGesture || voiceScript?.isActive?.()) throw new Error('Attendi il completamento della modifica della lezione, poi riprova.');
+  lessonPdfSnapshotBusy = true;
+  try {
+    await beginBackupSnapshotFreeze();
+    if (drawing) finalizeStroke('lesson-pdf');
+    cancelPendingSave();
+    if (continuousLessonActive && activeLesson?.id && currentPageKind === 'agenda') {
+      if (!await flushContinuousSegmentSaves()) throw new Error('La lezione non è ancora salvata: riprova prima di esportare il PDF.');
+    } else if (dirty) {
+      await persistNow();
+      if (dirty) throw new Error('La pagina corrente non è ancora salvata.');
+    }
+    const lesson = normalizeLesson(lessonIndex.find(item => item.id === lessonId));
+    if (!lesson) throw new Error('Lezione non più presente in archivio.');
+    await openDb();
+    const prefix = `lesson::${lesson.id}::`;
+    const snapshot = await new Promise((resolve,reject) => {
+      const tx = db.transaction([STORE,SYNC_BLOB_STORE],'readonly');
+      const request = tx.objectStore(STORE).getAll(IDBKeyRange.bound(prefix,prefix + '\uffff'));
+      let records = []; const blobs = new Map();
+      request.onsuccess = () => {
+        records = request.result || [];
+        const hashes = new Set(records.flatMap(row => (row.images || []).map(image => image.blobHash)).filter(Boolean));
+        for (const hash of hashes) {
+          const imageRequest = tx.objectStore(SYNC_BLOB_STORE).get(hash);
+          imageRequest.onsuccess = () => { if (imageRequest.result?.blob instanceof Blob) blobs.set(hash,imageRequest.result.blob); };
+        }
+      };
+      tx.oncomplete = () => resolve({ records,blobs });
+      tx.onerror = () => reject(tx.error || new Error('Lettura della lezione non riuscita.'));
+      tx.onabort = () => reject(tx.error || new Error('Lettura della lezione annullata.'));
+    });
+    return { ...snapshot, lesson, metrics:continuousMetrics() };
+  } finally { endBackupSnapshotFreeze(); lessonPdfSnapshotBusy = false; }
+}
+
+function openLessonPdf(lessonId, mode = 'export') {
+  if (!lessonPdfController) lessonPdfController = initLessonPdf({
+    captureLesson:captureLessonForPdf,
+    drawStroke:continuousDrawStaticStroke,
+    getCloudBridge:() => backupFoundation?.cloudBridge,
+    onBusyChange:value => { lessonPdfBusy = value; },
+    openSettings:() => {
+      if (lessonArchivePanel) lessonArchivePanel.hidden = true;
+      if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+      void backupFoundation?.openSettings();
+    }
+  });
+  void lessonPdfController.open(lessonId,mode);
+}
+
+async function deleteLessonGroup(lessonId) {
+  const id = cleanLessonText(lessonId, 120);
+  const lesson = lessonIndex.map(normalizeLesson).find((item) => item?.id === id);
+  if (!lesson) return false;
+  const label = `${lesson.subject} - ${lesson.topic}`;
+  if (!window.confirm(`Eliminare definitivamente la lezione “${label}” e tutto il relativo foglio continuo?`)) return false;
+
+  await openDb();
+  const deletingActive = activeLesson?.id === id;
+  if (drawing) finalizeStroke('lesson-delete');
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lesson-delete');
+  if (lassoPointerId != null || lassoTouchId != null) resetLassoInputCapture();
+  cancelPendingSave();
+  if (deletingActive && continuousLessonActive) {
+    // La cancellazione è intenzionalmente distruttiva, quindi non salviamo i dirty
+    // ancora solo in RAM; attendiamo però qualsiasi write già partita per impedire
+    // che completi DOPO il delete e ricrei un segmento della lezione cancellata.
+    await continuousSaveChain.catch(() => false);
+    continuousClearRuntime({ keepLesson:false });
+  }
+
+  const records = await readAllMainRecords();
+  const prefix = `lesson::${id}::`;
+  const targets = records.filter((row) => String(row?.lessonId || '') === id || String(row?.date || '').startsWith(prefix));
+  let deleted = 0;
+  try {
+    for (const row of targets) {
+      const key = String(row?.date || '');
+      if (!key) continue;
+      const isPage = row?.kind === 'agenda-day-ink' || row?.kind === 'day-note-ink' || row?.kind === 'planner-day-ink';
+      if (isPage) {
+        const descriptor = {
+          date:String(row?.referenceDate || lesson.acquisitionDate),
+          kind:row?.kind === 'day-note-ink' ? 'note' : row?.kind === 'planner-day-ink' ? 'planner-daily' : 'agenda',
+          plannerMode:row?.kind === 'planner-day-ink' ? 'daily' : null,
+          noteIndex:Number(row?.noteIndex) || 0,
+          lessonId:id,
+          lessonBoardIndex:row?.kind === 'planner-day-ink' ? 0 : Math.max(1,Number(row?.lessonBoardIndex) || 1),
+          key
+        };
+        const removedStrokeIds = Array.isArray(row?.strokes) ? row.strokes.map((stroke) => stroke?.id).filter(Boolean) : [];
+        const removedImageIds = Array.isArray(row?.images) ? row.images.map((image) => image?.id).filter(Boolean) : [];
+        syncFoundation?.recordPageCleared(descriptor, removedStrokeIds, removedImageIds);
+        const commit = syncFoundation?.prepareAtomicCommit(key) ?? { events:[], eventIds:[], stateRow:null };
+        const started = performance.now();
+        await deleteRecordWithSync(key, commit);
+        if (commit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(commit.eventIds, performance.now() - started);
+      } else {
+        await deleteRecord(key);
+      }
+      deleted++;
+    }
+  } catch (err) {
+    syncFoundation?.markAtomicCommitFailed?.();
+    console.warn('Eliminazione lezione non riuscita', err);
+    statusLabel.textContent = 'errore eliminazione lezione';
+    return false;
+  }
+
+  lessonIndex = lessonIndex.filter((item) => item?.id !== id);
+  saveLessonIndex();
+  notesCountCache.clear();
+
+  if (deletingActive) {
+    activeLesson = null;
+    try { localStorage.removeItem(ACTIVE_LESSON_STORAGE_KEY); } catch {}
+    currentLessonBoardIndex = 1;
+    currentPageKind = 'agenda';
+    currentNoteIndex = 0;
+    currentNoteTotal = 0;
+    strokes = [];
+    images = [];
+    selectedImageId = null;
+    resetUndoHistory();
+    dirty = false;
+    renderAll();
+    renderImages();
+    renderLessonHeaderFor(document);
+  }
+
+  renderLessonArchive();
+  statusLabel.textContent = `lezione eliminata · ${deleted} elementi`;
+  return true;
+}
+
+function openLessonArchive() {
+  // Modalita' archivio: non lasciare tool temporanei armati dietro il pannello.
+  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lesson-archive');
+  if (isLassoUiArmed()) {
+    resetLassoInputCapture();
+    lassoTool?.clearSelection?.();
+    lassoTool?.setActive?.(false);
+    setLassoInputShieldActive(false);
+    if (activeTool === 'lasso') activeTool = 'pen';
+    lassoSessionArmed = false;
+  }
+  renderLessonArchive();
+  // Avoid stacking translucent modal surfaces over each other.
+  if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+  const settings = document.getElementById('settingsPanel');
+  if (settings) settings.hidden = true;
+  if (lessonArchivePanel) lessonArchivePanel.hidden = false;
+  updateToolUi();
+}
+
+// 0.1.5 — ripristino esplicito della parita' Agenda dopo qualsiasi cambio
+// superficie/lezione. Non entra nel percorso Ink: nessuna chiamata da pointermove/drawBatch.
+function restoreAgendaInteractiveTools(reason = 'surface-change') {
+  resetLassoInputCapture();
+  lassoTool?.syncPage?.();
+  lassoSessionArmed = activeTool === 'lasso';
+  if (activeTool === 'lasso') {
+    lassoTool?.setActive?.(true);
+    setLassoInputShieldActive(true);
+    paper?.classList.add('lasso-mode');
+  } else {
+    setLassoInputShieldActive(false);
+    paper?.classList.remove('lasso-mode');
+  }
+  paper?.classList.toggle('voice-script-armed', activeTool === 'voice');
+  voiceScript?.flushIfIdle?.();
+  updateToolUi();
+  if (reason && paper) paper.dataset.interactiveRuntime = reason;
+}
+
 function makeId() {
   if (globalThis.crypto?.randomUUID) return `stroke-${crypto.randomUUID()}`;
   return `stroke-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -415,7 +2674,13 @@ function normalizeImageObject(value) {
   const w = Math.min(.92, Math.max(.06, n(value.w, .42)));
   const h = Math.min(.92, Math.max(.06, n(value.h, .32)));
   const x = Math.min(1 - w, Math.max(0, n(value.x, .12)));
-  const y = Math.min(1 - h, Math.max(0, n(value.y, .12)));
+  // Nel foglio continuo un'immagine può attraversare il confine tecnico del
+  // segmento che la possiede. continuousOverflow conserva quindi l'ancora Y
+  // nel segmento senza obbligare l'intera immagine a rientrare nel tile.
+  const continuousOverflow = value.continuousOverflow === true;
+  const y = continuousOverflow
+    ? Math.max(0, Math.min(.999999, n(value.y, .12)))
+    : Math.min(1 - h, Math.max(0, n(value.y, .12)));
   return {
     id: String(value.id || makeImageId()),
     name: String(value.name || 'Immagine'),
@@ -424,6 +2689,7 @@ function normalizeImageObject(value) {
     blobHash: isSha256Hash(value.blobHash) ? String(value.blobHash).toLowerCase() : null,
     blobSize: Math.max(0, Number(value.blobSize) || 0),
     x, y, w, h,
+    continuousOverflow,
     rotation: n(value.rotation, 0),
     createdAt: value.createdAt || new Date().toISOString(),
     modifiedAt: value.modifiedAt || new Date().toISOString()
@@ -579,15 +2845,6 @@ function saveSelectedShapeType() {
   try { localStorage.setItem(SHAPE_TYPE_STORAGE_KEY, selectedShapeType); } catch {}
 }
 
-function loadSelectedShapeFill() {
-  try { return localStorage.getItem(SHAPE_FILL_STORAGE_KEY) === 'filled' ? 'filled' : 'outline'; }
-  catch { return 'outline'; }
-}
-
-function saveSelectedShapeFill() {
-  try { localStorage.setItem(SHAPE_FILL_STORAGE_KEY, selectedShapeFill); } catch {}
-}
-
 
 function normalizePageStyle(value) {
   const color = ALLOWED_PAGE_COLORS.includes(value?.color) ? value.color : DEFAULT_PAGE_STYLE.color;
@@ -595,12 +2852,36 @@ function normalizePageStyle(value) {
   return { color, template };
 }
 
+function lavagnaPreferredPaperColor() {
+  try {
+    const saved = localStorage.getItem(LAVAGNA_PAPER_COLOR_STORAGE_KEY);
+    return ALLOWED_PAGE_COLORS.includes(saved) ? saved : DEFAULT_PAGE_STYLE.color;
+  } catch { return DEFAULT_PAGE_STYLE.color; }
+}
+
+function saveLavagnaPreferredPaperColor(color) {
+  if (!ALLOWED_PAGE_COLORS.includes(color)) return;
+  try { localStorage.setItem(LAVAGNA_PAPER_COLOR_STORAGE_KEY, color); } catch {}
+}
+
 function pageStyleFromRecord(record) {
-  return record?.pageStyle ? normalizePageStyle({ ...globalPageStyle, ...record.pageStyle }) : { ...globalPageStyle };
+  const base = record?.pageStyle ? normalizePageStyle({ ...globalPageStyle, ...record.pageStyle }) : { ...globalPageStyle };
+  return normalizePageStyle({ ...base, color: lavagnaPreferredPaperColor() });
+}
+
+// 0.1.30 — le pagine Note di una lezione usano sempre carta gialla a quadretti.
+// La scelta è applicata fuori dal percorso Ink e non modifica pointermove/drawBatch.
+function pageStyleForDescriptor(record, descriptor = pageDescriptor()) {
+  const base = pageStyleFromRecord(record);
+  const lessonNoteSurface = (descriptor?.kind === 'agenda' || descriptor?.kind === 'note')
+    && Boolean(descriptor?.lessonId || activeLesson?.id);
+  return lessonNoteSurface
+    ? normalizePageStyle({ ...base, color:'yellow', template:'grid' })
+    : base;
 }
 
 function paperToolDefaults(color) {
-  return PAPER_TOOL_DEFAULTS[color] ?? PAPER_TOOL_DEFAULTS.yellow;
+  return PAPER_TOOL_DEFAULTS[color] ?? PAPER_TOOL_DEFAULTS.black;
 }
 
 function applyToolDefaultsForPaper(color) {
@@ -616,6 +2897,11 @@ function applyPageStyle(target = paper, value = pageStyle) {
   const normalized = normalizePageStyle(value);
   target.dataset.paperColor = normalized.color;
   target.dataset.pageTemplate = normalized.template;
+  // 0.1.32 — la tonalità UI delle finestre segue la carta corrente, ma resta
+  // completamente fuori dalla pipeline Ink. Serve solo a uniformare i pannelli.
+  if (target === paper || target?.id === 'paper') {
+    document.documentElement.dataset.noteUiTone = normalized.color;
+  }
 }
 
 function updatePageStyleUi() {
@@ -632,6 +2918,13 @@ function updatePageStyleUi() {
   }
   for (const button of pageTemplateChoices) {
     const selected = button.dataset.pageTemplate === pageStyle.template;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+  for (const button of quickPaperChoices) {
+    const selected = button.dataset.quickTemplate
+      ? button.dataset.quickTemplate === pageStyle.template
+      : button.dataset.quickColor === pageStyle.color;
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
@@ -690,6 +2983,7 @@ async function setPageColor(color) {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_COLORS.includes(color)) return;
   pageStyle = { ...pageStyle, color };
+  saveLavagnaPreferredPaperColor(color);
   applyPageStyle();
   updatePageStyleUi();
   applyToolDefaultsForPaper(color);
@@ -698,7 +2992,7 @@ async function setPageColor(color) {
   renderAll();
   dirty = true;
 
-  if (pageStyleScope === 'all' && currentPageKind !== 'rubrica') {
+  if (pageStyleScope === 'all') {
     pageStyleBulkBusy = true;
     updatePageStyleUi();
     statusLabel.textContent = 'applico colore a tutta l’agenda…';
@@ -731,21 +3025,20 @@ async function setPageColor(color) {
     return;
   }
 
-  if (pageSyncAllowed()) syncFoundation?.recordPageProperty(pageDescriptor(), 'color', color, 'current');
+  syncFoundation?.recordPageProperty(pageDescriptor(), 'color', color, 'current');
   scheduleSave();
   statusLabel.textContent = 'colore carta impostato sulla pagina';
 }
 
 async function setPageTemplate(template) {
   if (denyMutationDuringSyncRecovery()) return;
-  if (currentPageKind === 'rubrica' && template !== 'ruled') { statusLabel.textContent = 'La Rubrica resta sempre a righe'; return; }
   if (drawing || pageTurning || pageStyleBulkBusy || !ALLOWED_PAGE_TEMPLATES.includes(template)) return;
   pageStyle = { ...pageStyle, template };
   applyPageStyle();
   updatePageStyleUi();
   dirty = true;
 
-  if (pageStyleScope === 'all' && currentPageKind !== 'rubrica') {
+  if (pageStyleScope === 'all') {
     pageStyleBulkBusy = true;
     updatePageStyleUi();
     statusLabel.textContent = 'applico modello a tutta l’agenda…';
@@ -778,15 +3071,15 @@ async function setPageTemplate(template) {
     return;
   }
 
-  if (pageSyncAllowed()) syncFoundation?.recordPageProperty(pageDescriptor(), 'template', template, 'current');
+  syncFoundation?.recordPageProperty(pageDescriptor(), 'template', template, 'current');
   scheduleSave();
   statusLabel.textContent = 'modello pagina impostato sulla pagina';
 }
 
 function updateStyleUi() {
   if (!stylePanel) return;
-  const styleTool = activeTool === 'ruler' ? rulerInkTool : (activeTool === 'shape' || activeTool === 'voice' || activeTool === 'lasso') ? 'pen' : activeTool;
-  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', lasso: 'Lazo', shape: 'Figure', ruler: 'Righello', voice: 'Voice Script', image: 'Immagine' };
+  const styleTool = (activeTool === 'shape' || activeTool === 'voice' || activeTool === 'lasso') ? 'pen' : activeTool;
+  const names = { pen: 'Penna', highlighter: 'Evidenziatore', eraser: 'Gomma', lasso: 'Lazo', shape: 'Figure', voice: 'Voice Script', image: 'Immagine' };
   if (stylePanelTitle) stylePanelTitle.textContent = `Stile ${names[activeTool] ?? 'Penna'}`;
   for (const group of styleGroups) group.hidden = group.dataset.styleFor !== styleTool;
   const effectiveColor = currentPageKind === 'planner-timetable' && styleTool === 'pen'
@@ -1523,7 +3816,7 @@ function principalSaintName(payload) {
 function setSaintLabel(root, dateString, state = 'cached', pageKind = currentPageKind) {
   const label = root?.querySelector?.('.saint-name');
   if (!label) return;
-  const hiddenForNotes = pageKind === 'note' || pageKind === 'free-note';
+  const hiddenForNotes = pageKind === 'note';
   label.hidden = hiddenForNotes;
   if (hiddenForNotes) return;
   const name = cachedSaintName(dateString);
@@ -1742,7 +4035,7 @@ function plannerPeriodKey(dateString, mode, timetableIndex = currentTimetableInd
   return `planner::year::${dateString.slice(0, 4)}`;
 }
 
-function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal) {
+function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, noteTotal = 0) {
   const d = new Date(`${dateString}T12:00:00`);
   const dayName = new Intl.DateTimeFormat('it-IT', { weekday: 'long' }).format(d).toLocaleUpperCase('it-IT');
   const monthName = new Intl.DateTimeFormat('it-IT', { month: 'long' }).format(d);
@@ -1757,24 +4050,22 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
   if (kindLabel) {
-    if (pageKind === 'rubrica') kindLabel.textContent = 'Rubrica';
-    else if (pageKind === 'free-note') kindLabel.textContent = 'Note libere';
-    else if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
+    if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
     else if (isPlannerKind(pageKind)) {
       const mode = plannerModeFromKind(pageKind);
       const plannerDate = new Date(`${dateString}T12:00:00`);
       if (mode === 'daily') {
         const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(plannerDate);
         const dayMonth = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long' }).format(plannerDate);
-        kindLabel.textContent = `Planner giornaliero - ${weekday} ${dayMonth}`;
+        kindLabel.textContent = 'Obiettivi della lezione';
       } else if (mode === 'weekly') kindLabel.textContent = plannerModeTitle('weekly', dateString);
       else if (mode === 'timetable') kindLabel.textContent = 'Orario settimanale';
       else if (mode === 'monthly') kindLabel.textContent = plannerModeTitle('monthly', dateString);
       else kindLabel.textContent = plannerModeTitle('yearly', dateString);
     } else kindLabel.textContent = '';
   }
-  if (noteCounter) noteCounter.textContent = pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '';
-  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || pageKind === 'rubrica' || isPlannerKind(pageKind);
+  if (noteCounter) noteCounter.textContent = '';
+  if (hours) hours.hidden = pageKind === 'note' || isPlannerKind(pageKind);
   if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
   else if (kindLabel) kindLabel.style.removeProperty('left');
 }
@@ -1792,9 +4083,7 @@ function alignNoteTitleToPen(root = document) {
 function plannerModeTitle(mode, dateString) {
   const d = new Date(`${dateString}T12:00:00`);
   if (mode === 'daily') {
-    const weekday = new Intl.DateTimeFormat('it-IT', { weekday:'long' }).format(d);
-    const dayMonth = new Intl.DateTimeFormat('it-IT', { day:'numeric', month:'long' }).format(d);
-    return `Planner giornaliero - ${weekday} ${dayMonth}`;
+    return 'Obiettivi della lezione';
   }
   if (mode === 'weekly') {
     const monday = new Date(`${mondayOf(dateString)}T12:00:00`);
@@ -1816,18 +4105,9 @@ function plannerDailyDateLabel(dateString) {
 }
 
 function buildDailyPlannerHtml(dateString) {
-  const rows = ['<div class="planner-time-row planner-time-row-blank"><span></span><i></i></div>']
-    .concat(Array.from({ length: 12 }, (_, i) => 7 + i)
-      .map((h) => `<div class="planner-time-row"><span>${String(h).padStart(2,'0')}:00</span><i></i></div>`))
-    .join('');
-  return `<div class="planner-daily-grid">
-      <section class="planner-timeline"><h3>Programma</h3><div class="planner-time-rows">${rows}</div><div class="planner-time-bottom-label"><span>19:00</span><i></i></div></section>
-      <aside class="planner-daily-side">
-        <section class="planner-box planner-priority"><h3>Priorità del giorno</h3><div>1.</div><div>2.</div><div>3.</div></section>
-        <section class="planner-box planner-todo"><h3>To-do</h3><div>□</div><div>□</div><div>□</div><div>□</div></section>
-        <section class="planner-box planner-ideas"><h3>Note / Idee</h3></section>
-      </aside>
-    </div><div class="planner-sync-label">Ink indipendente dalla pagina Agenda del giorno</div>`;
+  return `<section class="lesson-goals-sheet" aria-label="Obiettivi della lezione">
+    <div class="lesson-goals-ruled" aria-hidden="true"></div>
+  </section>`;
 }
 
 function buildWeeklyPlannerHtml(dateString) {
@@ -1837,7 +4117,9 @@ function buildWeeklyPlannerHtml(dateString) {
     const d = new Date(monday); d.setDate(d.getDate() + i);
     return `<section class="planner-week-day"><h3>${fmt.format(d).replace('.', '').toUpperCase()}</h3><div class="planner-week-lines"></div></section>`;
   }).join('');
-  return `<div class="planner-week-grid">${cols}</div>
+  const inlineTitle = plannerModeTitle('weekly', dateString);
+  return `<div class="planner-week-inline-title">${inlineTitle}</div>
+    <div class="planner-week-grid">${cols}</div>
     <div class="planner-week-bottom"><section class="planner-box"><h3>To-do della settimana</h3></section><section class="planner-box"><h3>Obiettivi / Note</h3></section></div>`;
 }
 
@@ -1911,7 +4193,7 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   currentPlannerMode = target.plannerMode ?? plannerModeFromKind(target.kind) ?? currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable && isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
-  if (enteringTimetable) activeTool = 'pen';
+  if (enteringTimetable) { activeTool = 'pen'; lassoSessionArmed = false; }
   if (enteringTimetable) {
     cancelShapeGesture();
     if (shapePalette) shapePalette.hidden = true;
@@ -1925,7 +4207,7 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   images = imagesFromRecord(record);
   selectedImageId = null;
   const previousPaperColor = pageStyle.color;
-  pageStyle = forcedStyle ? normalizePageStyle(forcedStyle) : pageStyleFromRecord(record);
+  pageStyle = forcedStyle ? normalizePageStyle(forcedStyle) : pageStyleForDescriptor(record, target);
   applyPageStyle();
   updatePageStyleUi();
   if (pageStyle.color !== previousPaperColor && !preserveToolStyles) applyToolDefaultsForPaper(pageStyle.color);
@@ -1938,6 +4220,51 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   renderImages();
   updateToolUi();
   updateStyleUi();
+  if (target.kind === 'agenda' && activeLesson?.id) {
+    const pos = target.continuousScrollPosition || { segment:target.lessonBoardIndex || currentLessonBoardIndex, offset:0 };
+    await continuousActivate({ segmentIndex:pos.segment, offset:pos.offset, preserveCache:true });
+  }
+}
+
+async function openLessonGoalsFromPage() {
+  if (!activeLesson?.id || currentPageKind !== 'agenda') return;
+  if (drawing || pageTurning || pageStyleBulkBusy) return;
+  const returnScroll = continuousLessonActive ? continuousCurrentScrollPosition() : { segment:currentLessonBoardIndex, offset:0 };
+  if (continuousLessonActive) {
+    const continuousSaved = await flushContinuousSegmentSaves();
+    if (!continuousSaved) {
+      statusLabel.textContent = 'salvataggio non riuscito: Obiettivi non aperti';
+      scheduleSave();
+      return;
+    }
+  }
+  pageTurning = true;
+  closeStylePanel();
+  cancelPendingSave();
+  const oldDescriptor = pageDescriptor();
+  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle, images) : true;
+  if (!saveOk) {
+    pageTurning = false;
+    statusLabel.textContent = 'salvataggio non riuscito';
+    if (dirty) scheduleSave();
+    return;
+  }
+  const target = pageDescriptor(currentDate, 'planner-daily', 0, 0);
+  const goalsStyle = normalizePageStyle({ color:pageStyle.color, template:'blank' });
+  lessonGoalsReturnDescriptor = { ...oldDescriptor, continuousScrollPosition:returnScroll };
+  weeklyTimetableReturnDescriptor = null;
+  continuousClearRuntime({ keepLesson:true });
+  try {
+    await loadDescriptorAsCurrentPage(target, goalsStyle, true);
+    saveActiveLesson({ touch:false });
+    statusLabel.textContent = (strokes.length || images.length) ? 'Obiettivi della lezione caricati' : 'Obiettivi della lezione';
+  } catch (err) {
+    session.storageErrors++;
+    console.warn('Obiettivi della lezione non disponibili', err);
+    statusLabel.textContent = 'Obiettivi della lezione non disponibili';
+  } finally {
+    pageTurning = false;
+  }
 }
 
 async function openWeeklyTimetable() {
@@ -1957,6 +4284,7 @@ async function openWeeklyTimetable() {
   const target = pageDescriptor(currentDate, 'planner-timetable', 0, 0, 1);
   try {
     await loadDescriptorAsCurrentPage(target, { color:'black', template:'blank' }, true);
+    saveActiveLesson({ touch:false });
     statusLabel.textContent = strokes.length ? 'orario settimanale caricato' : 'orario settimanale';
   } catch (err) {
     session.storageErrors++;
@@ -1972,23 +4300,21 @@ async function closeWeeklyTimetable() {
   pageTurning = true;
   cancelPendingSave();
   const currentDescriptor = pageDescriptor();
-  // 0.1.103-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
-  // prima di uscire dalla scheda, indipendentemente dal flag dirty.
-  const saveOk = await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images);
+  const saveOk = dirty ? await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images) : true;
   if (!saveOk) {
     pageTurning = false;
     statusLabel.textContent = 'salvataggio orario non riuscito';
-    scheduleSave();
+    if (dirty) scheduleSave();
     return;
   }
   const fallback = pageDescriptor(currentDate, 'planner-weekly', 0, 0);
-  const target = weeklyTimetableReturnDescriptor?.kind && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
+  const target = isPlannerKind(weeklyTimetableReturnDescriptor?.kind) && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
     ? weeklyTimetableReturnDescriptor
     : fallback;
   weeklyTimetableReturnDescriptor = null;
   try {
     await loadDescriptorAsCurrentPage(target, null, true);
-    statusLabel.textContent = target.kind === 'agenda' ? 'Agenda' : 'Planner settimanale';
+    statusLabel.textContent = 'Planner settimanale';
   } catch (err) {
     session.storageErrors++;
     console.warn('Ritorno al Planner settimanale non riuscito', err);
@@ -2017,20 +4343,20 @@ function registerPageDoubleTap(target, x, y) {
   if (!closeInTime || !closeInSpace || !samePage) return false;
   pageDoubleTapLastTap = null;
 
-  // 0.1.103 — navigazione rapida Agenda ↔ Orario settimanale.
-  // Il doppio tap sul corpo dell'Agenda memorizza esattamente la pagina di origine
-  // tramite openWeeklyTimetable(); il doppio tap su qualunque scheda Orario la ripristina.
-  if (currentPageKind === 'agenda') {
+  // 0.1.30 — navigazione didattica a doppio tap.
+  // Pagina Note (compresi i segmenti verticali) -> Obiettivi della lezione.
+  if (activeLesson?.id && (currentPageKind === 'agenda' || currentPageKind === 'note')) {
+    void openLessonGoalsFromPage();
+    return true;
+  }
+  // Obiettivi della lezione -> tabella/orario settimanale.
+  if (currentPageKind === 'planner-daily') {
     void openWeeklyTimetable();
     return true;
   }
-  if (currentPageKind === 'planner-timetable') {
-    void closeWeeklyTimetable();
-    return true;
-  }
 
-  // Note e gli altri Planner mantengono il comportamento privacy preesistente.
-  if (currentPageKind === 'note' || (isPlannerKind(currentPageKind) && currentPageKind !== 'planner-timetable')) {
+  // Le altre superfici conservano il doppio tap privacy precedente.
+  if (currentPageKind === 'agenda' || currentPageKind === 'note' || isPlannerKind(currentPageKind)) {
     showIdleCover(true);
     return true;
   }
@@ -2135,7 +4461,7 @@ async function navigateToAgendaDate(targetDate) {
   }
   try {
     await openDb();
-    const [record, noteTotal] = await Promise.all([getRecord(targetDate), ensureNotesCount(targetDate)]);
+    const [record, noteTotal] = await Promise.all([getRecord(targetDate), ensureNotesCount(targetDate, '', 0)]);
     session.storageReads++;
     currentDate = targetDate;
     currentPageKind = 'agenda';
@@ -2145,7 +4471,7 @@ async function navigateToAgendaDate(targetDate) {
     images = imagesFromRecord(record);
     selectedImageId = null;
     const previousPaperColor = pageStyle.color;
-    pageStyle = pageStyleFromRecord(record);
+    pageStyle = pageStyleForDescriptor(record, pageDescriptor());
     applyPageStyle();
     updatePageStyleUi();
     if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
@@ -2196,8 +4522,7 @@ function configurePageRoot(root, descriptor) {
   const mode = planner ? plannerModeFromKind(descriptor.kind) : null;
   root.classList.toggle('planner-view', planner);
   root.classList.toggle('note-view', descriptor.kind === 'note');
-  root.classList.toggle('free-note-view', descriptor.kind === 'free-note');
-  root.classList.toggle('rubrica-view', descriptor.kind === 'rubrica');
+  root.classList.toggle('lesson-note-view', descriptor.kind === 'note' && Boolean(descriptor.lessonId || activeLesson?.id));
   for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
   root.classList.toggle('planner-timetable', planner && mode === 'timetable');
   const layer = root.querySelector('.planner-layer');
@@ -2215,7 +4540,7 @@ function configurePageRoot(root, descriptor) {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
   const hours = root.querySelector('.hours');
-  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || descriptor.kind === 'rubrica' || planner;
+  if (hours) hours.hidden = descriptor.kind === 'note' || planner;
 }
 
 let audioIndicatorSerial = 0;
@@ -2235,9 +4560,10 @@ async function refreshAudioPageIndicator() {
 }
 
 function updateHeader() {
-  setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal, currentFreeNoteIndex, currentFreeNoteTotal);
+  setHeaderFor(document, currentDate, currentPageKind, currentNoteIndex, currentNoteTotal);
   configurePageRoot(paper, pageDescriptor());
-  if (currentPageKind === 'agenda') {
+  renderLessonHeaderFor(document, pageDescriptor());
+  if (currentPageKind === 'agenda' && !activeLesson) {
     scheduleSaintRefresh();
     scheduleHistoryRefresh();
     scheduleWeatherRefresh();
@@ -2251,48 +4577,37 @@ function updateHeader() {
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
   if (baselineLabel) {
-    if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter} · ${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
-    else if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
-    else if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
-    else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
-    else baselineLabel.textContent = 'AGENDA · PLANNER · INK STABILE';
-  }
-  freeNotesButton?.setAttribute('aria-pressed', currentPageKind === 'free-note' ? 'true' : 'false');
-  if (rubricaAzTabs) rubricaAzTabs.hidden = currentPageKind !== 'rubrica';
-  for (const button of rubricaTabButtons) {
-    const active = currentPageKind === 'rubrica' && button.dataset.rubricaLetter === currentRubricaLetter;
-    button.classList.toggle('active', active);
-    button.setAttribute('aria-current', active ? 'page' : 'false');
-  }
-  if (rubricaPageCounter) {
-    rubricaPageCounter.hidden = currentPageKind !== 'rubrica';
-    rubricaPageCounter.textContent = `${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
+    if (currentPageKind === 'note') baselineLabel.textContent = activeLesson?.id ? 'NOTE · SCORRIMENTO VERTICALE' : `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
+    else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : (currentPlannerMode === 'daily' ? 'OBIETTIVI DELLA LEZIONE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`);
+    else baselineLabel.textContent = 'NOTE · FOGLIO CONTINUO';
   }
   void refreshAudioPageIndicator();
 }
 
-function notesMetaKey(dateString) {
-  return `${dateString}${NOTES_META_SUFFIX}`;
+function notesMetaKey(dateString, lessonId = '', lessonBoardIndex = 0) {
+  return lessonId ? lessonBoardNotesMetaKey(lessonId, lessonBoardIndex) : `${dateString}${NOTES_META_SUFFIX}`;
 }
 
-function noteKey(dateString, noteIndex) {
-  return `${dateString}::note::${String(noteIndex).padStart(4, '0')}`;
+function noteKey(dateString, noteIndex, lessonId = '', lessonBoardIndex = 0) {
+  const suffix = `::note::${String(noteIndex).padStart(4, '0')}`;
+  return lessonId ? `${lessonBoardKey(lessonId, lessonBoardIndex)}${suffix}` : `${dateString}${suffix}`;
 }
 
-function freeNoteKey(index) {
-  return `${FREE_NOTE_KEY_PREFIX}${String(Math.max(1, Number(index) || 1)).padStart(4, '0')}`;
-}
-
-function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, rubricaLetter = currentRubricaLetter, rubricaPageIndex = currentRubricaPageIndex) {
-  if (pageKind === 'rubrica') return `${RUBRICA_KEY_PREFIX}${String(rubricaLetter || 'A').toUpperCase()}::${String(Math.max(1, Number(rubricaPageIndex) || 1)).padStart(4,'0')}`;
-  if (pageKind === 'free-note') return freeNoteKey(freeNoteIndex);
-  if (pageKind === 'note') return noteKey(dateString, noteIndex);
+function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, lessonBoardIndex = currentLessonBoardIndex) {
+  if (pageKind === 'note') return noteKey(dateString, noteIndex, activeLesson?.id || '', lessonBoardIndex);
+  // Gli Obiettivi appartengono alla lezione, non alla data: due lezioni nello
+  // stesso giorno devono avere superfici e backup indipendenti.
+  if (pageKind === 'planner-daily' && activeLesson?.id) return lessonGoalsKey(activeLesson.id);
   if (isPlannerKind(pageKind)) return plannerPeriodKey(dateString, plannerModeFromKind(pageKind), timetableIndex);
+  if (pageKind === 'agenda' && activeLesson?.id) return lessonBoardKey(activeLesson.id, lessonBoardIndex);
   return dateString;
 }
 
-function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, freeNoteTotal = currentFreeNoteTotal, rubricaLetter = currentRubricaLetter, rubricaPageIndex = currentRubricaPageIndex, rubricaPageTotal = currentRubricaPageTotal) {
+function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, noteIndex = currentNoteIndex, noteTotal = currentNoteTotal, timetableIndex = currentTimetableIndex, lessonBoardIndex = currentLessonBoardIndex) {
   const plannerMode = isPlannerKind(pageKind) ? plannerModeFromKind(pageKind) : null;
+  const lessonSurface = (pageKind === 'agenda' || pageKind === 'note' || pageKind === 'planner-daily') && Boolean(activeLesson?.id);
+  const segmentedLessonSurface = pageKind === 'agenda' || pageKind === 'note';
+  const boardIndex = lessonSurface && segmentedLessonSurface ? Math.max(1, Number(lessonBoardIndex) || 1) : 0;
   return {
     date: dateString,
     kind: pageKind,
@@ -2302,33 +4617,15 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
       : 0,
     noteIndex: pageKind === 'note' ? noteIndex : 0,
     noteTotal: pageKind === 'note' ? noteTotal : 0,
-    freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(freeNoteIndex) || 1) : 0,
-    freeNoteTotal: pageKind === 'free-note' ? Math.max(1, Number(freeNoteTotal) || 1) : 0,
-    rubricaLetter: pageKind === 'rubrica' ? String(rubricaLetter || 'A').toUpperCase() : '',
-    rubricaPageIndex: pageKind === 'rubrica' ? Math.max(1, Number(rubricaPageIndex) || 1) : 0,
-    rubricaPageTotal: pageKind === 'rubrica' ? Math.max(1, Number(rubricaPageTotal) || 1) : 0,
-    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, freeNoteIndex, rubricaLetter, rubricaPageIndex),
+    lessonId: lessonSurface ? (activeLesson?.id || '') : '',
+    lessonBoardIndex: boardIndex,
+    key: pageKey(dateString, pageKind, noteIndex, timetableIndex, boardIndex || lessonBoardIndex),
     createNote: false,
-    createFreeNote: false
+    createLessonBoard: false
   };
 }
-
-// 0.1.103-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
-// La Rubrica viene persistita esclusivamente nel Vault cifrato; tutte le altre
-// pagine continuano a usare il normale Sync. Questa funzione deve restare
-// fuori dal percorso pointermove e non modifica il motore realtime Ink.
-function pageSyncAllowed(descriptor = pageDescriptor()) {
-  return descriptor?.kind !== 'rubrica';
-}
-
-function freeNoteDescriptor(index = currentFreeNoteIndex, total = currentFreeNoteTotal) {
-  const safeIndex = Math.max(1, Number(index) || 1);
-  const safeTotal = Math.max(safeIndex, Number(total) || 1);
-  return pageDescriptor(currentDate, 'free-note', 0, 0, currentTimetableIndex, safeIndex, safeTotal);
-}
-
 function currentPageKey() {
-  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentFreeNoteIndex, currentRubricaLetter, currentRubricaPageIndex);
+  return pageKey(currentDate, currentPageKind, currentNoteIndex, currentTimetableIndex, currentLessonBoardIndex);
 }
 
 function addDays(dateString, delta) {
@@ -2446,8 +4743,7 @@ async function getPasswordVaultBackupPayload() {
 }
 
 async function restorePasswordVaultBackupPayload(payload) {
-  if (!payload) return { restored: 0, skipped: 'backup-without-vault' };
-  const rows = rowsFromVaultBackupPayload(payload);
+  const rows = payload ? rowsFromVaultBackupPayload(payload) : [];
   await openDb();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(PASSWORD_VAULT_STORE, 'readwrite');
@@ -2644,13 +4940,12 @@ async function ensureImageBlob(image) {
   image.blobSize = row.size;
   image.mimeType = row.mimeType;
   image.modifiedAt = image.modifiedAt || new Date().toISOString();
-  if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, blobMigration: true });
+  syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, blobMigration: true });
   dirty = true;
   return true;
 }
 
 async function ensureCurrentPageImageBlobs() {
-  if (currentPageKind === 'rubrica') return 0;
   if (!images.length) return 0;
   let changed = 0;
   for (const image of images) {
@@ -2693,8 +4988,7 @@ function buildEmptyPageRecord(descriptor) {
   const d = descriptor || {};
   return {
     date: String(d.key || d.date || ''),
-    kind: d.kind === 'free-note' ? 'free-note-ink'
-      : d.kind === 'note' ? 'day-note-ink'
+    kind: d.kind === 'note' ? 'day-note-ink'
       : d.kind === 'planner-daily' ? 'planner-day-ink'
       : d.kind === 'planner-weekly' ? 'planner-week-ink'
       : d.kind === 'planner-monthly' ? 'planner-month-ink'
@@ -2702,9 +4996,11 @@ function buildEmptyPageRecord(descriptor) {
       : d.kind === 'planner-timetable' ? 'planner-timetable-ink'
       : 'agenda-day-ink',
     referenceDate: String(d.date || ''),
+    lessonId: String(d.lessonId || '') || null,
+    lessonBoardIndex: Math.max(0, Number(d.lessonBoardIndex) || 0),
+    lessonAcquisitionDate: d.lessonId ? String(d.date || '') : null,
     plannerMode: d.plannerMode ?? null,
     noteIndex: d.kind === 'note' ? (Number(d.noteIndex) || 0) : 0,
-    freeNoteIndex: d.kind === 'free-note' ? (Number(d.freeNoteIndex) || 1) : 0,
     version: APP_VERSION,
     pipeline: 'coalesced-retina-storage-sync-v1',
     strokes: [],
@@ -2719,8 +5015,7 @@ function descriptorFromStoredRecord(record) {
   const kind = String(record?.kind || '');
   const referenceDate = String(record?.referenceDate || (key.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || currentDate));
   let pageKind = 'agenda';
-  if (kind === 'free-note-ink') pageKind = 'free-note';
-  else if (kind === 'day-note-ink') pageKind = 'note';
+  if (kind === 'day-note-ink') pageKind = 'note';
   else if (kind === 'planner-day-ink') pageKind = 'planner-daily';
   else if (kind === 'planner-week-ink') pageKind = 'planner-weekly';
   else if (kind === 'planner-month-ink') pageKind = 'planner-monthly';
@@ -2734,10 +5029,9 @@ function descriptorFromStoredRecord(record) {
     timetableIndex,
     noteIndex: pageKind === 'note' ? Math.max(1, Number(record?.noteIndex) || Number(key.match(/::note::(\d+)$/)?.[1]) || 1) : 0,
     noteTotal: 0,
-    freeNoteIndex: pageKind === 'free-note' ? Math.max(1, Number(record?.freeNoteIndex) || Number(key.match(/::free-note::(\d+)$/)?.[1]) || 1) : 0,
-    freeNoteTotal: 0,
-    createNote: false,
-    createFreeNote: false
+    lessonId: String(record?.lessonId || ''),
+    lessonBoardIndex: Math.max(0, Number(record?.lessonBoardIndex) || Number(key.match(/::board::(\d{4})/)?.[1]) || 0),
+    createNote: false
   };
 }
 
@@ -2770,9 +5064,9 @@ async function queueAuthoritativeGroupSnapshot() {
   for (const original of records) {
     const record = await ensureSnapshotRecordImageBlobs(original);
     const descriptor = descriptorFromStoredRecord(record);
-    if (pageSyncAllowed(descriptor)) syncFoundation?.recordPageSnapshot(descriptor, record);
+    syncFoundation?.recordPageSnapshot(descriptor, record);
     for (const stroke of Array.isArray(record?.strokes) ? record.strokes : []) {
-      if (stroke?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, stroke);
+      if (stroke?.id) syncFoundation?.recordStrokeAdded(descriptor, stroke);
     }
     const commit = syncFoundation?.prepareAtomicCommit(descriptor.key) || { events: [], eventIds: [], stateRow: null };
     if (commit.events.length) {
@@ -2865,7 +5159,7 @@ async function applyRemoteStrokeEvent(event) {
   await putRemoteEventResult(event, conflict ? 'conflict-preserved' : 'applied', page, conflict ? 'add/delete concorrenti: stroke preservato' : null);
   if (currentPageKey() === pageKeyValue && !drawing && !pageTurning && !dirty) {
     // Il pull remoto avviene fuori dal percorso realtime. Se la pagina corrente non ha
-    // modifiche locali pendenti, aggiorniamo subito la vista anche per testo Windows.
+    // modifiche locali pendenti, aggiorniamo subito la vista anche per il testo sincronizzato.
     strokes = pageStrokes;
     renderAll();
   }
@@ -3144,11 +5438,32 @@ async function applyRemotePasswordVaultEvent(event) {
   return { applied: 1 };
 }
 
+async function beginBackupSnapshotFreeze() {
+  backupSnapshotFreeze = true;
+  lanTransport?.suspendForInk();
+  cloudTransport?.suspendForInk();
+  const started = performance.now();
+  while (syncRemoteApplyBusy) {
+    if (performance.now() - started > 5000) {
+      backupSnapshotFreeze = false;
+      throw new Error('Snapshot backup sospeso: Sync remota ancora in applicazione');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function endBackupSnapshotFreeze() {
+  backupSnapshotFreeze = false;
+}
+
 async function applyRemoteSyncEvents(events) {
+  if (backupSnapshotFreeze || restoreOperationLocked || isLocalRestoreSyncQuarantined()) throw new DOMException('Backup snapshot priority', 'AbortError');
   const totals = { applied: 0, deferred: 0, ignored: 0, conflicts: 0 };
-  await openDb();
-  for (const event of events || []) {
-    if (drawing || pageTurning || imageBusy || imageGesture) throw new DOMException('Ink priority', 'AbortError');
+  syncRemoteApplyBusy = true;
+  try {
+    await openDb();
+    for (const event of events || []) {
+      if (backupSnapshotFreeze || restoreOperationLocked || isLocalRestoreSyncQuarantined() || drawing || pageTurning || imageBusy || imageGesture) throw new DOMException('Ink/backup priority', 'AbortError');
     if (!event?.eventId || Number(event.protocolVersion) !== 1) { totals.ignored++; continue; }
     await prepareRestoreRecoveryPage(event);
     const duplicate = await getSyncEvent(event.eventId);
@@ -3167,11 +5482,14 @@ async function applyRemoteSyncEvents(events) {
       await putRemoteEventResult(event, 'deferred', null, 'tipo evento non ancora applicato');
       result = { deferred: 1 };
     }
-    for (const key of Object.keys(totals)) totals[key] += Number(result?.[key]) || 0;
-    await new Promise((resolve) => setTimeout(resolve, 0));
+      for (const key of Object.keys(totals)) totals[key] += Number(result?.[key]) || 0;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    if (events?.length) await loadInitialPage();
+    return totals;
+  } finally {
+    syncRemoteApplyBusy = false;
   }
-  if (events?.length) await loadInitialPage();
-  return totals;
 }
 
 
@@ -3181,6 +5499,70 @@ function loadSyncRestoreGuard() {
     const parsed = JSON.parse(localStorage.getItem(SYNC_RESTORE_GUARD_STORAGE_KEY) || 'null');
     return parsed && parsed.pending ? parsed : null;
   } catch { return null; }
+}
+
+function loadLocalRestoreSyncQuarantine() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LOCAL_RESTORE_SYNC_QUARANTINE_KEY) || 'null');
+    return parsed && parsed.active ? parsed : null;
+  } catch { return null; }
+}
+
+function saveLocalRestoreSyncQuarantine(value) {
+  const next = value && value.active ? { ...value, active: true } : null;
+  if (next) localStorage.setItem(LOCAL_RESTORE_SYNC_QUARANTINE_KEY, JSON.stringify(next));
+  else localStorage.removeItem(LOCAL_RESTORE_SYNC_QUARANTINE_KEY);
+  localRestoreSyncQuarantine = next;
+  return next;
+}
+
+function isLocalRestoreSyncQuarantined() {
+  return Boolean(localRestoreSyncQuarantine?.active);
+}
+
+function configuredSyncTransports() {
+  const cloud = loadCloudConfig();
+  const lan = loadLanConfig();
+  const transports = [];
+  if (String(cloud.joinCode || '').trim()) transports.push('cloud');
+  if (String(lan.endpoint || '').trim() && String(lan.syncKey || '').trim()) transports.push('lan');
+  return transports;
+}
+
+function beginLocalRestoreSyncQuarantine(details = {}) {
+  const transports = configuredSyncTransports();
+  return saveLocalRestoreSyncQuarantine({
+    active: true,
+    reason: details.recovery ? 'interrupted-restore-recovery' : (details.rollback ? 'restore-rollback' : 'local-restore'),
+    createdAt: new Date().toISOString(),
+    backupFileName: String(details.fileName || ''),
+    backupCreatedAt: String(details.manifest?.createdAt || ''),
+    transports
+  });
+}
+
+function clearLocalRestoreSyncQuarantine() {
+  return saveLocalRestoreSyncQuarantine(null);
+}
+
+function localRestoreSyncQuarantineMessage() {
+  if (!isLocalRestoreSyncQuarantined()) return '';
+  const names = (localRestoreSyncQuarantine?.transports || []).map((item) => item === 'cloud' ? 'Cloud' : 'LAN').join(' + ') || 'Sync';
+  return `⚠ ${names} sospesa dopo un ripristino locale. I dati ripristinati restano autorevoli su questo iPad finché non riattivi esplicitamente la Sync.`;
+}
+
+function confirmResumeSyncAfterLocalRestore(channelLabel = 'Sync') {
+  if (!isLocalRestoreSyncQuarantined()) return true;
+  const ok = globalThis.confirm(
+    `PROTEZIONE POST-RIPRISTINO\n\n${channelLabel} è sospesa perché questo iPad è stato ripristinato da un backup.\n\n` +
+    `Riattivando la sincronizzazione, il gruppo remoto potrebbe contenere dati più recenti o diversi e modificare lo stato appena ripristinato.\n\n` +
+    `Vuoi rimuovere la protezione? Per sicurezza, questa pressione NON avvierà ancora la sincronizzazione: dovrai premere “Sincronizza adesso” una seconda volta.`
+  );
+  if (!ok) return false;
+  saveLocalRestoreSyncQuarantine({ ...localRestoreSyncQuarantine, resumeChannel: channelLabel });
+  updateCloudStatus('Ripresa autorizzata; Sync ancora sospesa. Premi nuovamente “Sincronizza adesso” solo se vuoi riallineare questo iPad al gruppo Cloud.');
+  updateLanStatus('Ripresa autorizzata; Sync ancora sospesa. Premi nuovamente “Sincronizza adesso” solo se vuoi riallineare questo iPad al gruppo LAN.');
+  return false;
 }
 
 function updateSyncRestoreConfigLock() {
@@ -3196,10 +5578,8 @@ function updateSyncRestoreConfigLock() {
 
 function saveSyncRestoreGuard(value) {
   syncRestoreGuard = value && value.pending ? { ...value, pending: true } : null;
-  try {
-    if (syncRestoreGuard) localStorage.setItem(SYNC_RESTORE_GUARD_STORAGE_KEY, JSON.stringify(syncRestoreGuard));
-    else localStorage.removeItem(SYNC_RESTORE_GUARD_STORAGE_KEY);
-  } catch {}
+  if (syncRestoreGuard) localStorage.setItem(SYNC_RESTORE_GUARD_STORAGE_KEY, JSON.stringify(syncRestoreGuard));
+  else localStorage.removeItem(SYNC_RESTORE_GUARD_STORAGE_KEY);
   updateSyncRestoreConfigLock();
   return syncRestoreGuard;
 }
@@ -3209,7 +5589,7 @@ function isSyncRestorePending() {
 }
 
 function denyMutationDuringSyncRecovery() {
-  if (!isSyncRestorePending()) return false;
+  if (!isSyncRestorePending() && !restoreOperationLocked) return false;
   statusLabel.textContent = 'ripristino protetto · sola lettura finché Sync non è riallineata';
   return true;
 }
@@ -3242,8 +5622,8 @@ function beginGlobalGroupRestoreGuard(details = {}) {
   const cloudConfigured = Boolean(String(cloud.joinCode || '').trim());
   const lanConfigured = Boolean(String(lan.endpoint || '').trim() && String(lan.syncKey || '').trim());
   const cloudActive = cloudConfigured && cloud.mode !== 'off';
-  if (cloudActive && lanConfigured) {
-    throw new Error('Ripristino globale bloccato per sicurezza: risultano configurati sia Cloud sia LAN. Per imporre un backup al gruppo deve esserci un solo canale Sync autorevole; disattiva Cloud oppure rimuovi temporaneamente endpoint/chiave LAN, poi ripeti.');
+  if (cloudConfigured && lanConfigured) {
+    throw new Error('Ripristino globale bloccato per sicurezza: risultano configurati sia Cloud sia LAN. Per imporre un backup al gruppo deve esserci un solo canale Sync autorevole; rimuovi temporaneamente il codice Cloud oppure endpoint/chiave LAN, poi ripeti.');
   }
   const transport = cloudActive ? 'cloud'
     : (lanConfigured ? 'lan' : (cloudConfigured ? 'cloud' : 'none'));
@@ -3267,6 +5647,7 @@ function beginRemoteGroupEpochGuard(details = {}) {
     mode: 'group-authoritative',
     phase: 'epoch-mismatch',
     transport: String(details.transport || 'none'),
+    safetyBackupId: String(details.safetyBackupId || ''),
     remoteEpoch: String(details.remoteEpoch || ''),
     hubId: String(details.hubId || ''),
     clearAllPagesBeforeReconcile: true,
@@ -3306,38 +5687,111 @@ async function rebuildNotesMetadataFromPages() {
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => reject(req.error);
   });
-  const counts = new Map();
+  const legacyCounts = new Map();
+  const lessonCounts = new Map();
   const metaKeys = [];
   for (const row of records) {
     const key = String(row?.date || '');
-    if (row?.kind === 'day-notes-meta' || key.endsWith(NOTES_META_SUFFIX)) {
+    if (row?.kind === 'day-notes-meta' || row?.kind === 'lesson-board-notes-meta' || key.endsWith(NOTES_META_SUFFIX)) {
       metaKeys.push(key);
+      continue;
+    }
+    const lessonMatch = key.match(/^lesson::(.+?)::board::(\d{4})::note::(\d{4})$/);
+    if (lessonMatch) {
+      const lessonId = String(row?.lessonId || lessonMatch[1]);
+      const boardIndex = Math.max(1, Number(row?.lessonBoardIndex) || Number(lessonMatch[2]) || 1);
+      const index = Math.max(1, Number(row?.noteIndex) || Number(lessonMatch[3]) || 1);
+      const scope = lessonBoardNotesMetaKey(lessonId, boardIndex);
+      const prev = lessonCounts.get(scope);
+      lessonCounts.set(scope, {
+        lessonId, boardIndex, referenceDate:String(row?.referenceDate || row?.lessonAcquisitionDate || currentDate),
+        count:Math.max(prev?.count || 0, index)
+      });
       continue;
     }
     const match = key.match(/^(\d{4}-\d{2}-\d{2})::note::(\d{4})$/);
     if (!match) continue;
     const day = String(row?.referenceDate || match[1]);
     const index = Math.max(1, Number(row?.noteIndex) || Number(match[2]) || 1);
-    counts.set(day, Math.max(counts.get(day) || 0, index));
+    legacyCounts.set(day, Math.max(legacyCounts.get(day) || 0, index));
   }
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     const store = tx.objectStore(STORE);
     for (const key of metaKeys) store.delete(key);
-    for (const [day, count] of counts) {
-      store.put({
-        date: notesMetaKey(day), kind: 'day-notes-meta', referenceDate: day, count,
-        version: APP_VERSION, modifiedAt: new Date().toISOString()
-      });
+    for (const [day, count] of legacyCounts) {
+      store.put({ date:notesMetaKey(day), kind:'day-notes-meta', referenceDate:day, count, version:APP_VERSION, modifiedAt:new Date().toISOString() });
+    }
+    for (const [key, info] of lessonCounts) {
+      store.put({ date:key, kind:'lesson-board-notes-meta', referenceDate:info.referenceDate, lessonId:info.lessonId, lessonBoardIndex:info.boardIndex, count:info.count, version:APP_VERSION, modifiedAt:new Date().toISOString() });
     }
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Ricostruzione indice Note annullata'));
   });
   notesCountCache.clear();
-  for (const [day, count] of counts) notesCountCache.set(day, count);
+  for (const [day, count] of legacyCounts) notesCountCache.set(notesCacheKey(day), count);
+  for (const [key, info] of lessonCounts) notesCountCache.set(key, info.count);
 }
 
+async function rebuildLessonIndexFromPages() {
+  await openDb();
+  const records = await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  const found = new Map();
+  for (const row of records) {
+    const lessonId = cleanLessonText(row?.lessonId, 120);
+    if (!lessonId) continue;
+    const boardIndex = Math.max(1, Number(row?.lessonBoardIndex) || Number(String(row?.date||'').match(/::board::(\d{4})/)?.[1]) || 1);
+    const acquisitionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(row?.lessonAcquisitionDate || '')) ? String(row.lessonAcquisitionDate)
+      : (/^\d{4}-\d{2}-\d{2}$/.test(String(row?.referenceDate || '')) ? String(row.referenceDate) : localISODate(new Date()));
+    const existing = found.get(lessonId);
+    const createdAt = String(row?.lessonCreatedAt || existing?.createdAt || `${acquisitionDate}T12:00:00.000Z`);
+    const lastEditedAt = [String(existing?.lastEditedAt || ''), String(row?.lessonLastEditedAt || ''), String(row?.modifiedAt || '')].filter(Boolean).sort().at(-1) || createdAt;
+    found.set(lessonId, {
+      id:lessonId, acquisitionDate, createdAt, lastEditedAt,
+      subject:cleanLessonText(row?.lessonSubject,80) || existing?.subject || lessonSubjects[0] || 'Informatica 3G',
+      topic:cleanLessonText(row?.lessonTopic,160) || existing?.topic || 'Nuova lezione',
+      beautifyFontSizePx:normalizeBeautifyLessonFontSize(row?.lessonBeautifyFontSizePx) ?? existing?.beautifyFontSizePx ?? null,
+      boardCount:Math.max(existing?.boardCount || 1, boardIndex),
+      currentBoardIndex:Math.min(Math.max(1, Number(existing?.currentBoardIndex) || 1), Math.max(existing?.boardCount || 1, boardIndex))
+    });
+  }
+  if (!found.size) {
+    lessonIndex = [];
+    saveLessonIndex();
+    activeLesson = null;
+    try { localStorage.removeItem(ACTIVE_LESSON_STORAGE_KEY); } catch {}
+    return 0;
+  }
+  const previous = new Map(lessonIndex.map((item) => [item.id, item]));
+  lessonIndex = [...found.values()].map((item) => normalizeLesson({
+    ...item,
+    currentBoardIndex:previous.get(item.id)?.currentBoardIndex || item.currentBoardIndex,
+    beautifyFontSizePx:item.beautifyFontSizePx ?? previous.get(item.id)?.beautifyFontSizePx ?? null
+  })).filter(Boolean);
+  lessonIndex.sort((a,b) => a.acquisitionDate.localeCompare(b.acquisitionDate) || a.createdAt.localeCompare(b.createdAt));
+  saveLessonIndex();
+  for (const lesson of lessonIndex) if (!lessonSubjects.includes(lesson.subject)) lessonSubjects.push(lesson.subject);
+  saveLessonSubjects();
+  if (activeLesson?.id && found.has(activeLesson.id)) {
+    const rebuilt = lessonIndex.find((item) => item.id === activeLesson.id);
+    if (rebuilt) { activeLesson = { ...rebuilt, currentBoardIndex:Math.min(currentLessonBoardIndex, rebuilt.boardCount) }; saveActiveLesson(); }
+  } else {
+    const latest = lessonIndex.at(-1);
+    if (latest) {
+      activeLesson = { ...latest, currentBoardIndex:Math.max(1, Number(latest.currentBoardIndex) || 1) };
+      currentLessonBoardIndex = activeLesson.currentBoardIndex;
+      saveActiveLesson();
+    }
+  }
+  renderLessonSubjectSettings();
+  return lessonIndex.length;
+}
 async function runPendingGlobalGroupRestore() {
   if (!isSyncRestorePending() || syncRestoreGuard.mode !== 'global-authoritative') return { skipped: 'not-global' };
   const transport = String(syncRestoreGuard.transport || 'none');
@@ -3345,7 +5799,8 @@ async function runPendingGlobalGroupRestore() {
   if (!restoreId || transport === 'none') throw new Error('Sessione di ripristino globale non valida.');
   updateSyncRestoreGuard({ phase: 'global-publishing', attemptAt: new Date().toISOString() });
   try {
-    const snapshot = await queueAuthoritativeGroupSnapshot();
+    const snapshot = syncRestoreGuard.snapshotQueued ? { records:syncRestoreGuard.snapshotRecords, events:syncRestoreGuard.snapshotEvents } : await queueAuthoritativeGroupSnapshot();
+    if (!syncRestoreGuard.snapshotQueued) updateSyncRestoreGuard({ snapshotQueued:true, snapshotRecords:snapshot.records, snapshotEvents:snapshot.events });
     let result;
     if (transport === 'cloud') {
       if (!cloudTransport) throw new Error('Cloud Sync non inizializzato.');
@@ -3368,7 +5823,10 @@ async function runPendingGlobalGroupRestore() {
 
 async function handleRemoteGroupEpochMismatch(details = {}) {
   if (isSyncRestorePending()) return;
-  beginRemoteGroupEpochGuard(details);
+  restoreOperationLocked = true;
+  const safety = await backupFoundation?.createBackup('pre-group-reconciliation', { safety:true });
+  if (!safety) { restoreOperationLocked = false; throw new Error('Riallineamento gruppo sospeso: backup di sicurezza locale non riuscito'); }
+  beginRemoteGroupEpochGuard({ ...details, safetyBackupId:safety.id });
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
   audioRecorder?.suspendForInk();
@@ -3401,6 +5859,7 @@ async function runPendingRestoreReconciliation() {
       throw new Error('Trasporto di riallineamento non riconosciuto.');
     }
     await rebuildNotesMetadataFromPages();
+    await rebuildLessonIndexFromPages();
     clearSyncRestoreGuard();
     syncRecoveryRebuildActive = false;
     syncRecoveryRebuiltPages.clear();
@@ -3422,7 +5881,7 @@ async function runPendingRestoreReconciliation() {
 async function retryPendingRestoreReconciliation() {
   if (!isSyncRestorePending()) return false;
   updateSyncRestoreGuard({ phase: 'restore-applied', lastError: '', retryAt: new Date().toISOString() });
-  await resetSyncStores();
+  if (syncRestoreGuard.mode !== 'global-authoritative') await resetSyncStores();
   location.reload();
   return true;
 }
@@ -3461,7 +5920,7 @@ function saveCloudConfig() {
     mode: String(cloudSyncModeSelect?.value || 'manual')
   };
   try { localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify(config)); } catch {}
-  // 0.1.37: seconda copia persistente del codice Cloud nel DB principale.
+  // 0.1.39: seconda copia persistente del codice Cloud nel DB principale.
   // Non sovrascriviamo mai il backup IndexedDB con una stringa vuota.
   if (db && config.joinCode) {
     void putSyncMeta({
@@ -3639,7 +6098,8 @@ function updateCloudStatus(message = '') {
   if (!cloudSyncStatus) return;
   if (message) { cloudSyncStatus.textContent = message; return; }
   const lines = [
-    ...(isSyncRestorePending() ? ['⚠ Ripristino backup: invio Sync bloccato fino al riallineamento protetto.'] : []),
+    ...(isSyncRestorePending() ? ['⚠ Ripristino backup di gruppo: invio Sync bloccato fino al riallineamento protetto.'] : []),
+    ...(isLocalRestoreSyncQuarantined() ? [localRestoreSyncQuarantineMessage()] : []),
     `Stato: ${cloudStats?.state || 'idle'} · modalità ${cloudSyncModeSelect?.value || 'manual'}`,
     `Gruppo: ${cloudStats?.groupId || 'non configurato'}`,
     `Push/Pull: ${cloudStats?.pushed || 0}/${cloudStats?.pulled || 0} · applicati ${cloudStats?.applied || 0}`,
@@ -3683,6 +6143,10 @@ async function handleCloudTest() {
 
 async function handleCloudSyncNow() {
   if (!cloudTransport) return updateCloudStatus('Cloud Transport non inizializzato.');
+  if (isLocalRestoreSyncQuarantined()) {
+    if (localRestoreSyncQuarantine.resumeChannel !== 'Cloud Sync') { confirmResumeSyncAfterLocalRestore('Cloud Sync'); return; }
+    clearLocalRestoreSyncQuarantine();
+  }
   if (isSyncRestorePending()) {
     saveCloudConfig();
     updateCloudStatus('Riprovo il riallineamento protetto del backup con il gruppo Cloud…');
@@ -3701,7 +6165,8 @@ async function handleCloudSyncNow() {
 }
 
 function scheduleCloudAuto(reason = 'change', delayMs = 5000) {
-  if (isSyncRestorePending()) return false;
+  if (isSyncRestorePending() || isLocalRestoreSyncQuarantined()) return false;
+  if (restoreOperationLocked || backupSnapshotFreeze) return false;
   return cloudTransport?.scheduleAuto(reason, delayMs) || false;
 }
 
@@ -3731,7 +6196,8 @@ function updateLanStatus(message = '') {
   if (message) { lanSyncStatus.textContent = message; return; }
   const state = lanStats?.state || 'idle';
   const lines = [
-    ...(isSyncRestorePending() ? ['⚠ Ripristino backup: invio Sync bloccato fino al riallineamento protetto.'] : []),
+    ...(isSyncRestorePending() ? ['⚠ Ripristino backup di gruppo: invio Sync bloccato fino al riallineamento protetto.'] : []),
+    ...(isLocalRestoreSyncQuarantined() ? [localRestoreSyncQuarantineMessage()] : []),
     `Stato: ${state}`,
     `Hub: ${lanStats?.hubId || 'non verificato'}`,
     `Push/Pull: ${lanStats?.pushed || 0}/${lanStats?.pulled || 0} · applicati ${lanStats?.applied || 0}`,
@@ -3758,6 +6224,10 @@ async function handleLanTest() {
 
 async function handleLanSyncNow() {
   if (!lanTransport) return updateLanStatus('Trasporto LAN non inizializzato.');
+  if (isLocalRestoreSyncQuarantined()) {
+    if (localRestoreSyncQuarantine.resumeChannel !== 'Sync LAN') { confirmResumeSyncAfterLocalRestore('Sync LAN'); return; }
+    clearLocalRestoreSyncQuarantine();
+  }
   if (isSyncRestorePending()) {
     saveLanConfig();
     updateLanStatus('Riprovo il riallineamento protetto del backup con il gruppo LAN…');
@@ -3850,68 +6320,47 @@ function deleteRecord(date) {
   });
 }
 
-async function ensureNotesCount(dateString) {
-  if (notesCountCache.has(dateString)) return notesCountCache.get(dateString);
+async function ensureNotesCount(dateString, lessonId = '', lessonBoardIndex = 0) {
+  const cacheKey = notesCacheKey(dateString, lessonId, lessonBoardIndex);
+  if (notesCountCache.has(cacheKey)) return notesCountCache.get(cacheKey);
   try {
     await openDb();
-    const record = await getRecord(notesMetaKey(dateString));
+    const record = await getRecord(notesMetaKey(dateString, lessonId, lessonBoardIndex));
     session.storageReads++;
     const count = Math.max(0, Number(record?.count) || 0);
-    notesCountCache.set(dateString, count);
+    notesCountCache.set(cacheKey, count);
     return count;
   } catch (err) {
     session.storageErrors++;
-    console.warn('Conteggio Note del giorno non disponibile', err);
-    notesCountCache.set(dateString, 0);
+    console.warn('Conteggio Note non disponibile', err);
+    notesCountCache.set(cacheKey, 0);
     return 0;
   }
 }
 
-async function persistNotesCount(dateString, count) {
+async function persistNotesCount(dateString, count, lessonId = '', lessonBoardIndex = 0) {
   try {
     await openDb();
+    const lessonScoped = Boolean(lessonId);
     await putRecord({
-      date: notesMetaKey(dateString),
-      kind: 'day-notes-meta',
+      date: notesMetaKey(dateString, lessonId, lessonBoardIndex),
+      kind: lessonScoped ? 'lesson-board-notes-meta' : 'day-notes-meta',
       referenceDate: dateString,
+      lessonId: lessonScoped ? lessonId : null,
+      lessonBoardIndex: lessonScoped ? Math.max(1, Number(lessonBoardIndex) || 1) : 0,
       count,
       version: APP_VERSION,
       modifiedAt: new Date().toISOString()
     });
     session.storageWrites++;
-    notesCountCache.set(dateString, count);
+    notesCountCache.set(notesCacheKey(dateString, lessonId, lessonBoardIndex), count);
     return true;
   } catch (err) {
     session.storageErrors++;
-    console.warn('Salvataggio conteggio Note del giorno non riuscito', err);
+    console.warn('Salvataggio conteggio Note non riuscito', err);
     return false;
   }
 }
-
-async function ensureFreeNoteCount(force = false) {
-  if (freeNoteCountLoaded && !force) return currentFreeNoteTotal;
-  try {
-    await openDb();
-    const records = await readAllMainRecords();
-    let maxIndex = 0;
-    for (const row of records) {
-      const key = String(row?.date || '');
-      if (row?.kind !== 'free-note-ink' && !key.startsWith(FREE_NOTE_KEY_PREFIX)) continue;
-      const index = Math.max(0, Number(row?.freeNoteIndex) || Number(key.match(/::free-note::(\d+)$/)?.[1]) || 0);
-      maxIndex = Math.max(maxIndex, index);
-    }
-    currentFreeNoteTotal = Math.max(1, maxIndex || currentFreeNoteTotal || 1);
-    currentFreeNoteIndex = Math.min(currentFreeNoteTotal, Math.max(1, currentFreeNoteIndex || 1));
-    freeNoteCountLoaded = true;
-    return currentFreeNoteTotal;
-  } catch (err) {
-    console.warn('Conteggio Note libere non disponibile', err);
-    currentFreeNoteTotal = Math.max(1, currentFreeNoteTotal || 1);
-    freeNoteCountLoaded = true;
-    return currentFreeNoteTotal;
-  }
-}
-
 function setupStrokeStyle(stroke, targetCtx = ctx) {
   const tool = stroke?.tool ?? 'pen';
   targetCtx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
@@ -3956,26 +6405,10 @@ function storedInkDisplayColor(stroke, paperColor = pageStyle.color) {
 
 function setupStoredStrokeStyle(stroke, targetCtx = ctx, paperColor = pageStyle.color) {
   setupStrokeStyle(stroke, targetCtx);
-  const tool = stroke?.tool ?? 'pen';
-  // fix7: il ridisegno dell'evidenziatore mantiene la vividezza percepita durante
-  // il tratto realtime. Vecchi stroke con opacity 0.30 vengono rialzati solo in
-  // visualizzazione, senza alterare i dati memorizzati.
-  if (tool === 'highlighter') {
-    targetCtx.globalAlpha = Math.max(HIGHLIGHTER_OPACITY, Number(stroke?.opacity) || 0);
-    return;
-  }
-  if (tool !== 'pen') return;
+  if ((stroke?.tool ?? 'pen') !== 'pen') return;
   const displayColor = storedInkDisplayColor(stroke, paperColor);
   targetCtx.strokeStyle = displayColor;
   targetCtx.fillStyle = displayColor;
-}
-
-function shapeStrokeIsClosed(stroke) {
-  if (stroke?.kind !== 'shape' || stroke?.shapeFill !== 'filled') return false;
-  const points = Array.isArray(stroke?.points) ? stroke.points : [];
-  if (points.length < 3) return false;
-  const a = points[0], b = points.at(-1);
-  return Math.hypot((Number(a?.x)||0)-(Number(b?.x)||0), (Number(a?.y)||0)-(Number(b?.y)||0)) < 0.0005;
 }
 
 function toolStrokeStyle(tool = activeTool) {
@@ -3993,8 +6426,21 @@ function imageLayerBounds(layer = imageLayer) {
   return r.width > 0 && r.height > 0 ? r : null;
 }
 
+function interactiveImages() {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return continuousEnsureViewportToolState()?.images || [];
+  return images;
+}
+
+function setInteractiveImages(value) {
+  const next = Array.isArray(value) ? value : [];
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    const state = continuousEnsureViewportToolState();
+    if (state) state.images = next;
+  } else images = next;
+}
+
 function selectedImage() {
-  return images.find((image) => image.id === selectedImageId) ?? null;
+  return interactiveImages().find((image) => image.id === selectedImageId) ?? null;
 }
 
 function updateImageInspector() {
@@ -4007,21 +6453,28 @@ function updateImageInspector() {
     button.disabled = !hasSelection;
     button.setAttribute('aria-disabled', hasSelection ? 'false' : 'true');
   }
-  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
   if (cutImageButton) {
-    const canCut = hasSelection && !activeClipboard?.image;
+    const canCut = hasSelection && !localImageCutClipboard?.image;
     cutImageButton.disabled = !canCut;
     cutImageButton.setAttribute('aria-disabled', canCut ? 'false' : 'true');
   }
   if (pasteImageButton) {
-    const canPaste = Boolean(activeClipboard?.image) && !activeClipboard?.pendingImageId;
+    const canPaste = Boolean(localImageCutClipboard?.image) && !localImageCutClipboard?.pendingImageId;
     pasteImageButton.disabled = !canPaste;
     pasteImageButton.setAttribute('aria-disabled', canPaste ? 'false' : 'true');
   }
 }
 
-function renderImages(targetLayer = imageLayer, sourceImages = images, interactive = targetLayer === imageLayer && activeTool === 'image') {
+function renderImages(targetLayer = imageLayer, sourceImages = null, interactive = targetLayer === imageLayer && activeTool === 'image') {
   if (!targetLayer) return;
+  if (sourceImages == null) {
+    if (targetLayer === imageLayer && continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      // Drawing and visibility must follow the same owner. The selected tool
+      // can stay armed during scrolling while its preview is temporarily off.
+      sourceImages = paper?.classList.contains('continuous-tool-preview')
+        ? (continuousEnsureViewportToolState()?.images || []) : [];
+    } else sourceImages = images;
+  }
   targetLayer.replaceChildren();
   targetLayer.classList.toggle('interactive', interactive);
   for (const image of sourceImages) {
@@ -4069,7 +6522,7 @@ function updateImageElement(image) {
 }
 
 function setSelectedImage(id) {
-  selectedImageId = images.some((image) => image.id === id) ? id : null;
+  selectedImageId = interactiveImages().some((image) => image.id === id) ? id : null;
   renderImages();
 }
 
@@ -4143,21 +6596,27 @@ async function importImageFile(file) {
   statusLabel.textContent = 'preparo immagine';
   try {
     const packed = await compressImageFile(file);
-    const blobRow = currentPageKind === 'rubrica' ? null : await registerBlob(packed.blob, packed.mimeType);
+    const blobRow = await registerBlob(packed.blob, packed.mimeType);
     const geom = initialImageGeometry(packed.width, packed.height);
     const image = normalizeImageObject({
       id: makeImageId(), name: file.name || 'Immagine', mimeType: packed.mimeType, src: packed.src,
-      blobHash: blobRow?.hash || '', blobSize: blobRow?.size || packed.blob?.size || 0,
+      blobHash: blobRow.hash, blobSize: blobRow.size,
       ...geom, rotation: 0, createdAt: new Date().toISOString(), modifiedAt: new Date().toISOString()
     });
-    images.push(image);
+    const collection = interactiveImages();
+    collection.push(image);
+    setInteractiveImages(collection);
     selectedImageId = image.id;
-    rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: images.length - 1 });
     session.imagesImported++;
-    dirty = true;
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      continuousCommitDirectToolMutation('image-add');
+    } else {
+      rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: collection.length - 1 });
+      dirty = true;
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image);
+    }
     renderImages();
     statusLabel.textContent = 'immagine inserita';
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image);
     scheduleSave();
   } catch (err) {
     console.warn('Importazione immagine non riuscita', err);
@@ -4171,7 +6630,13 @@ function constrainImage(image) {
   image.w = Math.min(.96, Math.max(.055, image.w));
   image.h = Math.min(.96, Math.max(.055, image.h));
   image.x = Math.min(1 - image.w, Math.max(0, image.x));
-  image.y = Math.min(1 - image.h, Math.max(0, image.y));
+  if (continuousLessonActive && image?.__continuousViewportProxy) {
+    // Nel foglio continuo il centro dell'immagine può attraversare un confine
+    // tecnico: la limitiamo alla viewport solo quanto basta per mantenerla
+    // recuperabile durante il gesto, poi al pointerup viene ri-assegnata al tile.
+    const visibleGrip = Math.min(.08, Math.max(.035, image.h * .25));
+    image.y = Math.min(1 - visibleGrip, Math.max(-image.h + visibleGrip, Number(image.y) || 0));
+  } else image.y = Math.min(1 - image.h, Math.max(0, image.y));
   image.rotation = ((Number(image.rotation) || 0) % 360 + 360) % 360;
   image.modifiedAt = new Date().toISOString();
 }
@@ -4190,7 +6655,7 @@ function beginImageGesture(ev) {
     return;
   }
   const id = item.dataset.imageId;
-  const image = images.find((candidate) => candidate.id === id);
+  const image = interactiveImages().find((candidate) => candidate.id === id);
   if (!image) return;
   selectedImageId = id;
   renderImages();
@@ -4244,10 +6709,14 @@ function endImageGesture(ev, cancelled = false) {
   if (cancelled) Object.assign(image, g.before);
   const changed = ['x','y','w','h','rotation'].some((key) => Math.abs(Number(image[key]) - Number(g.before[key])) > .00001);
   if (!cancelled && changed) {
-    rememberUndo({ type: 'update-image', id: image.id, before: g.before, after: cloneImageObject(image) });
     session.imageTransforms++;
-    dirty = true;
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before: g.before });
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      continuousCommitDirectToolMutation('image-update');
+    } else {
+      rememberUndo({ type: 'update-image', id: image.id, before: g.before, after: cloneImageObject(image) });
+      dirty = true;
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before: g.before });
+    }
     scheduleSave();
   }
   renderImages();
@@ -4263,25 +6732,29 @@ function rotateSelectedImage(delta) {
   const before = cloneImageObject(image);
   image.rotation = (image.rotation || 0) + delta;
   constrainImage(image);
-  rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
   session.imageTransforms++;
-  dirty = true;
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    continuousCommitDirectToolMutation('image-rotate');
+  } else {
+    rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
+    dirty = true;
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before });
+  }
   renderImages();
-  if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before });
   scheduleSave();
 }
 
 async function cutSelectedImage() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || imageBusy) return;
-  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
-  if (activeClipboard?.image) {
+  if (localImageCutClipboard?.image) {
     statusLabel.textContent = 'incolla prima l’immagine già tagliata';
     return;
   }
-  const index = images.findIndex((image) => image.id === selectedImageId);
+  const collection = interactiveImages();
+  const index = collection.findIndex((image) => image.id === selectedImageId);
   if (index < 0) return;
-  const image = images[index];
+  const image = collection[index];
   const clipboard = {
     image: cloneImageObject(image),
     sourcePageKey: currentPageKey(),
@@ -4289,15 +6762,20 @@ async function cutSelectedImage() {
   };
   imageBusy = true;
   try {
-    if (currentPageKind === 'rubrica') rubricaImageClipboard = clipboard;
-    else { await saveLocalImageCutClipboard(clipboard); localImageCutClipboard = clipboard; }
-    images.splice(index, 1);
-    rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
+    await saveLocalImageCutClipboard(clipboard);
+    localImageCutClipboard = clipboard;
+    collection.splice(index, 1);
+    setInteractiveImages(collection);
     selectedImageId = null;
     session.imagesDeleted++;
-    dirty = true;
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      continuousCommitDirectToolMutation('image-cut');
+    } else {
+      rememberUndo({ type: 'remove-image', image: cloneImageObject(image), index });
+      dirty = true;
+      syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
+    }
     renderImages();
-    if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), image.id);
     scheduleSave();
     updateImageInspector();
     statusLabel.textContent = 'immagine tagliata · pronta da incollare';
@@ -4322,13 +6800,12 @@ async function ensureClipboardImageBlob(image) {
 
 async function pasteCutImage() {
   if (denyMutationDuringSyncRecovery()) return;
-  const activeClipboard = currentPageKind === 'rubrica' ? rubricaImageClipboard : localImageCutClipboard;
-  if (drawing || pageTurning || imageBusy || !activeClipboard?.image || activeClipboard?.pendingImageId) return;
+  if (drawing || pageTurning || imageBusy || !localImageCutClipboard?.image || localImageCutClipboard?.pendingImageId) return;
   imageBusy = true;
-  const clipboardSnapshot = activeClipboard;
+  const clipboardSnapshot = localImageCutClipboard;
   statusLabel.textContent = 'incollo immagine';
   try {
-    const source = currentPageKind === 'rubrica' ? cloneImageObject(clipboardSnapshot.image) : await ensureClipboardImageBlob(cloneImageObject(clipboardSnapshot.image));
+    const source = await ensureClipboardImageBlob(cloneImageObject(clipboardSnapshot.image));
     const now = new Date().toISOString();
     const image = normalizeImageObject({
       ...source,
@@ -4346,17 +6823,27 @@ async function pasteCutImage() {
       pendingPageKey: currentPageKey(),
       pasteRequestedAt: now
     };
-    if (currentPageKind === 'rubrica') rubricaImageClipboard = pendingClipboard;
-    else { await saveLocalImageCutClipboard(pendingClipboard); localImageCutClipboard = pendingClipboard; }
-    images.push(image);
+    await saveLocalImageCutClipboard(pendingClipboard);
+    localImageCutClipboard = pendingClipboard;
+    const collection = interactiveImages();
+    collection.push(image);
+    setInteractiveImages(collection);
     selectedImageId = image.id;
-    rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: images.length - 1 });
-    dirty = true;
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      continuousCommitDirectToolMutation('image-paste');
+      const persistedProxy = continuousEnsureViewportToolState()?.images?.find((candidate) => candidate.id === image.id);
+      const ownerIndex = Math.max(1, Number(persistedProxy?.__continuousOwnerIndex) || Number(currentLessonBoardIndex) || 1);
+      localImageCutClipboard = { ...localImageCutClipboard, pendingPageKey:lessonBoardKey(activeLesson.id, ownerIndex) };
+      await saveLocalImageCutClipboard(localImageCutClipboard);
+    } else {
+      rememberUndo({ type: 'add-image', image: cloneImageObject(image), index: collection.length - 1 });
+      dirty = true;
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image, {
+        reason: 'local-cut-paste',
+        sourcePageKey: clipboardSnapshot.sourcePageKey
+      });
+    }
     renderImages();
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', image, {
-      reason: 'local-cut-paste',
-      sourcePageKey: clipboardSnapshot.sourcePageKey
-    });
     // Non svuotiamo ancora la clipboard: persistSnapshot la elimina soltanto
     // dopo il commit locale riuscito della pagina di destinazione.
     updateImageInspector();
@@ -4392,38 +6879,17 @@ function renderImageCropSelection() {
   }
 }
 
-function cropViewportSize() {
-  const viewport = window.visualViewport;
-  return {
-    width: Math.max(1, Number(viewport?.width) || window.innerWidth || document.documentElement.clientWidth || 1),
-    height: Math.max(1, Number(viewport?.height) || window.innerHeight || document.documentElement.clientHeight || 1)
-  };
-}
-
 function sizeImageCropStage() {
   if (!imageCropStage || !imageCropPreview || !imageCropEditor) return false;
   const nw = imageCropPreview.naturalWidth;
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
-
-  // 0.1.103 — usa il viewport realmente visibile su iPadOS e riserva spazio
-  // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
-  // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
-  const viewport = cropViewportSize();
-  const horizontalReserve = 48;
-  const verticalReserve = 150;
-  const maxW = Math.max(120, Math.min(980, viewport.width - horizontalReserve));
-  const maxH = Math.max(120, Math.min(680, viewport.height - verticalReserve));
-  const scale = Math.min(maxW / nw, maxH / nh, 1);
-  imageCropStage.style.width = `${Math.max(1, Math.floor(nw * scale))}px`;
-  imageCropStage.style.height = `${Math.max(1, Math.floor(nh * scale))}px`;
+  const maxW = Math.max(240, Math.min(980, window.innerWidth * .82));
+  const maxH = Math.max(180, Math.min(680, window.innerHeight * .62));
+  const scale = Math.min(maxW / nw, maxH / nh);
+  imageCropStage.style.width = `${Math.max(1, Math.round(nw * scale))}px`;
+  imageCropStage.style.height = `${Math.max(1, Math.round(nh * scale))}px`;
   return true;
-}
-
-function reflowImageCropEditor() {
-  if (!imageCropEditor || imageCropOverlay?.hidden) return;
-  if (!sizeImageCropStage()) return;
-  renderImageCropSelection();
 }
 
 function closeImageCropEditor(status = '') {
@@ -4464,7 +6930,7 @@ function cropMinimumFractions(image) {
 function beginImageCropGesture(ev) {
   if (!imageCropEditor || imageBusy || !imageCropSelection || !imageCropStage) return;
   if (!(ev.target instanceof Element) || !imageCropSelection.contains(ev.target)) return;
-  const image = images.find((candidate) => candidate.id === imageCropEditor.imageId);
+  const image = interactiveImages().find((candidate) => candidate.id === imageCropEditor.imageId);
   if (!image) return;
   const stageRect = imageCropStage.getBoundingClientRect();
   if (!(stageRect.width > 0 && stageRect.height > 0)) return;
@@ -4580,7 +7046,7 @@ function applyCropGeometry(image, rect, layerRect) {
 async function applyImageCrop() {
   if (denyMutationDuringSyncRecovery()) return;
   if (!imageCropEditor || imageBusy || drawing || pageTurning) return;
-  const image = images.find((candidate) => candidate.id === imageCropEditor.imageId);
+  const image = interactiveImages().find((candidate) => candidate.id === imageCropEditor.imageId);
   if (!image) { closeImageCropEditor('immagine non disponibile'); return; }
   const rect = { ...imageCropEditor.rect };
   if (cropRectIsFull(rect)) { closeImageCropEditor('ritaglio annullato'); return; }
@@ -4591,20 +7057,24 @@ async function applyImageCrop() {
   try {
     const before = cloneImageObject(image);
     const packed = await cropPreviewToData(rect, image.mimeType);
-    const blobRow = currentPageKind === 'rubrica' ? null : await registerBlob(packed.blob, packed.mimeType);
+    const blobRow = await registerBlob(packed.blob, packed.mimeType);
     applyCropGeometry(image, rect, imageLayerBounds());
     image.src = packed.src;
     image.mimeType = packed.mimeType;
-    image.blobHash = blobRow?.hash || '';
-    image.blobSize = blobRow?.size || packed.blob?.size || 0;
+    image.blobHash = blobRow.hash;
+    image.blobSize = blobRow.size;
     constrainImage(image);
-    rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
     session.imageTransforms++;
     session.imageCrops++;
-    dirty = true;
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      continuousCommitDirectToolMutation('image-crop');
+    } else {
+      rememberUndo({ type: 'update-image', id: image.id, before, after: cloneImageObject(image) });
+      dirty = true;
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, crop: true });
+    }
     closeImageCropEditor();
     renderImages();
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', image, { before, crop: true });
     scheduleSave();
     statusLabel.textContent = 'immagine ritagliata';
   } catch (err) {
@@ -4637,7 +7107,12 @@ function updateToolUi() {
     voiceScriptToolButton.classList.add('voice-listening');
     voiceScriptToolButton.setAttribute('aria-pressed', 'true');
   }
-  // 0.1.19: Undo/Redo restano sempre target Pointer reali. Lo stato
+  if (rulerButton) {
+    const enabled = Boolean(rulerTool?.state?.enabled);
+    rulerButton.classList.toggle('active', enabled);
+    rulerButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+  }
+  // 0.1.20: Undo/Redo restano sempre target Pointer reali. Lo stato
   // disponibile/non disponibile è semantico e visivo, non usa HTML disabled.
   if (undoButton) {
     const available = undoHistory.length > 0;
@@ -4653,195 +7128,17 @@ function updateToolUi() {
   }
 }
 
-function syncRulerOverlayBounds() {
-  if (!rulerOverlay || !rulerBody || !rect) return;
-  const writableHeight = Math.max(1, rect.height - protectedTop - FOOTER_PX);
-  rulerOverlay.style.top = `${protectedTop}px`;
-  rulerOverlay.style.bottom = `${FOOTER_PX}px`;
-  const svg = rulerOverlay.querySelector('.ruler-line-layer');
-  svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
-
-  // 0.1.103 — il righello deve restare interamente raggiungibile anche ruotato.
-  // Calcoliamo l'ingombro del rettangolo ruotato e accorciamo il corpo, se serve,
-  // prima di limitarne il centro all'area realmente scrivibile. La maniglia di
-  // rotazione è dentro rulerBody, quindi rientra nello stesso ingombro protetto.
-  const margin = 12;
-  const bodyHeight = 76;
-  const desiredWidth = Math.max(260, Math.min(720, rect.width * .64));
-  const angleRad = rulerState.angle * Math.PI / 180;
-  const c = Math.abs(Math.cos(angleRad));
-  const si = Math.abs(Math.sin(angleRad));
-  const availableW = Math.max(120, rect.width - margin * 2);
-  const availableH = Math.max(120, writableHeight - margin * 2);
-  const widthLimitFromW = c > .0001 ? (availableW - si * bodyHeight) / c : Number.POSITIVE_INFINITY;
-  const widthLimitFromH = si > .0001 ? (availableH - c * bodyHeight) / si : Number.POSITIVE_INFINITY;
-  const safeWidth = Math.max(120, Math.min(desiredWidth, widthLimitFromW, widthLimitFromH));
-  rulerBody.style.width = `${safeWidth}px`;
-  rulerBody.style.height = `${bodyHeight}px`;
-
-  const bboxW = c * safeWidth + si * bodyHeight;
-  const bboxH = si * safeWidth + c * bodyHeight;
-  const minCenterX = margin + bboxW / 2;
-  const maxCenterX = Math.max(minCenterX, rect.width - margin - bboxW / 2);
-  const minCenterY = protectedTop + margin + bboxH / 2;
-  const maxCenterY = Math.max(minCenterY, rect.height - FOOTER_PX - margin - bboxH / 2);
-  let centerX = rulerState.x * rect.width;
-  let centerY = rulerState.y * rect.height;
-  centerX = Math.max(minCenterX, Math.min(maxCenterX, centerX));
-  centerY = Math.max(minCenterY, Math.min(maxCenterY, centerY));
-  rulerState.x = centerX / Math.max(1, rect.width);
-  rulerState.y = centerY / Math.max(1, rect.height);
-
-  rulerBody.style.left = `${centerX}px`;
-  rulerBody.style.top = `${centerY - protectedTop}px`;
-  rulerBody.style.transform = `translate(-50%,-50%) rotate(${rulerState.angle}deg)`;
-  if (rulerAngleBadge) {
-    const normalized = ((Math.round(rulerState.angle) % 360) + 360) % 360;
-    const shown = normalized > 180 ? normalized - 360 : normalized;
-    rulerAngleBadge.textContent = `${shown}°`;
-  }
-}
-
-function rulerPaperPoint(ev) {
-  if (!rect) rect = canvas.getBoundingClientRect();
-  return {
-    x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
-    y: Math.max(protectedTop, Math.min(rect.height - FOOTER_PX, ev.clientY - rect.top))
-  };
-}
-
-function projectPointToRulerEdge(ev) {
-  if (!rulerBody || !rect) return null;
-  const point = rulerPaperPoint(ev);
-  const cx = rulerState.x * rect.width;
-  const cy = rulerState.y * rect.height;
-  const angle = rulerState.angle * Math.PI / 180;
-  const ax = Math.cos(angle), ay = Math.sin(angle);
-  const nx = -ay, ny = ax;
-  const bodyWidth = Math.max(120, rulerBody.offsetWidth || Math.min(720, rect.width * .64));
-  const bodyHeight = Math.max(60, rulerBody.offsetHeight || 76);
-  // Il volto graduato occupa il corpo meno la zona protetta della maniglia.
-  const faceLeft = -bodyWidth / 2 + 12;
-  const faceRight = bodyWidth / 2 - 54;
-  const edgeOffset = -bodyHeight / 2 + 6;
-  const relX = point.x - cx;
-  const relY = point.y - cy;
-  const rawT = relX * ax + relY * ay;
-  const t = Math.max(faceLeft, Math.min(faceRight, rawT));
-  const px = cx + ax * t + nx * edgeOffset;
-  const py = cy + ay * t + ny * edgeOffset;
-  return {
-    x: Math.max(0, Math.min(1, px / Math.max(1, rect.width))),
-    y: Math.max(0, Math.min(1, py / Math.max(1, rect.height)))
-  };
-}
-
-function updateRulerPreview() {
-  if (!rulerPreviewPath || !rulerGesture || rulerGesture.type !== 'draw' || !rect) {
-    rulerPreviewPath?.setAttribute('d', '');
-    return;
-  }
-  const a = rulerGesture.start;
-  const b = rulerGesture.current;
-  rulerPreviewPath.setAttribute('d', `M ${(a.x * rect.width).toFixed(2)} ${(a.y * rect.height - protectedTop).toFixed(2)} L ${(b.x * rect.width).toFixed(2)} ${(b.y * rect.height - protectedTop).toFixed(2)}`);
-  const style = toolStrokeStyle(rulerInkTool);
-  rulerPreviewPath.style.stroke = rulerInkTool === 'pen' ? storedInkDisplayColor(style, pageStyle.color) : style.color;
-  rulerPreviewPath.style.strokeWidth = String(style.width);
-  rulerPreviewPath.style.opacity = String(rulerInkTool === 'highlighter' ? HIGHLIGHTER_OPACITY : 1);
-}
-
-function cancelRulerGesture() {
-  rulerGesture = null;
-  rulerPreviewPath?.setAttribute('d', '');
-}
-
-function beginRulerGesture(ev) {
-  if (activeTool !== 'ruler' || !rulerBody || pageTurning || drawing) return false;
-  const target = ev.target instanceof Element ? ev.target : null;
-  const onHandle = Boolean(target?.closest?.('#rulerRotateHandle'));
-  const onBody = Boolean(target?.closest?.('#rulerBody'));
-  if (!onBody) return false;
-  if (ev.pointerType === 'touch') {
-    rulerGesture = {
-      type:onHandle ? 'rotate' : 'move',
-      pointerId:ev.pointerId,
-      startClientX:ev.clientX,
-      startClientY:ev.clientY,
-      startX:rulerState.x,
-      startY:rulerState.y,
-      startAngle:rulerState.angle
-    };
-  } else if (ev.pointerType === 'pen' || (ev.pointerType === 'mouse' && ev.button === 0)) {
-    const point = projectPointToRulerEdge(ev);
-    if (!point) return false;
-    rulerGesture = { type:'draw', pointerId:ev.pointerId, start:point, current:point };
-    updateRulerPreview();
-  } else return false;
-  try { rulerBody.setPointerCapture?.(ev.pointerId); } catch {}
-  ev.preventDefault();
-  ev.stopPropagation();
-  return true;
-}
-
-function moveRulerGesture(ev) {
-  if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId || activeTool !== 'ruler') return false;
-  if (rulerGesture.type === 'move') {
-    const dx = (ev.clientX - rulerGesture.startClientX) / Math.max(1, rect.width);
-    const dy = (ev.clientY - rulerGesture.startClientY) / Math.max(1, rect.height);
-    rulerState.x = rulerGesture.startX + dx;
-    rulerState.y = rulerGesture.startY + dy;
-    syncRulerOverlayBounds();
-  } else if (rulerGesture.type === 'rotate') {
-    const cx = rect.left + rulerState.x * rect.width;
-    const cy = rect.top + rulerState.y * rect.height;
-    rulerState.angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI;
-    syncRulerOverlayBounds();
-  } else if (rulerGesture.type === 'draw') {
-    const point = projectPointToRulerEdge(ev);
-    if (point) {
-      rulerGesture.current = point;
-      updateRulerPreview();
-    }
-  }
-  ev.preventDefault();
-  ev.stopPropagation();
-  return true;
-}
-
-function endRulerGesture(ev, cancelled = false) {
-  if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId) return false;
-  const gesture = rulerGesture;
-  if (!cancelled && gesture.type === 'draw') moveRulerGesture(ev);
-  try { rulerBody?.releasePointerCapture?.(gesture.pointerId); } catch {}
-  cancelRulerGesture();
-  if (!cancelled && gesture.type === 'draw') {
-    const dx = (gesture.current.x - gesture.start.x) * rect.width;
-    const dy = (gesture.current.y - gesture.start.y) * rect.height;
-    if (Math.hypot(dx, dy) >= 4) {
-      const style = toolStrokeStyle(rulerInkTool);
-      const now = performance.now();
-      const stroke = {
-        id:makeId(), kind:'stroke', tool:rulerInkTool, ruler:true,
-        color:style.color, width:style.width, opacity:style.opacity,
-        pointerType:ev.pointerType,
-        points:[
-          { ...gesture.start, p:.5, t:now },
-          { ...gesture.current, p:.5, t:now + 1 }
-        ],
-        createdAt:new Date().toISOString()
-      };
-      strokes.push(stroke);
-      rememberUndo({ type:'add-stroke', stroke, index:strokes.length - 1 });
-      if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), stroke);
-      dirty = true;
-      renderAll();
-      scheduleSave();
-      statusLabel.textContent = `righello · linea ${rulerInkTool === 'highlighter' ? 'evidenziata' : 'tracciata'}`;
-    }
-  }
-  ev.preventDefault();
-  ev.stopPropagation();
-  return true;
+function toggleRulerTool() {
+  if (drawing) finalizeStroke('ruler-toolbar-recovery');
+  if (!rulerTool) return false;
+  const enabled = rulerTool.toggle();
+  updateToolUi();
+  statusLabel.textContent = enabled
+    ? (['pen', 'highlighter'].includes(activeTool)
+      ? 'righello attivo · estremità ruotano · centro sposta · doppio tap cambia strumento'
+      : 'righello attivo · doppio tap: goniometro / squadre · seleziona Penna o Evidenziatore per tracciare')
+    : 'righello disattivato';
+  return enabled;
 }
 
 function activateShapeTool() {
@@ -4871,8 +7168,17 @@ function syncLassoInputShieldBounds() {
 function setLassoInputShieldActive(value) {
   if (!lassoInputShield) return;
   const enabled = Boolean(value);
-  if (enabled) syncLassoInputShieldBounds();
-  lassoInputShield.hidden = !enabled;
+  if (enabled) {
+    syncLassoInputShieldBounds();
+    // Strategia Agenda 0.1.92: su Safari/iPadOS non affidarsi solo alla
+    // property .hidden. Rimuovere fisicamente l'attributo rende lo shield
+    // immediatamente interattivo anche dopo ricomposizioni dei layer.
+    lassoInputShield.removeAttribute('hidden');
+    lassoInputShield.hidden = false;
+  } else {
+    lassoInputShield.setAttribute('hidden', '');
+    lassoInputShield.hidden = true;
+  }
   lassoInputShield.setAttribute('aria-hidden', enabled ? 'false' : 'true');
 }
 
@@ -4891,6 +7197,7 @@ function isLassoInputSurfaceTarget(target) {
 // della Penna vede così lo stesso stato che vede l'utente.
 function isLassoUiArmed() {
   return Boolean(
+    lassoSessionArmed ||
     activeTool === 'lasso' ||
     isLassoInputShieldArmed() ||
     (lassoInspector && lassoInspector.hidden === false) ||
@@ -4901,6 +7208,7 @@ function isLassoUiArmed() {
 
 function ensureLassoInputShieldRuntime() {
   if (!isLassoUiArmed()) return false;
+  lassoSessionArmed = true;
   if (activeTool !== 'lasso') activeTool = 'lasso';
   if (!lassoTool?.isActive?.()) lassoTool?.setActive?.(true);
   setLassoInputShieldActive(true);
@@ -4914,16 +7222,15 @@ function ensureLassoInputShieldRuntime() {
 function deactivatePageTool(reason = '') {
   if (drawing || pageTurning) return false;
   if (isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
+  lassoSessionArmed = false;
   cancelShapeGesture();
-  cancelRulerGesture();
-  rulerOverlay?.setAttribute('hidden', '');
   activeTool = 'none';
   selectedImageId = null;
   closeStylePanel();
   if (shapePalette) shapePalette.hidden = true;
   shapeOverlay?.setAttribute('hidden', '');
   shapeToolButton?.setAttribute('aria-expanded', 'false');
-  paper?.classList.remove('shape-mode', 'ruler-mode', 'lasso-mode', 'voice-script-armed', 'image-edit-mode');
+  paper?.classList.remove('shape-mode', 'lasso-mode', 'voice-script-armed', 'image-edit-mode');
   renderImages();
   updateToolUi();
   updateStyleUi();
@@ -4956,7 +7263,19 @@ function activateVoiceScriptTool() {
 // Su Safari/iPadOS non dipende più esclusivamente dal ramo generico data-tool.
 function activateLassoTool() {
   if (pageTurning) return false;
+  lassoSessionArmed = true;
   if (drawing) finalizeStroke('lasso-toolbar-recovery');
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    void continuousEnsureVisibleEntries().then(() => {
+      if (activeTool === 'lasso') {
+        continuousEnsureViewportToolState({ force:true });
+        continuousSetToolPreview(true);
+        renderAll();
+        renderImages();
+        lassoTool?.syncPage?.();
+      }
+    });
+  }
   if (drawing || pageTurning) return false;
   if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('lasso-tool');
   resetLassoInputCapture();
@@ -4970,40 +7289,47 @@ function activateLassoTool() {
   lassoToolButton?.setAttribute('aria-pressed', 'true');
   if (lassoInspector) lassoInspector.hidden = false;
   statusLabel.textContent = 'lazo · disegna un contorno chiuso';
+  // Safari può ricomporre i layer dopo il pointerdown della toolbar. Un riarmo
+  // al frame successivo è fuori dal motore Ink e rende stabile lo shield.
+  requestAnimationFrame(() => {
+    if (activeTool === 'lasso') ensureLassoInputShieldRuntime();
+  });
   return true;
 }
 
 function selectTool(tool) {
-  if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'ruler', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
+  if (!['pen', 'highlighter', 'eraser', 'lasso', 'shape', 'voice', 'image'].includes(tool) || drawing || pageTurning) return;
   if (tool !== 'image' && imageCropEditor) closeImageCropEditor();
   if (tool !== 'shape') cancelShapeGesture();
-  if (tool !== 'ruler') cancelRulerGesture();
+  if (tool !== 'lasso') lassoSessionArmed = false;
   if (isLassoUiArmed() && tool !== 'lasso') { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
-  if (tool === 'ruler') rulerInkTool = ['pen','highlighter'].includes(activeTool) ? activeTool : lastInkTool;
-  if (tool === 'pen' || tool === 'highlighter') lastInkTool = tool;
   activeTool = tool;
-  if (tool === 'lasso') { lassoTool?.setActive?.(true); setLassoInputShieldActive(true); }
+  if (tool === 'lasso') { lassoSessionArmed = true; lassoTool?.setActive?.(true); setLassoInputShieldActive(true); }
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    if (tool === 'lasso' || tool === 'image') {
+      continuousEnsureViewportToolState({ force:true });
+      continuousSetToolPreview(true);
+    } else {
+      continuousClearViewportToolState({ clearSelection:tool !== 'lasso' });
+    }
+  }
   if (tool !== 'image') selectedImageId = null;
   closeStylePanel();
   paper?.classList.toggle('shape-mode', tool === 'shape');
-  paper?.classList.toggle('ruler-mode', tool === 'ruler');
   paper?.classList.toggle('lasso-mode', tool === 'lasso');
   paper?.classList.toggle('voice-script-armed', tool === 'voice');
   paper?.classList.toggle('image-edit-mode', tool === 'image');
   if (shapePalette) shapePalette.hidden = tool !== 'shape';
   shapeOverlay?.toggleAttribute('hidden', tool !== 'shape');
-  rulerOverlay?.toggleAttribute('hidden', tool !== 'ruler');
   shapeToolButton?.setAttribute('aria-expanded', tool === 'shape' ? 'true' : 'false');
   if (tool === 'shape') syncShapeOverlayBounds();
-  if (tool === 'ruler') syncRulerOverlayBounds();
   renderImages();
   updateToolUi();
   updateStyleUi();
   statusLabel.textContent = tool === 'highlighter' ? 'evidenziatore'
     : tool === 'eraser' ? 'gomma'
     : tool === 'lasso' ? 'lazo · disegna un contorno chiuso'
-    : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`
-    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · sposta con dito, traccia con Pencil`
+    : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · trascina o fai clic`
     : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
 }
@@ -5030,11 +7356,6 @@ function updateShapePaletteUi() {
     button.classList.toggle('selected', selected);
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   }
-  for (const button of shapeFillButtons) {
-    const selected = button.dataset.shapeFill === selectedShapeFill;
-    button.classList.toggle('selected', selected);
-    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
-  }
 }
 
 function setSelectedShapeType(type) {
@@ -5043,21 +7364,7 @@ function setSelectedShapeType(type) {
   selectedShapeType = type;
   saveSelectedShapeType();
   updateShapePaletteUi();
-  statusLabel.textContent = `figura · ${SHAPE_LABELS[type]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`;
-}
-
-function setSelectedShapeFill(value) {
-  if (!['outline','filled'].includes(value) || drawing || pageTurning) return;
-  selectedShapeFill = value;
-  saveSelectedShapeFill();
-  updateShapePaletteUi();
-  syncShapeOverlayBounds();
-  updateShapePreview();
-  statusLabel.textContent = `figure · ${value === 'filled' ? 'Piena' : 'Contorno'}`;
-}
-
-function shapeTypeSupportsFill(type) {
-  return !['line','curve','check'].includes(type);
+  statusLabel.textContent = `figura · ${SHAPE_LABELS[type]} · trascina o fai clic`;
 }
 
 function syncShapeOverlayBounds() {
@@ -5068,12 +7375,8 @@ function syncShapeOverlayBounds() {
   shapeOverlay.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
   const penStyle = toolStrokeStyle('pen');
   if (shapePreviewPath) {
-    const color = storedInkDisplayColor(penStyle, pageStyle.color);
-    shapePreviewPath.style.stroke = color;
+    shapePreviewPath.style.stroke = storedInkDisplayColor(penStyle, pageStyle.color);
     shapePreviewPath.style.strokeWidth = String(penStyle.width);
-    const filled = selectedShapeFill === 'filled' && shapeTypeSupportsFill(selectedShapeType);
-    shapePreviewPath.style.fill = filled ? color : 'none';
-    shapePreviewPath.style.fillOpacity = filled ? '.92' : '0';
   }
 }
 
@@ -5122,11 +7425,13 @@ function updateShapePreview() {
 
 function beginShapeGesture(ev) {
   if (activeTool !== 'shape' || shapeGesture || drawing || pageTurning || pageStyleBulkBusy) return false;
+  if (continuousLessonActive && currentPageKind === 'agenda' && ev.pointerType === 'touch') return false;
   if (isUiControlTarget(ev.target)) return false;
   if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return false;
   const point = shapePointFromPointer(ev);
   if (!point) return false;
   cancelPendingSave();
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) continuousStrokeScrollTop = Math.max(0, Number(continuousViewport?.scrollTop) || 0);
   shapeGesture = { pointerId: ev.pointerId, start: point, current: point };
   syncShapeOverlayBounds();
   updateShapePreview();
@@ -5173,7 +7478,6 @@ function endShapeGesture(ev, cancelled = false) {
     kind: 'shape',
     shapeType: selectedShapeType,
     shapeVersion: 1,
-    shapeFill: selectedShapeFill === 'filled' && shapeTypeSupportsFill(selectedShapeType) ? 'filled' : 'outline',
     tool: 'pen',
     color: style.color,
     width: style.width,
@@ -5184,12 +7488,16 @@ function endShapeGesture(ev, cancelled = false) {
     createdAt: new Date().toISOString()
   };
   cancelShapeGesture();
-  strokes.push(shape);
-  rememberUndo({ type: 'add-stroke', stroke: shape, index: strokes.length - 1 });
-  if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), shape);
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    continuousCommitCompletedInkStroke(shape);
+  } else {
+    strokes.push(shape);
+    rememberUndo({ type: 'add-stroke', stroke: shape, index: strokes.length - 1 });
+    syncFoundation?.recordStrokeAdded(pageDescriptor(), shape);
+    dirty = true;
+    renderAll();
+  }
   session.shapesInserted++;
-  renderAll();
-  dirty = true;
   scheduleSave();
   statusLabel.textContent = `${SHAPE_LABELS[shape.shapeType]} inserita`;
   ev.preventDefault();
@@ -5197,7 +7505,7 @@ function endShapeGesture(ev, cancelled = false) {
   return true;
 }
 
-// 0.1.29 — import e ritaglio restano separati dal motore Ink.
+// 0.1.39 — import e ritaglio restano separati dal motore Ink.
 // Viene invocata esclusivamente da un gesto utente sui comandi IMG/Importa.
 function requestImageImport() {
   if (!imageFileInput || imageBusy || drawing || pageTurning || activeTool !== 'image') return;
@@ -5219,6 +7527,350 @@ function activateImageTool() {
   }
   selectTool('image');
   statusLabel.textContent = 'menu immagini';
+}
+
+
+let beautifyFeedbackTimer = 0;
+
+function setBeautifyFeedback(message, state = 'busy', autoHideMs = 0) {
+  const text = String(message || '').trim();
+  // Il feedback deve essere visibile anche se il footer usa stacking/transform.
+  if (beautifyFeedback && beautifyFeedback.parentElement !== document.body) {
+    try { document.body.appendChild(beautifyFeedback); } catch {}
+  }
+  if (beautifyFeedbackTimer) {
+    clearTimeout(beautifyFeedbackTimer);
+    beautifyFeedbackTimer = 0;
+  }
+  if (beautifyFeedback) {
+    beautifyFeedback.textContent = text;
+    beautifyFeedback.dataset.state = state;
+    beautifyFeedback.hidden = !text;
+    beautifyFeedback.classList.toggle('is-visible', !!text);
+  }
+  if (beautifyButton) {
+    beautifyButton.dataset.beautifyState = state;
+    beautifyButton.setAttribute('aria-label', text || 'Beautify');
+  }
+  if (text) statusLabel.textContent = text;
+  if (autoHideMs > 0 && text) {
+    beautifyFeedbackTimer = setTimeout(() => {
+      beautifyFeedback?.classList.remove('is-visible');
+      if (beautifyFeedback) beautifyFeedback.hidden = true;
+      if (beautifyButton) {
+        delete beautifyButton.dataset.beautifyState;
+        beautifyButton.setAttribute('aria-label', 'Beautify');
+      }
+      beautifyFeedbackTimer = 0;
+    }, autoHideMs);
+  }
+}
+
+function nextPaint() {
+  // Safari può ritardare/sospendere un singolo RAF durante transizioni UI.
+  // Non permettiamo che Beautify resti busy per sempre prima del try/finally.
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; resolve(); };
+    try { requestAnimationFrame(finish); } catch {}
+    setTimeout(finish, 60);
+  });
+}
+
+function cloneStrokeForBeautify(value) {
+  if (!value || typeof value !== 'object') return value;
+  try { return structuredClone(value); } catch {}
+  try { return JSON.parse(JSON.stringify(value)); } catch {}
+  return { ...value, points:Array.isArray(value.points) ? value.points.map((point) => ({ ...point })) : value.points };
+}
+
+function makeBeautifiedTextItem(replacement) {
+  const height = Math.max(1, canvas.clientHeight || rect?.height || 1366);
+  return {
+    id: makeId(),
+    kind: 'text',
+    tool: 'beautify-text',
+    source: 'beautify',
+    text: String(replacement?.text || '').trim(),
+    x: Math.max(0, Math.min(1, Number(replacement?.x) || 0)),
+    y: Math.max(0, Math.min(1, Number(replacement?.topY) || 0)),
+    color: replacement?.color || toolStrokeStyle('pen').color || PEN_COLOR,
+    fontFamily: 'Snell Roundhand',
+    fontSizeNorm: Math.max(14, Math.min(92, Number(replacement?.fontSizePx) || 24)) / height,
+    targetWidthNorm: Math.max(0, Math.min(1, Number(replacement?.targetWidthNorm) || 0)),
+    language: 'it-IT',
+    anchorMode: 'top',
+    recognitionConfidence: 0,
+    beautifyBounds: replacement?.bounds || null,
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString()
+  };
+}
+
+function applyBeautifyHistory(action, mode) {
+  if (!action || action.type !== 'beautify') return false;
+  const descriptor = pageDescriptor();
+  const removeEntries = mode === 'undo' ? action.after : action.before;
+  const restoreEntries = mode === 'undo' ? action.before : action.after;
+  const removeIds = new Set((removeEntries || []).map((entry) => entry?.stroke?.id).filter(Boolean));
+  if (removeIds.size) {
+    const removed = strokes.filter((stroke) => removeIds.has(stroke?.id));
+    strokes = strokes.filter((stroke) => !removeIds.has(stroke?.id));
+    for (const stroke of removed) syncFoundation?.recordStrokeDeleted(descriptor, stroke.id, `beautify-${mode}`);
+  }
+  for (const entry of [...(restoreEntries || [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0))) {
+    const stroke = cloneStrokeForBeautify(entry?.stroke);
+    if (!stroke?.id || strokes.some((item) => item?.id === stroke.id)) continue;
+    const index = Math.max(0, Math.min(Number(entry.index) || 0, strokes.length));
+    strokes.splice(index, 0, stroke);
+    syncFoundation?.recordStrokeAdded(descriptor, stroke);
+  }
+  return true;
+}
+
+
+async function beautifyContinuousViewport() {
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || !activeLesson?.id) return false;
+  await continuousEnsureVisibleEntries();
+  const state = continuousEnsureViewportToolState({ force:true });
+  if (!state) return false;
+  const startScrollTop = state.scrollTop;
+  const lessonIdAtStart = String(activeLesson.id);
+  const sourceSnapshot = (state.strokes || []).map((stroke) => cloneStrokeForBeautify(stroke));
+  const sourceIdsAtStart = new Set(sourceSnapshot.map((stroke) => stroke?.id).filter(Boolean));
+  beautifyAbortController?.abort?.();
+  beautifyAbortController = new AbortController();
+  const width = Math.max(1, canvas.clientWidth || rect?.width || 1024);
+  const height = Math.max(1, canvas.clientHeight || rect?.height || 1366);
+  const plan = await buildBeautifyPlan({
+    strokes:sourceSnapshot,
+    width,
+    height,
+    language:'it',
+    preferredFontSizePx:normalizeBeautifyLessonFontSize(activeLesson?.beautifyFontSizePx),
+    signal:beautifyAbortController.signal,
+    onProgress:({ phase, index, total, mode }) => {
+      if (phase === 'analysis') setBeautifyFeedback('Beautify · analisi righe…', 'busy');
+      else if ((mode === 'fallback' || mode === 'concurrent') && index > 0) setBeautifyFeedback(`Beautify · riconoscimento ${index}/${total}`, 'busy');
+      else setBeautifyFeedback('Beautify · riconoscimento…', 'busy');
+    }
+  });
+  if (!continuousLessonActive || String(activeLesson?.id || '') !== lessonIdAtStart || Math.abs((continuousViewport?.scrollTop || 0) - startScrollTop) > 1 || drawing || pageTurning) {
+    setBeautifyFeedback('Beautify non applicato · foglio modificato o spostato', 'error', 2600);
+    return true;
+  }
+  // Rebuild from the actual document after recognition: an old proxy cannot
+  // detect a stroke moved/erased or added while the request was in flight.
+  const liveState = continuousEnsureViewportToolState({ force:true });
+  const currentIds = new Set((liveState?.strokes || []).map((stroke) => stroke?.id).filter(Boolean));
+  if ([...sourceIdsAtStart].some((id) => !currentIds.has(id)) || continuousObjectJson(sourceSnapshot) !== continuousObjectJson(liveState?.strokes || [])) {
+    setBeautifyFeedback('Beautify non applicato · contenuto modificato', 'error', 2600);
+    return true;
+  }
+  if (!plan?.replacements?.length) {
+    setBeautifyFeedback(plan?.eligibleCount ? 'Beautify · nessun testo riconosciuto' : 'Beautify · nessuna scrittura da trasformare', 'info', 2600);
+    return true;
+  }
+  if (activeLesson?.id && normalizeBeautifyLessonFontSize(activeLesson.beautifyFontSizePx) == null) {
+    const established = normalizeBeautifyLessonFontSize(plan.uniformFontSizePx);
+    if (established != null) {
+      activeLesson = normalizeLesson({ ...activeLesson, beautifyFontSizePx:established });
+      saveActiveLesson({ touch:false });
+    }
+  }
+  const replacementSourceIds = new Set(plan.replacements.flatMap((item) => item.sourceIds || []));
+  const beforeCount = liveState.strokes.length;
+  liveState.strokes = liveState.strokes.filter((stroke) => !replacementSourceIds.has(stroke?.id));
+  let added = 0;
+  for (const replacement of plan.replacements) {
+    const item = makeBeautifiedTextItem(replacement);
+    if (!item.text) continue;
+    item.__continuousViewportProxy = true;
+    liveState.strokes.push(item);
+    added++;
+  }
+  if (!added) {
+    liveState.strokes = continuousDeepClone(liveState.baselineStrokes || []);
+    setBeautifyFeedback('Beautify · riconoscimento non applicabile', 'info', 2400);
+    return true;
+  }
+  continuousPendingLassoUndoProxyAction = { type:'beautify' };
+  const committed = continuousCommitViewportToolState('beautify');
+  if (!committed) {
+    continuousPendingLassoUndoProxyAction = null;
+    setBeautifyFeedback('Beautify non applicato · nessuna modifica persistibile', 'error', 2400);
+    return true;
+  }
+  continuousSetToolPreview(activeTool === 'lasso' || activeTool === 'image');
+  renderAll();
+  renderImages();
+  scheduleSave();
+  const px = Number(plan?.uniformFontSizePx);
+  const suffix = Number.isFinite(px) ? ` · font lezione ${Math.round(px)} px` : '';
+  setBeautifyFeedback(`Beautify · ${added} ${added === 1 ? 'riga trasformata' : 'righe trasformate'}${suffix} · Undo disponibile`, 'ok', 3200);
+  console.debug('Beautify continuous viewport', { beforeCount, added });
+  return true;
+}
+
+async function beautifyCurrentBoard() {
+  if (beautifyBusy) {
+    setBeautifyFeedback('Beautify · elaborazione già in corso', 'busy', 1400);
+    return;
+  }
+  if (!ready) {
+    setBeautifyFeedback('Beautify · app ancora in inizializzazione', 'info', 1800);
+    return;
+  }
+  if (pageTurning) {
+    setBeautifyFeedback('Beautify · attendi il cambio lavagna', 'info', 1600);
+    return;
+  }
+  if (drawing) finalizeStroke('beautify-command-recovery');
+  if (denyMutationDuringSyncRecovery()) {
+    setBeautifyFeedback('Beautify · temporaneamente bloccato dal ripristino Sync', 'info', 2200);
+    return;
+  }
+  if (currentPageKind !== 'agenda') {
+    setBeautifyFeedback('Beautify disponibile sulla pagina Note corrente', 'info', 2200);
+    return;
+  }
+  if (!navigator.onLine) {
+    setBeautifyFeedback('Beautify richiede una connessione Internet', 'error', 2600);
+    return;
+  }
+
+  if (continuousLessonActive) {
+    beautifyBusy = true;
+    beautifyButton?.classList.add('is-busy');
+    beautifyButton?.setAttribute('aria-busy', 'true');
+    setBeautifyFeedback('Beautify · comando ricevuto', 'busy');
+    try {
+      await nextPaint();
+      setBeautifyFeedback('Beautify · analisi…', 'busy');
+      await beautifyContinuousViewport();
+    } catch (error) {
+      if (error?.name === 'AbortError') setBeautifyFeedback('Beautify annullato', 'info', 2000);
+      else if (error?.name === 'BeautifyTimeoutError') setBeautifyFeedback('Beautify non applicato · rete/riconoscimento troppo lento', 'error', 3000);
+      else {
+        console.warn('Beautify continuous: riconoscimento non riuscito', error);
+        setBeautifyFeedback('Beautify non disponibile in questo momento', 'error', 3000);
+      }
+    } finally {
+      beautifyBusy = false;
+      beautifyButton?.classList.remove('is-busy');
+      beautifyButton?.removeAttribute('aria-busy');
+      beautifyAbortController = null;
+    }
+    return;
+  }
+
+  beautifyBusy = true;
+  beautifyButton?.classList.add('is-busy');
+  beautifyButton?.setAttribute('aria-busy', 'true');
+  setBeautifyFeedback('Beautify · comando ricevuto', 'busy');
+
+  try {
+    await nextPaint();
+    setBeautifyFeedback('Beautify · analisi…', 'busy');
+    const pageKeyAtStart = currentPageKey();
+    const sourceSnapshot = strokes.map((stroke) => cloneStrokeForBeautify(stroke));
+    const sourceIdsAtStart = new Set(sourceSnapshot.map((stroke) => stroke?.id).filter(Boolean));
+    beautifyAbortController?.abort?.();
+    beautifyAbortController = new AbortController();
+    setBeautifyFeedback('Beautify · riconoscimento…', 'busy');
+    const width = Math.max(1, canvas.clientWidth || rect?.width || 1024);
+    const height = Math.max(1, canvas.clientHeight || rect?.height || 1366);
+    const plan = await buildBeautifyPlan({
+      strokes: sourceSnapshot,
+      width,
+      height,
+      language:'it',
+      preferredFontSizePx: normalizeBeautifyLessonFontSize(activeLesson?.beautifyFontSizePx),
+      signal:beautifyAbortController.signal,
+      onProgress:({ phase, index, total, mode }) => {
+        if (phase === 'analysis') setBeautifyFeedback('Beautify · analisi righe…', 'busy');
+        else if ((mode === 'fallback' || mode === 'concurrent') && index > 0) setBeautifyFeedback(`Beautify · riconoscimento ${index}/${total}`, 'busy');
+        else setBeautifyFeedback('Beautify · riconoscimento…', 'busy');
+      }
+    });
+    if (currentPageKey() !== pageKeyAtStart || drawing || pageTurning) {
+      setBeautifyFeedback('Beautify non applicato · pagina o Ink modificati', 'error', 2600);
+      return;
+    }
+    const currentIds = new Set(strokes.map((stroke) => stroke?.id).filter(Boolean));
+    if ([...sourceIdsAtStart].some((id) => !currentIds.has(id))) {
+      setBeautifyFeedback('Beautify non applicato · contenuto modificato', 'error', 2600);
+      return;
+    }
+    if (!plan?.replacements?.length) {
+      setBeautifyFeedback(plan?.eligibleCount ? 'Beautify · nessun testo riconosciuto' : 'Beautify · nessuna scrittura da trasformare', 'info', 2600);
+      return;
+    }
+
+    // 0.1.27: la prima conversione valida della lezione fissa la baseline font.
+    // Le lavagne successive riutilizzano esattamente questo valore: niente drift.
+    if (activeLesson?.id && normalizeBeautifyLessonFontSize(activeLesson.beautifyFontSizePx) == null) {
+      const established = normalizeBeautifyLessonFontSize(plan.uniformFontSizePx);
+      if (established != null) {
+        activeLesson = normalizeLesson({ ...activeLesson, beautifyFontSizePx: established });
+        saveActiveLesson({ touch:false });
+      }
+    }
+
+    setBeautifyFeedback('Beautify · applicazione…', 'busy');
+    const replacementSourceIds = new Set(plan.replacements.flatMap((item) => item.sourceIds || []));
+    const before = [];
+    strokes.forEach((stroke, index) => {
+      if (stroke?.id && replacementSourceIds.has(stroke.id)) before.push({ index, stroke:cloneStrokeForBeautify(stroke) });
+    });
+    if (!before.length) {
+      setBeautifyFeedback('Beautify · nessun tratto sostituibile', 'info', 2200);
+      return;
+    }
+
+    const descriptor = pageDescriptor();
+    strokes = strokes.filter((stroke) => !replacementSourceIds.has(stroke?.id));
+    for (const entry of before) syncFoundation?.recordStrokeDeleted(descriptor, entry.stroke.id, 'beautify');
+
+    const after = [];
+    for (const replacement of plan.replacements) {
+      const item = makeBeautifiedTextItem(replacement);
+      if (!item.text) continue;
+      const sourcePositions = before
+        .filter((entry) => (replacement.sourceIds || []).includes(entry.stroke?.id))
+        .map((entry) => entry.index);
+      const desiredIndex = sourcePositions.length ? Math.min(...sourcePositions) : strokes.length;
+      const index = Math.max(0, Math.min(desiredIndex, strokes.length));
+      strokes.splice(index, 0, item);
+      after.push({ index, stroke:cloneStrokeForBeautify(item) });
+      syncFoundation?.recordStrokeAdded(descriptor, item);
+    }
+    if (!after.length) {
+      for (const entry of before.sort((a,b)=>a.index-b.index)) strokes.splice(Math.max(0, Math.min(entry.index, strokes.length)), 0, entry.stroke);
+      setBeautifyFeedback('Beautify · riconoscimento non applicabile', 'info', 2400);
+      return;
+    }
+
+    rememberUndo({ type:'beautify', before, after });
+    renderAll();
+    dirty = true;
+    scheduleSave();
+    const px = Number(plan?.uniformFontSizePx);
+    const suffix = Number.isFinite(px) ? ` · font lezione ${Math.round(px)} px` : '';
+    setBeautifyFeedback(`Beautify · ${after.length} ${after.length === 1 ? 'riga trasformata' : 'righe trasformate'}${suffix} · Undo disponibile`, 'ok', 3200);
+  } catch (error) {
+    if (error?.name === 'AbortError') setBeautifyFeedback('Beautify annullato', 'info', 2000);
+    else if (error?.name === 'BeautifyTimeoutError') setBeautifyFeedback('Beautify non applicato · rete/riconoscimento troppo lento', 'error', 3000);
+    else {
+      console.warn('Beautify: riconoscimento non riuscito', error);
+      setBeautifyFeedback('Beautify non disponibile in questo momento', 'error', 3000);
+    }
+  } finally {
+    beautifyBusy = false;
+    beautifyButton?.classList.remove('is-busy');
+    beautifyButton?.removeAttribute('aria-busy');
+    beautifyAbortController = null;
+  }
 }
 
 function resetUndoHistory() {
@@ -5243,17 +7895,32 @@ function undoLastModification() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !undoHistory.length) return;
   const action = undoHistory.pop();
+  if (continuousApplyToolHistory(action, 'undo')) {
+    pushBounded(redoHistory, action, REDO_LIMIT);
+    statusLabel.textContent = 'annullato';
+    updateToolUi();
+    return;
+  }
   if (lassoTool?.applyHistory?.(action, 'undo')) {
     pushBounded(redoHistory, action, REDO_LIMIT);
     updateToolUi();
     return;
   }
-  if (action?.type === 'add-stroke' && action.stroke?.id) {
+  if (continuousApplyInkHistory(action, 'undo')) {
+    pushBounded(redoHistory, action, REDO_LIMIT);
+    statusLabel.textContent = 'annullato';
+    updateToolUi();
+    scheduleSave();
+    return;
+  }
+  if (action?.type === 'beautify') {
+    if (applyBeautifyHistory(action, 'undo')) pushBounded(redoHistory, action, REDO_LIMIT);
+  } else if (action?.type === 'add-stroke' && action.stroke?.id) {
     const index = strokes.findIndex((stroke) => stroke.id === action.stroke.id);
     if (index >= 0) {
       const [removed] = strokes.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-stroke', stroke: removed, index }, REDO_LIMIT);
-      if (pageSyncAllowed()) syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
+      syncFoundation?.recordStrokeDeleted(pageDescriptor(), removed.id, 'undo');
     }
   } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
     const descriptor = pageDescriptor();
@@ -5264,9 +7931,9 @@ function undoLastModification() {
       if (!original?.id || strokes.some((stroke) => stroke.id === original.id)) continue;
       const index = Math.max(0, Math.min(Number(change.originalIndex) || 0, strokes.length));
       strokes.splice(index, 0, original);
-      if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, original);
+      syncFoundation?.recordStrokeAdded(descriptor, original);
       for (const fragment of change.fragments || []) {
-        if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
+        if (fragment?.id) syncFoundation?.recordStrokeDeleted(descriptor, fragment.id, 'undo-eraser');
       }
     }
     pushBounded(redoHistory, action, REDO_LIMIT);
@@ -5276,20 +7943,20 @@ function undoLastModification() {
       const [removed] = images.splice(index, 1);
       pushBounded(redoHistory, { type: 'add-image', image: cloneImageObject(removed), index }, REDO_LIMIT);
       if (selectedImageId === removed.id) selectedImageId = null;
-      if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), removed.id);
+      syncFoundation?.recordImageDeleted(pageDescriptor(), removed.id);
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : images.length, images.length));
     images.splice(index, 0, cloneImageObject(action.image));
     selectedImageId = action.image.id;
     pushBounded(redoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index }, REDO_LIMIT);
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'undo-delete' });
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'undo-delete' });
   } else if (action?.type === 'update-image' && action.before?.id) {
     const index = images.findIndex((image) => image.id === action.before.id);
     if (index >= 0) images[index] = cloneImageObject(action.before);
     selectedImageId = action.before.id;
     pushBounded(redoHistory, { type: 'update-image', id: action.before.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, REDO_LIMIT);
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.before, { reason: 'undo-update' });
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.before, { reason: 'undo-update' });
   }
   renderAll();
   renderImages();
@@ -5303,17 +7970,32 @@ function redoLastModification() {
   if (denyMutationDuringSyncRecovery()) return;
   if (drawing || pageTurning || !ready || !redoHistory.length) return;
   const action = redoHistory.pop();
+  if (continuousApplyToolHistory(action, 'redo')) {
+    pushBounded(undoHistory, action, UNDO_LIMIT);
+    statusLabel.textContent = 'ripristinato';
+    updateToolUi();
+    return;
+  }
   if (lassoTool?.applyHistory?.(action, 'redo')) {
     pushBounded(undoHistory, action, UNDO_LIMIT);
     updateToolUi();
     return;
   }
-  if (action?.type === 'add-stroke' && action.stroke?.id) {
+  if (continuousApplyInkHistory(action, 'redo')) {
+    pushBounded(undoHistory, action, UNDO_LIMIT);
+    statusLabel.textContent = 'ripristinato';
+    updateToolUi();
+    scheduleSave();
+    return;
+  }
+  if (action?.type === 'beautify') {
+    if (applyBeautifyHistory(action, 'redo')) pushBounded(undoHistory, action, UNDO_LIMIT);
+  } else if (action?.type === 'add-stroke' && action.stroke?.id) {
     if (!strokes.some((stroke) => stroke.id === action.stroke.id)) {
       const index = Math.max(0, Math.min(Number.isFinite(action.index) ? action.index : strokes.length, strokes.length));
       strokes.splice(index, 0, action.stroke);
       pushBounded(undoHistory, { type: 'add-stroke', stroke: action.stroke, index }, UNDO_LIMIT);
-      if (pageSyncAllowed()) syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
+      syncFoundation?.recordStrokeAdded(pageDescriptor(), action.stroke);
     }
   } else if (action?.type === 'erase-strokes' && Array.isArray(action.changes)) {
     const descriptor = pageDescriptor();
@@ -5323,9 +8005,9 @@ function redoLastModification() {
       const index = strokes.findIndex((stroke) => stroke.id === original.id);
       if (index < 0) continue;
       strokes.splice(index, 1, ...(change.fragments || []));
-      if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
+      syncFoundation?.recordStrokeDeleted(descriptor, original.id, 'redo-eraser');
       for (const fragment of change.fragments || []) {
-        if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+        if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
       }
     }
     pushBounded(undoHistory, action, UNDO_LIMIT);
@@ -5335,20 +8017,20 @@ function redoLastModification() {
       images.splice(index, 0, cloneImageObject(action.image));
       selectedImageId = action.image.id;
       pushBounded(undoHistory, { type: 'add-image', image: cloneImageObject(action.image), index }, UNDO_LIMIT);
-      if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'redo-add' });
+      syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.add', action.image, { reason: 'redo-add' });
     }
   } else if (action?.type === 'remove-image' && action.image?.id) {
     const index = images.findIndex((image) => image.id === action.image.id);
     if (index >= 0) images.splice(index, 1);
     if (selectedImageId === action.image.id) selectedImageId = null;
     pushBounded(undoHistory, { type: 'remove-image', image: cloneImageObject(action.image), index: action.index }, UNDO_LIMIT);
-    if (pageSyncAllowed()) syncFoundation?.recordImageDeleted(pageDescriptor(), action.image.id);
+    syncFoundation?.recordImageDeleted(pageDescriptor(), action.image.id);
   } else if (action?.type === 'update-image' && action.after?.id) {
     const index = images.findIndex((image) => image.id === action.after.id);
     if (index >= 0) images[index] = cloneImageObject(action.after);
     selectedImageId = action.after.id;
     pushBounded(undoHistory, { type: 'update-image', id: action.after.id, before: cloneImageObject(action.before), after: cloneImageObject(action.after) }, UNDO_LIMIT);
-    if (pageSyncAllowed()) syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.after, { reason: 'redo-update' });
+    syncFoundation?.recordImageMetadata(pageDescriptor(), 'image.update', action.after, { reason: 'redo-update' });
   }
   renderAll();
   renderImages();
@@ -5376,7 +8058,9 @@ function drawCrossPlatformText(item, targetCtx, width, height, paperColor = page
   const x = Math.max(0, Math.min(width, Number(item?.x ?? 0) * width));
   const y = Math.max(0, Math.min(height, Number(item?.y ?? 0) * height));
   const normalizedSize = Number(item?.fontSizeNorm);
-  const fontPx = Math.max(18, Math.min(72, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
+  const maxFontPx = item?.source === 'beautify' ? 92 : 72;
+  const minFontPx = item?.source === 'beautify' ? 14 : 18;
+  const fontPx = Math.max(minFontPx, Math.min(maxFontPx, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
   const lineHeight = fontPx * 1.05;
   const requestedFont = safeCanvasFontFamily(item?.fontFamily);
   const fontStack = [
@@ -5394,8 +8078,11 @@ function drawCrossPlatformText(item, targetCtx, width, height, paperColor = page
   const baselineAnchored = item?.anchorMode === 'baseline';
   targetCtx.textBaseline = baselineAnchored ? 'alphabetic' : 'top';
   targetCtx.font = `${fontPx}px ${fontStack}`;
+  const targetWidth = item?.source === 'beautify' ? Math.max(0, Number(item?.targetWidthNorm || 0) * width) : 0;
   String(item?.text ?? '').split(/\r?\n/).forEach((line, index) => {
-    targetCtx.fillText(line, x, y + index * lineHeight);
+    const lineY = y + index * lineHeight;
+    if (targetWidth > 1) targetCtx.fillText(line, x, lineY, targetWidth);
+    else targetCtx.fillText(line, x, lineY);
   });
   targetCtx.restore();
 }
@@ -5424,7 +8111,9 @@ function crossPlatformTextLineBoxes(item, width, height) {
   const x = Math.max(0, Math.min(width, Number(item?.x ?? 0) * width));
   const y = Math.max(0, Math.min(height, Number(item?.y ?? 0) * height));
   const normalizedSize = Number(item?.fontSizeNorm);
-  const fontPx = Math.max(18, Math.min(72, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
+  const maxFontPx = item?.source === 'beautify' ? 92 : 72;
+  const minFontPx = item?.source === 'beautify' ? 14 : 18;
+  const fontPx = Math.max(minFontPx, Math.min(maxFontPx, (Number.isFinite(normalizedSize) ? normalizedSize : (CROSS_PLATFORM_TEXT_FONT_PX / Math.max(1, height))) * height));
   const lineHeight = fontPx * 1.05;
   const requestedFont = safeCanvasFontFamily(item?.fontFamily);
   const fontStack = [requestedFont ? `"${requestedFont}"` : '', '"Snell Roundhand"', '"Apple Chancery"', '"Segoe Script"', '"Segoe Print"', 'cursive'].filter(Boolean).join(', ');
@@ -5433,7 +8122,9 @@ function crossPlatformTextLineBoxes(item, width, height) {
   ctx.font = `${fontPx}px ${fontStack}`;
   const boxes = String(item?.text ?? '').split(/\r?\n/).map((line, index) => {
     const metrics = ctx.measureText(line || ' ');
-    const widthPx = Math.max(fontPx * .35, Number(metrics?.width) || 0);
+    const measuredWidth = Math.max(fontPx * .35, Number(metrics?.width) || 0);
+    const targetWidth = item?.source === 'beautify' ? Math.max(0, Number(item?.targetWidthNorm || 0) * width) : 0;
+    const widthPx = targetWidth > 1 ? Math.min(measuredWidth, targetWidth) : measuredWidth;
     const lineY = y + index * lineHeight;
     if (baselineAnchored) {
       const ascent = Math.max(fontPx * .72, Number(metrics?.actualBoundingBoxAscent) || 0);
@@ -5489,7 +8180,6 @@ function drawStoredStroke(stroke) {
     p = cssPoint(points[i]);
     ctx.lineTo(p.x, p.y);
   }
-  if (shapeStrokeIsClosed(stroke)) ctx.fill();
   ctx.stroke();
   ctx.restore();
 }
@@ -5500,6 +8190,18 @@ function renderAll() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.restore();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    // Il canvas Retina è un overlay LIVE fisso. In uso normale l'Ink persistito
+    // è nei tile statici; durante Lazo il canvas mostra invece la composizione
+    // viewport unificata, così il confine tra segmenti resta invisibile.
+    const entry = continuousCaptureActiveEntry();
+    if (entry) continuousRenderStaticSegment(currentLessonBoardIndex, entry);
+    if (paper?.classList.contains('continuous-tool-preview') && continuousViewportToolState) {
+      for (const stroke of continuousViewportToolState.strokes || []) drawStoredStroke(stroke);
+    }
+    lassoTool?.syncPage?.();
+    return;
+  }
   for (const stroke of strokes) drawStoredStroke(stroke);
   lassoTool?.syncPage?.();
 }
@@ -5515,10 +8217,10 @@ function resizeCanvas() {
   protectedTop = Math.max(0, Math.min(r.height, hr.bottom - r.top));
   rect = canvas.getBoundingClientRect();
   syncShapeOverlayBounds();
-  syncRulerOverlayBounds();
   if (isLassoInputShieldArmed()) syncLassoInputShieldBounds();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   renderAll();
+  rulerTool?.handleResize?.();
 }
 
 function normalizeEvent(ev) {
@@ -5582,7 +8284,44 @@ function drawDot(point) {
   ctx.restore();
 }
 
+function drawRulerBatch(events) {
+  if (!drawing || !activeStroke || !events.length || !rulerInkGuide) return;
+  const drawStart = performance.now();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, protectedTop, rect.width, Math.max(0, rect.height - protectedTop - FOOTER_PX));
+  ctx.clip();
+  setupStrokeStyle(activeStroke);
+  ctx.beginPath();
+  const lp = pointToCss(lastPoint);
+  ctx.moveTo(lp.x, lp.y);
+  let accepted = 0;
+  for (const sample of events) {
+    if (sample.pointerId !== pointerId) continue;
+    const point = projectNormalizedPointToGuide(normalizeEvent(sample), rect, rulerInkGuide);
+    noteSampleGap(point);
+    if (!pointAllowed(point)) continue;
+    const dx = (point.x - lastPoint.x) * rect.width;
+    const dy = (point.y - lastPoint.y) * rect.height;
+    if ((dx * dx + dy * dy) < 0.01) continue;
+    const cp = pointToCss(point);
+    ctx.lineTo(cp.x, cp.y);
+    activeStroke.points.push(point);
+    lastPoint = point;
+    accepted++;
+  }
+  if (accepted) ctx.stroke();
+  ctx.restore();
+  if (currentStrokeDiag) {
+    currentStrokeDiag.samples += accepted;
+    currentStrokeDiag.batches++;
+    const drawMs = performance.now() - drawStart;
+    currentStrokeDiag.maxDrawBatchMs = Math.max(currentStrokeDiag.maxDrawBatchMs, drawMs);
+  }
+}
+
 function drawBatch(events) {
+  if (rulerInkGuide) return drawRulerBatch(events);
   if (!drawing || !activeStroke || !events.length) return;
   const drawStart = performance.now();
   ctx.save();
@@ -5626,26 +8365,9 @@ function cancelPendingSave() {
 }
 
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
+  if (restoreMutationActive) return false;
   let syncCommit = null;
   try {
-    // 0.1.103 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
-    // scritta in chiaro nello store pagine. Lo snapshot viene consegnato al Vault,
-    // cifrato e sincronizzato come unico involucro opaco AES-GCM.
-    if (descriptor?.kind === 'rubrica') {
-      if (!passwordVault?.isUnlocked?.()) throw new Error('Rubrica bloccata');
-      storageBusy = true;
-      await passwordVault.savePage(descriptor.rubricaLetter || currentRubricaLetter, descriptor.rubricaPageIndex || currentRubricaPageIndex, pageStrokes, pageImages, pageStyleSnapshot, true);
-      if (rubricaImageClipboard?.pendingImageId
-          && rubricaImageClipboard.pendingPageKey === descriptor.key
-          && (pageImages || []).some((image)=>image?.id === rubricaImageClipboard.pendingImageId)) {
-        rubricaImageClipboard = null;
-        updateImageInspector();
-      }
-      session.storageWrites++;
-      if (updateStatus) statusLabel.textContent = 'Rubrica salvata';
-      scheduleCloudAuto('rubrica-vault-commit', 5000);
-      return true;
-    }
     await openDb();
     const txStart = performance.now();
     storageBusy = true;
@@ -5653,8 +8375,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     const putStart = performance.now();
     const promise = putRecordWithSync({
       date: descriptor.key,
-      kind: descriptor.kind === 'free-note' ? 'free-note-ink'
-        : descriptor.kind === 'note' ? 'day-note-ink'
+      kind: descriptor.kind === 'note' ? 'day-note-ink'
         : descriptor.kind === 'planner-daily' ? 'planner-day-ink'
         : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
         : descriptor.kind === 'planner-monthly' ? 'planner-month-ink'
@@ -5662,9 +8383,16 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
         : descriptor.kind === 'planner-timetable' ? 'planner-timetable-ink'
         : 'agenda-day-ink',
       referenceDate: descriptor.date,
+      lessonId: descriptor.lessonId || null,
+      lessonBoardIndex: Number(descriptor.lessonBoardIndex) || 0,
+      lessonAcquisitionDate: descriptor.lessonId ? activeLesson?.acquisitionDate || descriptor.date : null,
+      lessonSubject: descriptor.lessonId ? activeLesson?.subject || '' : '',
+      lessonTopic: descriptor.lessonId ? activeLesson?.topic || '' : '',
+      lessonCreatedAt: descriptor.lessonId ? activeLesson?.createdAt || '' : '',
+      lessonLastEditedAt: descriptor.lessonId ? activeLesson?.lastEditedAt || new Date().toISOString() : '',
+      lessonBeautifyFontSizePx: descriptor.lessonId ? normalizeBeautifyLessonFontSize(activeLesson?.beautifyFontSizePx) : null,
       plannerMode: descriptor.plannerMode ?? null,
       noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
-      freeNoteIndex: descriptor.kind === 'free-note' ? descriptor.freeNoteIndex : 0,
       version: APP_VERSION,
       pipeline: 'coalesced-retina-storage-sync-v1',
       strokes: pageStrokes,
@@ -5679,6 +8407,7 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
     session.maxStorageTxMs = Math.max(session.maxStorageTxMs, txMs);
     if (syncCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(syncCommit.eventIds, txMs);
     session.storageWrites++;
+    if (descriptor.lessonId && activeLesson?.id === descriptor.lessonId) saveActiveLesson({ touch:true });
     // 0.1.73 — una immagine tagliata resta nella clipboard locale fino a quando
     // la pagina di destinazione dell'Incolla è stata realmente persistita.
     if (localImageCutClipboard?.pendingImageId
@@ -5704,16 +8433,19 @@ async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pag
 
 async function persistNow() {
   if (!ready || drawing || pageTurning) return;
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    statusLabel.textContent = 'salvataggio';
+    const ok = await flushContinuousSegmentSaves();
+    statusLabel.textContent = ok ? 'salvato' : 'errore salvataggio';
+    if (ok) scheduleCloudAuto('local-commit', 5000);
+    return;
+  }
   const descriptor = pageDescriptor();
   const saveKey = descriptor.key;
   const snapshot = strokes;
   const imageSnapshot = images;
-  const requestSerial = saveRequestSerial;
   const ok = await persistSnapshot(descriptor, snapshot, true, pageStyle, imageSnapshot);
-  // Non dichiarare la pagina pulita se, mentre questa transazione era in corso,
-  // è stata programmata una nuova modifica. Questo è il caso che faceva sparire
-  // i tratti quando si cambiava pagina subito dopo avere scritto.
-  if (ok && currentPageKey() === saveKey && strokes === snapshot && saveRequestSerial === requestSerial) {
+  if (ok && currentPageKey() === saveKey && strokes === snapshot) {
     dirty = false;
     scheduleCloudAuto('local-commit', 5000);
   }
@@ -5721,7 +8453,6 @@ async function persistNow() {
 
 function scheduleSave() {
   if (!ready) return;
-  saveRequestSerial += 1;
   cancelPendingSave();
   statusLabel.textContent = 'da salvare';
   saveTimer = window.setTimeout(() => {
@@ -5778,11 +8509,17 @@ function startStroke(ev, reason = 'pointerdown') {
   if (storageBusy) session.strokesStartedWhileStorageBusy++;
   drawing = true;
   pointerId = ev.pointerId;
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    continuousStrokeScrollTop = Math.max(0, Number(continuousViewport?.scrollTop) || 0);
+  }
   rect = canvas.getBoundingClientRect();
-  const point = normalizeEvent(ev);
+  rulerInkGuide = rulerTool?.prepareInkGuide?.(ev.clientX, ev.clientY, activeTool) ?? null;
+  let point = normalizeEvent(ev);
+  if (rulerInkGuide) point = projectNormalizedPointToGuide(point, rect, rulerInkGuide);
   if (!pointAllowed(point)) {
     drawing = false;
     pointerId = null;
+    rulerInkGuide = null;
     lanTransport?.resumeAfterInk();
     cloudTransport?.resumeAfterInk();
     audioRecorder?.resumeAfterInk();
@@ -5796,6 +8533,7 @@ function startStroke(ev, reason = 'pointerdown') {
   currentStrokeDiag = newStrokeDiag(ev, reason);
   currentStrokeDiag.lastSampleTs = point.t;
   lastHandlerArrival = performance.now();
+  if (activeTool === 'eraser') continuousBeginEraserPreview();
   drawDot(point);
   return true;
 }
@@ -5803,9 +8541,9 @@ function startStroke(ev, reason = 'pointerdown') {
 function recordStructuralEraseChanges(changes, reason = 'eraser') {
   const descriptor = pageDescriptor();
   for (const change of changes || []) {
-    if (change?.original?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
+    if (change?.original?.id) syncFoundation?.recordStrokeDeleted(descriptor, change.original.id, reason);
     for (const fragment of change?.fragments || []) {
-      if (fragment?.id && pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, fragment);
+      if (fragment?.id) syncFoundation?.recordStrokeAdded(descriptor, fragment);
     }
   }
 }
@@ -5830,7 +8568,7 @@ function applyCompletedEraser(eraserStroke) {
   const changes = [...result.changes, ...textChanges];
 
   // Il feedback realtime usa destination-out. Al rilascio la cancellazione
-  // diventa strutturale anche per gli oggetti testo Voice Script/Windows.
+  // diventa strutturale anche per gli oggetti testo Voice Script.
   strokes = result.strokes.filter((stroke) => !removedTextIds.has(String(stroke?.id || '')));
   renderAll();
   const eraseMs = performance.now() - eraseStarted;
@@ -5850,7 +8588,11 @@ function finalizeStroke(reason = 'pointerup') {
   drawing = false;
   const completedStroke = activeStroke?.points?.length ? activeStroke : null;
   let pageChanged = false;
-  if (completedStroke?.tool === 'eraser') {
+  if (completedStroke && continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    pageChanged = completedStroke.tool === 'eraser'
+      ? continuousApplyCompletedEraser(completedStroke)
+      : continuousCommitCompletedInkStroke(completedStroke);
+  } else if (completedStroke?.tool === 'eraser') {
     pageChanged = applyCompletedEraser(completedStroke);
   } else if (completedStroke) {
     strokes.push(completedStroke);
@@ -5870,9 +8612,12 @@ function finalizeStroke(reason = 'pointerup') {
   activeStroke = null;
   currentStrokeDiag = null;
   pointerId = null;
+  rulerInkGuide = null;
   lastPoint = null;
   lastHandlerArrival = 0;
-  dirty = dirty || pageChanged;
+  dirty = (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)
+    ? continuousDirtySegments.has(currentLessonBoardIndex)
+    : (dirty || pageChanged);
   // 0.1.33: nessuna logica Sync entra in pointermove. Penna/evidenziatore
   // generano un solo ADD al PEN UP; la gomma genera DELETE + eventuali ADD
   // dei frammenti residui soltanto dopo la conclusione della passata.
@@ -5908,6 +8653,65 @@ function wrapVoiceScriptText(text, xNorm, fontFamily, fontSizePx) {
   return lines.join('\n');
 }
 
+function continuousCommitVoiceScriptText(payload, descriptor, wrappedText) {
+  if (!continuousLessonActive || !activeLesson?.id || descriptor?.kind !== 'agenda') return false;
+  const metrics = continuousMetrics();
+  const segmentHeight = Math.max(1, continuousSegmentHeight || metrics.height);
+  const capturedScrollTop = Number.isFinite(Number(descriptor?.continuousScrollTop))
+    ? Math.max(0, Number(descriptor.continuousScrollTop))
+    : Math.max(0, Number(continuousViewport?.scrollTop) || 0);
+  const fontSizePx = Math.max(18, Math.min(72, Number(payload.fontSizePx) || 32));
+  const lineHeightPx = Math.max(fontSizePx * 1.28, fontSizePx + 4);
+  const lines = String(wrappedText || '').split('\n');
+  const startDocPx = Math.max(0, capturedScrollTop + (Math.max(0, Math.min(1, Number(payload.y) || 0)) * metrics.paperHeight - metrics.top));
+  let segmentIndex = Math.max(1, Math.floor(startDocPx / segmentHeight) + 1);
+  let localPx = Math.max(0, startDocPx - (segmentIndex - 1) * segmentHeight);
+  let cursor = 0;
+  const pieces = [];
+  while (cursor < lines.length) {
+    const remainingPx = Math.max(lineHeightPx, segmentHeight - localPx);
+    const capacity = Math.max(1, Math.floor(remainingPx / lineHeightPx));
+    const chunk = lines.slice(cursor, cursor + capacity).join('\n');
+    const item = {
+      id:makeId(),
+      kind:'text',
+      tool:'voice-text',
+      source:'voice-script',
+      text:chunk,
+      x:Math.max(0, Math.min(1, Number(payload.x) || 0)),
+      y:Math.max(0, Math.min(1, (metrics.top + localPx) / metrics.paperHeight)),
+      color:payload.color || toolStrokeStyle('pen').color || PEN_COLOR,
+      fontFamily:payload.fontFamily || 'Snell Roundhand',
+      fontSizeNorm:fontSizePx / Math.max(1, canvas.clientHeight || rect?.height || metrics.paperHeight),
+      language:payload.language || 'it-IT',
+      anchorMode:'top',
+      recognitionConfidence:Number.isFinite(Number(payload.confidence)) ? Number(payload.confidence) : 0,
+      createdAt:payload.createdAt || new Date().toISOString(),
+      modifiedAt:new Date().toISOString()
+    };
+    const entry = continuousGetEntrySync(segmentIndex, { createEmpty:true });
+    entry.strokes.push(item);
+    continuousMarkEntryChanged(segmentIndex, entry);
+    syncFoundation?.recordStrokeAdded(continuousSegmentDescriptor(segmentIndex), item);
+    pieces.push({ index:segmentIndex, stroke:item });
+    cursor += capacity;
+    segmentIndex += 1;
+    localPx = 0;
+  }
+  if (!pieces.length) return false;
+  rememberUndo({ type:'continuous-add-stroke', pieces });
+  for (const piece of pieces) {
+    for (let slotIndex = Math.max(1, piece.index - 1); slotIndex <= Math.min(continuousVirtualCount, piece.index + 1); slotIndex++) {
+      const slot = continuousSegmentSlots.get(slotIndex); if (slot) slot.renderedKey = '';
+      continuousRenderStaticSegment(slotIndex, continuousSegmentCache.get(slotIndex));
+    }
+  }
+  continuousHideActiveStaticSlot();
+  renderAll();
+  scheduleSave();
+  return true;
+}
+
 async function commitVoiceScriptText(payload = {}) {
   const descriptor = { ...(payload.descriptor || pageDescriptor()) };
   const text = wrapVoiceScriptText(payload.text, payload.x, payload.fontFamily, payload.fontSizePx);
@@ -5925,16 +8729,20 @@ async function commitVoiceScriptText(payload = {}) {
     fontFamily: payload.fontFamily || 'Snell Roundhand',
     fontSizeNorm: Math.max(18, Math.min(72, Number(payload.fontSizePx) || 32)) / height,
     language: payload.language || 'it-IT',
-    anchorMode: 'baseline',
+    anchorMode: 'top',
     recognitionConfidence: Number.isFinite(Number(payload.confidence)) ? Number(payload.confidence) : 0,
     createdAt: payload.createdAt || new Date().toISOString(),
     modifiedAt: new Date().toISOString()
   };
 
+  if (descriptor.lessonId && descriptor.kind === 'agenda' && Number.isFinite(Number(descriptor.continuousScrollTop))) {
+    return continuousCommitVoiceScriptText(payload, descriptor, text);
+  }
+
   if (descriptor.key === currentPageKey()) {
     strokes.push(item);
     rememberUndo({ type:'add-stroke', stroke:item, index:strokes.length - 1 });
-    if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, item);
+    syncFoundation?.recordStrokeAdded(descriptor, item);
     renderAll();
     dirty = true;
     scheduleSave();
@@ -5947,7 +8755,7 @@ async function commitVoiceScriptText(payload = {}) {
     const pageStrokes = [...(Array.isArray(record?.strokes) ? record.strokes : []), item];
     const targetStyle = normalizePageStyle(record?.pageStyle || globalPageStyle);
     const targetImages = Array.isArray(record?.images) ? record.images : [];
-    if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, item);
+    syncFoundation?.recordStrokeAdded(descriptor, item);
     return await persistSnapshot(descriptor, pageStrokes, false, targetStyle, targetImages);
   } catch (err) {
     console.warn('Voice Script: salvataggio pagina origine non riuscito', err);
@@ -5957,6 +8765,7 @@ async function commitVoiceScriptText(payload = {}) {
 
 function beginVoiceScriptPlacement(ev) {
   if (activeTool !== 'voice') return false;
+  if (continuousLessonActive && currentPageKind === 'agenda' && ev.pointerType === 'touch') return false;
   if (!ready || pageTurning || pageStyleBulkBusy) { ev.preventDefault?.(); return true; }
   if (isUiControlTarget(ev.target)) return true;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return true;
@@ -5968,7 +8777,12 @@ function beginVoiceScriptPlacement(ev) {
   const started = voiceScript?.startAt?.({
     x: point.x,
     y: point.y,
-    descriptor: { ...pageDescriptor() },
+    descriptor: {
+      ...pageDescriptor(),
+      ...(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id
+        ? { continuousScrollTop:Math.max(0, Number(continuousViewport?.scrollTop) || 0) }
+        : {})
+    },
     penColor: style.color
   });
   if (started) {
@@ -5987,7 +8801,7 @@ function beginVoiceScriptPlacement(ev) {
 function isUiControlTarget(target) {
   // L'overlay Lazo è puramente grafico (pointer-events:none) e NON deve mai
   // impedire al router di ricevere il gesto, anche su Safari/iPadOS.
-  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector'));
+  return target instanceof Element && Boolean(target.closest('button, input, select, textarea, .style-panel, .shape-palette, .shape-overlay, .lasso-inspector, .report-panel, .mini-calendar, .settings-panel, .saint-detail-panel, .history-detail-panel, .image-layer, .image-inspector, .lesson-archive-panel, .lesson-setup-panel, .lesson-pdf-panel'));
 }
 
 // Il Lazo deve poter iniziare anche sopra immagini, Figure e altri contenuti pagina.
@@ -6006,7 +8820,21 @@ function getUiButtonTarget(target) {
 
 function activateUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
-  if (button !== shapeToolButton && !button.matches('[data-shape-type], [data-shape-fill]')) closeShapePalette();
+  if (button.dataset.lessonPdfOpen) { openLessonPdf(button.dataset.lessonPdfOpen,'open'); return; }
+  if (button.dataset.lessonPdfExport) { openLessonPdf(button.dataset.lessonPdfExport,'export'); return; }
+  if (button.dataset.lessonDelete) { void deleteLessonGroup(button.dataset.lessonDelete); return; }
+  if (button.dataset.lessonOpen) {
+    const lesson = lessonIndex.find((item) => item.id === button.dataset.lessonOpen);
+    if (!lesson) return;
+    const boardIndex = Math.max(1, Number(lesson.currentBoardIndex) || 1);
+    void resumeLessonAtSavedPosition(lesson, 'lezione aperta').then(() => {
+      if (lessonArchivePanel) lessonArchivePanel.hidden = true;
+      restoreAgendaInteractiveTools('lesson-archive-open');
+    });
+    return;
+  }
+  if (button !== shapeToolButton && !button.matches('[data-shape-type]')) closeShapePalette();
+  if (button === rulerButton) { toggleRulerTool(); return; }
   if (button === undoButton && !undoHistory.length) return;
   if (button === redoButton && !redoHistory.length) return;
   if (button === imageToolButton) {
@@ -6021,19 +8849,11 @@ function activateUiButton(button) {
     activateLassoTool();
     return;
   }
-  if (button === lassoCutButton) { void lassoTool?.cutSelection?.(true); return; }
+  if (button === lassoCutButton) { void lassoTool?.cutSelection?.(); return; }
   if (button === lassoPasteButton) { void lassoTool?.pasteClipboard?.(); return; }
   if (button === lassoClearButton) { lassoTool?.clearSelection?.('selezione annullata'); return; }
   if (button === voiceScriptToolButton) {
     activateVoiceScriptTool();
-    return;
-  }
-  if (button === rulerToolButton) {
-    if (activeTool === 'ruler') {
-      deactivatePageTool('righello nascosto');
-    } else {
-      selectTool('ruler');
-    }
     return;
   }
   if (button.matches('.tool-button[data-tool]')) {
@@ -6048,12 +8868,12 @@ function activateUiButton(button) {
     redoLastModification();
     return;
   }
-  if (button === calendarButton) {
-    toggleCalendar();
+  if (button === beautifyButton) {
+    void beautifyCurrentBoard();
     return;
   }
-  if (button === freeNotesButton) {
-    void toggleFreeNotes();
+  if (button === calendarButton) {
+    toggleCalendar();
     return;
   }
   if (button === styleButton) {
@@ -6062,10 +8882,6 @@ function activateUiButton(button) {
   }
   if (button.matches('[data-shape-type]')) {
     setSelectedShapeType(button.dataset.shapeType);
-    return;
-  }
-  if (button.matches('[data-shape-fill]')) {
-    setSelectedShapeFill(button.dataset.shapeFill);
     return;
   }
   if (button.matches('.planner-mode-button')) {
@@ -6092,6 +8908,13 @@ function activateUiButton(button) {
     setPageTemplate(button.dataset.pageTemplate);
     return;
   }
+  // 0.1.13 — gli sfondi rapidi devono essere attivabili anche con Apple Pencil.
+  // La chiamata avviene solo al contatto UI diretto, fuori dal motore Ink.
+  if (button.matches('.quick-paper-button')) {
+    if (button.dataset.quickTemplate) void setPageTemplate(button.dataset.quickTemplate);
+    else if (button.dataset.quickColor) void setPageColor(button.dataset.quickColor);
+    return;
+  }
   if (button === importImageButton) { requestImageImport(); return; }
   if (button === cropImageButton) { void openImageCropEditor(); return; }
   if (button === cancelImageCropButton) { closeImageCropEditor('ritaglio annullato'); return; }
@@ -6100,6 +8923,20 @@ function activateUiButton(button) {
   if (button === rotateImageRightButton) { rotateSelectedImage(15); return; }
   if (button === cutImageButton) { void cutSelectedImage(); return; }
   if (button === pasteImageButton) { void pasteCutImage(); return; }
+  if (button === newLessonButton) { void (async () => { if (ready && dirty) await persistNow(); openLessonSetup({ startup:false, tab:'new' }); })(); return; }
+  if (button === closeLessonButton) { void closeCurrentLessonToStartup(); return; }
+  if (button === lessonArchiveButton) { openLessonArchive(); return; }
+  if (button === lessonSetupStartButton) { void startNewLessonFromDialog(); return; }
+  if (button === lessonSetupResumeButton) { void resumeLastLessonFromStartup(); return; }
+  if (button === lessonSetupNewTabButton) { setLessonSetupMode('new'); return; }
+  if (button === lessonSetupOpenTabButton) { setLessonSetupMode('open'); return; }
+  if (button === lessonSetupCloseButton) { closeLessonSetup(); return; }
+  if (button === lessonArchiveCloseButton) { if (lessonArchivePanel) lessonArchivePanel.hidden = true; restoreAgendaInteractiveTools('lesson-archive-close'); return; }
+  if (button === lessonSubjectAddButton) {
+    const value = cleanLessonText(lessonSubjectNewInput?.value, 80);
+    if (value) { if (!lessonSubjects.includes(value)) lessonSubjects.push(value); saveLessonSubjects(); if (lessonSubjectNewInput) lessonSubjectNewInput.value=''; renderLessonSubjectSettings(); }
+    return;
+  }
   // Gli altri pulsanti mantengono il comportamento nativo esistente.
 }
 
@@ -6125,6 +8962,32 @@ function handlePointerDown(ev) {
   if (ev.pointerType === 'pen') lastPenPointerDownAt = performance.now();
   session.totalPointerDown++;
   noteHandlerArrival();
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    continuousStopMomentum();
+    // Pencil ha priorità assoluta: un eventuale gesto dito in corso viene chiuso
+    // prima del PEN DOWN e non può spostare il documento durante il tratto.
+    continuousTouch = null;
+    const { first, last } = continuousVisibleSegmentRange();
+    let missingVisibleSegment = false;
+    for (let index = first; index <= last; index++) {
+      if (!continuousGetEntrySync(index)) { missingVisibleSegment = true; break; }
+    }
+    if (missingVisibleSegment) {
+      ev.preventDefault();
+      const pending = { downEvent:ev, latestEvent:ev };
+      continuousPendingInkStarts.set(ev.pointerId, pending);
+      void continuousEnsureVisibleEntries().then(() => {
+        if (continuousPendingInkStarts.get(ev.pointerId) !== pending) return;
+        continuousPendingInkStarts.delete(ev.pointerId);
+        if (drawing) return;
+        if (startStroke(pending.downEvent, 'pointerdown-continuous') && pending.latestEvent !== pending.downEvent) handlePointerMove(pending.latestEvent);
+      }).catch((err) => {
+        continuousPendingInkStarts.delete(ev.pointerId);
+        console.warn('Preparazione viewport Ink non riuscita', err);
+      });
+      return;
+    }
+  }
   if (startStroke(ev, 'pointerdown')) ev.preventDefault();
 }
 
@@ -6136,6 +8999,13 @@ function handlePointerMove(ev) {
   if (isUiControlTarget(ev.target) && !drawing) return;
   if (ev.pointerType === 'touch') return;
   noteHandlerArrival();
+
+  const pendingContinuousStart = continuousPendingInkStarts.get(ev.pointerId);
+  if (pendingContinuousStart) {
+    pendingContinuousStart.latestEvent = ev;
+    ev.preventDefault();
+    return;
+  }
 
   const penIsDown = ev.pointerType === 'pen' && (ev.pressure > 0 || (ev.buttons & 1) === 1);
   const mouseIsDown = ev.pointerType === 'mouse' && (ev.buttons & 1) === 1;
@@ -6180,6 +9050,11 @@ function handlePointerUp(ev) {
   if (ev.pointerType === 'touch') return;
   session.totalPointerUp++;
   noteHandlerArrival();
+  if (continuousPendingInkStarts.has(ev.pointerId)) {
+    continuousPendingInkStarts.delete(ev.pointerId);
+    ev.preventDefault();
+    return;
+  }
   if (!drawing || ev.pointerId !== pointerId) return;
   finalizeStroke('pointerup');
   ev.preventDefault();
@@ -6194,6 +9069,11 @@ function handlePointerCancel(ev) {
   if (ev.pointerType === 'touch') return;
   session.totalPointerCancel++;
   noteHandlerArrival();
+  if (continuousPendingInkStarts.has(ev.pointerId)) {
+    continuousPendingInkStarts.delete(ev.pointerId);
+    ev.preventDefault();
+    return;
+  }
   if (!drawing || ev.pointerId !== pointerId) return;
   finalizeStroke('pointercancel');
   ev.preventDefault();
@@ -6211,9 +9091,9 @@ function fmt(value, digits = 1) {
 function buildReport() {
   const recent = completedDiagnostics.slice(-24);
   return [
-    `Agenda iPad CLOUD SYNC v${APP_VERSION}`,
+    `Note iPad v${APP_VERSION}`,
     `Data pagina: ${currentDate}`,
-    `Tipo pagina: ${currentPageKind === 'free-note' ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}` : 'Agenda'}`, 
+    `Tipo pagina: ${currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? (currentPlannerMode === 'daily' ? 'Obiettivi della lezione' : `Planner ${currentPlannerMode}`) : 'Lavagna'}`, 
     `Chiave pagina: ${currentPageKey()}`,
     `Sessione: ${session.startedAt}`,
     `Pipeline: Coalesced + Retina + Storage differito`,
@@ -6295,18 +9175,119 @@ async function copyReport() {
   }
 }
 
+async function clearContinuousLessonSheet({ requireConfirmation = true, reason = 'manual' } = {}) {
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || !activeLesson?.id) return false;
+  if (drawing || !ready || eraserClearBusy) return false;
+  const lessonId = String(activeLesson.id);
+  if (requireConfirmation && !window.confirm(`Cancellare tutto il foglio continuo della lezione “${activeLesson.subject} - ${activeLesson.topic}”?`)) return false;
+
+  eraserClearBusy = true;
+  cancelPendingSave();
+  continuousStopMomentum();
+  clearTimeout(continuousScrollSettleTimer);
+  continuousScrollSettleTimer = 0;
+  continuousPrefetchGeneration++;
+
+  try {
+    // Una write già partita deve terminare PRIMA dei delete, altrimenti potrebbe
+    // ricreare un segmento dopo la cancellazione. I dirty non ancora accodati,
+    // invece, sono intenzionalmente scartati perché l'utente ha chiesto Clear All.
+    await continuousSaveChain.catch(() => false);
+    await openDb();
+    const records = await readAllMainRecords();
+    const prefix = `lesson::${lessonId}::segment::`;
+    const persistedByIndex = new Map();
+    for (const row of records) {
+      const key = String(row?.date || '');
+      if (row?.kind !== 'agenda-day-ink') continue;
+      if (String(row?.lessonId || '') !== lessonId && !key.startsWith(prefix)) continue;
+      const parsed = Number(row?.lessonBoardIndex) || Number(key.match(/::segment::(\d{5})/)?.[1]) || 1;
+      persistedByIndex.set(Math.max(1, parsed), row);
+    }
+
+    // Un segmento può esistere solo in RAM (modificato ma non ancora persistito):
+    // deve comunque ricevere l'evento Sync di clear e sparire insieme agli altri.
+    const indexes = new Set([
+      Math.max(1, Number(currentLessonBoardIndex) || 1),
+      ...persistedByIndex.keys(),
+      ...continuousSegmentCache.keys(),
+      ...continuousDirtySegments.values()
+    ]);
+
+    for (const index of [...indexes].sort((a,b) => a-b)) {
+      const persisted = persistedByIndex.get(index);
+      const cached = continuousSegmentCache.get(index);
+      const key = String(persisted?.date || lessonBoardKey(lessonId, index));
+      const descriptor = { ...continuousSegmentDescriptor(index), key, lessonId, lessonBoardIndex:index };
+      const removedStrokeIds = [...new Set([
+        ...(Array.isArray(persisted?.strokes) ? persisted.strokes : []),
+        ...(Array.isArray(cached?.strokes) ? cached.strokes : [])
+      ].map((stroke) => stroke?.id).filter(Boolean))];
+      const removedImageIds = [...new Set([
+        ...(Array.isArray(persisted?.images) ? persisted.images : []),
+        ...(Array.isArray(cached?.images) ? cached.images : [])
+      ].map((image) => image?.id).filter(Boolean))];
+      syncFoundation?.recordPageCleared(descriptor, removedStrokeIds, removedImageIds);
+      const commit = syncFoundation?.prepareAtomicCommit(key) ?? { events: [], eventIds: [], stateRow: null };
+      const txStart = performance.now();
+      await deleteRecordWithSync(key, commit);
+      if (commit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(commit.eventIds, performance.now() - txStart);
+    }
+
+    // Solo dopo che tutti i record sono stati eliminati aggiorniamo la vista.
+    continuousDirtySegments.clear();
+    continuousSegmentCache.clear();
+    for (const slot of continuousSegmentSlots.values()) slot.root?.remove();
+    continuousSegmentSlots.clear();
+    continuousTrack?.replaceChildren();
+    continuousPrefetchWindowKey = '';
+    currentLessonBoardIndex = 1;
+    if (continuousViewport) continuousViewport.scrollTop = 0;
+    strokes = [];
+    images = [];
+    selectedImageId = null;
+    resetUndoHistory();
+    dirty = false;
+    activeLesson = normalizeLesson({
+      ...activeLesson,
+      boardCount:1,
+      currentBoardIndex:1,
+      lastScrollSegment:1,
+      lastScrollOffset:0,
+      lastEditedAt:new Date().toISOString()
+    });
+    saveActiveLesson({ touch:false });
+    renderAll();
+    renderImages();
+    await continuousActivate({ segmentIndex:1, offset:0, preserveCache:false });
+    statusLabel.textContent = reason === 'eraser-triple-tap'
+      ? 'foglio continuo cancellato · triplo tap/click Gomma'
+      : 'foglio continuo vuoto';
+    return true;
+  } catch (err) {
+    syncFoundation?.markAtomicCommitFailed?.();
+    statusLabel.textContent = 'errore cancellazione foglio completo';
+    console.warn('Cancellazione foglio continuo non riuscita', err);
+    return false;
+  } finally {
+    eraserClearBusy = false;
+  }
+}
+
 async function clearCurrentPage(options = {}) {
   if (denyMutationDuringSyncRecovery()) return false;
   const requireConfirmation = options?.requireConfirmation !== false;
   const reason = String(options?.reason || 'manual');
   if (drawing || !ready || eraserClearBusy) return false;
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    return clearContinuousLessonSheet({ requireConfirmation, reason });
+  }
   if (!strokes.length && !images.length) {
     statusLabel.textContent = 'pagina già vuota';
     return false;
   }
-  const label = currentPageKind === 'free-note' ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? `Planner ${currentPlannerMode}${currentPlannerMode === 'daily' ? ' (indipendente da Agenda)' : ''}` : 'pagina Agenda';
-  const scopeLabel = currentPageKind === 'free-note' ? label : `${label} del ${currentDate}`;
-  if (requireConfirmation && !window.confirm(`Cancellare soltanto ${scopeLabel}?`)) return false;
+  const label = currentPageKind === 'note' ? `Nota ${currentNoteIndex}/${currentNoteTotal}` : isPlannerKind() ? currentPlannerMode === 'daily' ? 'Obiettivi della lezione' : `Planner ${currentPlannerMode}` : 'pagina Agenda';
+  if (requireConfirmation && !window.confirm(`Cancellare soltanto ${label} del ${currentDate}?`)) return false;
   eraserClearBusy = true;
   cancelPendingSave();
   const clearedDescriptor = pageDescriptor();
@@ -6321,14 +9302,14 @@ async function clearCurrentPage(options = {}) {
   let clearCommit = null;
   try {
     await openDb();
-    if (pageSyncAllowed(clearedDescriptor)) syncFoundation?.recordPageCleared(clearedDescriptor, removedStrokeIds, removedImageIds);
+    syncFoundation?.recordPageCleared(clearedDescriptor, removedStrokeIds, removedImageIds);
     clearCommit = syncFoundation?.prepareAtomicCommit(clearedDescriptor.key) ?? { events: [], eventIds: [], stateRow: null };
     const txStart = performance.now();
     await deleteRecordWithSync(clearedDescriptor.key, clearCommit);
     const txMs = performance.now() - txStart;
     if (clearCommit.eventIds?.length) syncFoundation?.markAtomicCommitSucceeded(clearCommit.eventIds, txMs);
     dirty = false;
-    statusLabel.textContent = reason === 'eraser-triple-tap' ? 'pagina cancellata · triplo tap Gomma' : 'pagina vuota';
+    statusLabel.textContent = reason === 'eraser-triple-tap' ? 'pagina cancellata · triplo tap/click Gomma' : 'pagina vuota';
     return true;
   } catch (err) {
     if (clearCommit?.eventIds?.length) syncFoundation?.markAtomicCommitFailed();
@@ -6399,7 +9380,6 @@ function drawPreviewInk(preview, previewStrokes) {
         q = css(points[i]);
         pctx.lineTo(q.x, q.y);
       }
-      if (shapeStrokeIsClosed(stroke)) pctx.fill();
       pctx.stroke();
     }
     pctx.restore();
@@ -6407,10 +9387,9 @@ function drawPreviewInk(preview, previewStrokes) {
 }
 
 function footerTextFor(descriptor) {
-  if (descriptor.kind === 'free-note') return `NOTE LIBERE · ${descriptor.freeNoteIndex}/${Math.max(1, descriptor.freeNoteTotal)}`;
-  if (descriptor.kind === 'note') return `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`;
+  if (descriptor.kind === 'note') return descriptor.lessonId ? `NOTA ${descriptor.noteIndex}/${Math.max(1, Number(descriptor.lessonBoardIndex) || 1)}` : `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`;
   if (isPlannerKind(descriptor.kind)) return `PLANNER · ${String(descriptor.plannerMode ?? 'daily').toUpperCase()}`;
-  return 'AGENDA · ANTEPRIMA';
+  return 'NOTE · ANTEPRIMA';
 }
 
 function createPreview(descriptor) {
@@ -6425,8 +9404,9 @@ function createPreview(descriptor) {
   if (previewImageLayer) previewImageLayer.replaceChildren();
   clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
   clone.querySelectorAll('button').forEach((el) => { el.tabIndex = -1; });
-  setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal, descriptor.freeNoteIndex, descriptor.freeNoteTotal);
+  setHeaderFor(clone, descriptor.date, descriptor.kind, descriptor.noteIndex, descriptor.noteTotal);
   configurePageRoot(clone, descriptor);
+  renderLessonHeaderFor(clone, descriptor, true);
   const footer = clone.querySelector('.baseline-footer');
   if (footer) {
     const author = footer.querySelector('.author-credits-button');
@@ -6473,9 +9453,7 @@ async function loadPageForPreview(descriptor, preview) {
       images: imagesFromRecord(record),
       pageStyle: descriptor.kind === 'planner-timetable'
         ? { color:'black', template:'blank' }
-        : descriptor.kind === 'free-note' && !record
-          ? { color:globalPageStyle.color, template:'ruled' }
-          : pageStyleFromRecord(record)
+        : pageStyleForDescriptor(record, descriptor)
     };
     if (preview?.isConnected) {
       applyPageStyle(preview, targetPage.pageStyle);
@@ -6504,39 +9482,25 @@ function resetTurnStyles() {
 }
 
 function horizontalTarget(direction) {
-  if (currentPageKind === 'free-note' || currentPageKind === 'rubrica') return null;
   if (currentPageKind === 'planner-timetable') {
     const nextIndex = currentTimetableIndex + direction;
     if (nextIndex < 1 || nextIndex > WEEKLY_TIMETABLE_MAX_PAGES) return null;
     return pageDescriptor(currentDate, 'planner-timetable', 0, 0, nextIndex);
   }
   if (isPlannerKind()) return null;
+  // 0.1.34 — dentro una lezione non esiste più una sequenza di pagine orizzontali:
+  // tutta la scrittura vive nel foglio continuo verticale.
+  if (activeLesson?.id && (currentPageKind === 'agenda' || currentPageKind === 'note')) return null;
   const targetDate = addDays(currentDate, direction);
   if (!dateInRange(targetDate)) return null;
   return pageDescriptor(targetDate, 'agenda', 0, 0);
 }
 
 function verticalTarget(direction) {
-  if (currentPageKind === 'rubrica') return null;
-  if (currentPageKind === 'free-note') {
-    if (direction < 0) {
-      if (currentFreeNoteIndex <= 1) return null;
-      return freeNoteDescriptor(currentFreeNoteIndex - 1, currentFreeNoteTotal);
-    }
-    const nextIndex = currentFreeNoteIndex + 1;
-    const createFreeNote = nextIndex > currentFreeNoteTotal;
-    if (createFreeNote && isSyncRestorePending()) return null;
-    const target = freeNoteDescriptor(nextIndex, createFreeNote ? nextIndex : currentFreeNoteTotal);
-    target.createFreeNote = createFreeNote;
-    return target;
-  }
-
-  const count = notesCountCache.get(currentDate) ?? currentNoteTotal ?? 0;
-
   // 0.1.53 — Orario settimanale raggiungibile con swipe verso il basso
   // da qualsiasi modalità di Planning. Lo swipe inverso torna esattamente alla modalità di partenza.
   // direction -1 = swipe verso il basso; direction +1 = swipe verso l'alto.
-  if (isPlannerKind() && currentPageKind !== 'planner-timetable' && direction < 0) {
+  if (isPlannerKind() && currentPageKind !== 'planner-timetable' && currentPageKind !== 'planner-daily' && direction < 0) {
     weeklyTimetableReturnDescriptor = pageDescriptor();
     return pageDescriptor(currentDate, 'planner-timetable', 0, 0, 1);
   }
@@ -6546,17 +9510,27 @@ function verticalTarget(direction) {
       : pageDescriptor(currentDate, 'planner-weekly', 0, 0);
   }
 
-  // Gli altri Planner: swipe dal basso verso l'alto (direction +1) torna all'Agenda.
+  // Dagli Obiettivi lo swipe verso l'alto torna esattamente al punto della pagina Note
+  // da cui erano stati aperti; gli altri Planner conservano il ritorno all'Agenda.
   if (isPlannerKind()) {
+    if (currentPageKind === 'planner-daily' && direction > 0 && lessonGoalsReturnDescriptor) {
+      return { ...lessonGoalsReturnDescriptor };
+    }
     return direction > 0 ? pageDescriptor(currentDate, 'agenda', 0, 0) : null;
   }
 
-  // Agenda: swipe verso il basso apre sempre il Planner Giornaliero.
+  // 0.1.34 — la pagina della lezione scorre direttamente nel viewport continuo.
+  // Le gesture verticali legacy non devono creare Note o cambiare segmento.
+  if (activeLesson?.id) return null;
+
+  // Agenda non associata a una lezione: swipe verso il basso apre il Planner Giornaliero.
   if (currentPageKind === 'agenda' && direction < 0) {
     return pageDescriptor(currentDate, 'planner-daily', 0, 0);
   }
 
-  // Note del giorno: swipe verso il basso torna alla nota precedente/Agenda.
+  const count = notesCountCache.get(notesCacheKey(currentDate, '', 0)) ?? currentNoteTotal ?? 0;
+
+  // Note del giorno legacy: swipe verso il basso torna alla nota precedente/Agenda.
   if (direction < 0) {
     if (currentPageKind === 'agenda') return null;
     if (currentNoteIndex <= 1) return pageDescriptor(currentDate, 'agenda', 0, 0);
@@ -6673,335 +9647,16 @@ function movePageSwipe(ev) {
     });
     if (axis === 'x') statusLabel.textContent = currentPageKind === 'planner-timetable'
       ? `Orario settimanale ${target.timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}`
-      : (direction === 1 ? 'giorno successivo' : 'giorno precedente');
+      : (activeLesson?.id && currentPageKind === 'agenda' ? (direction === 1 ? 'pagina Note successiva' : 'pagina Note precedente') : (direction === 1 ? 'giorno successivo' : 'giorno precedente'));
     else if (target.kind === 'agenda') statusLabel.textContent = 'torna ad Agenda';
-    else if (target.kind === 'planner-daily') statusLabel.textContent = 'apri Planner giornaliero';
+    else if (target.kind === 'planner-daily') statusLabel.textContent = 'apri Obiettivi della lezione';
     else if (target.kind === 'planner-timetable') statusLabel.textContent = 'apri Orario settimanale';
     else if (target.kind === 'planner-weekly') statusLabel.textContent = 'torna al Planning settimanale';
-    else if (target.kind === 'free-note') statusLabel.textContent = `Nota libera ${target.freeNoteIndex}/${target.freeNoteTotal}`;
-    else statusLabel.textContent = `Nota ${target.noteIndex}/${target.noteTotal}`;
+    else statusLabel.textContent = activeLesson?.id ? 'scorri pagina Note' : `Nota ${target.noteIndex}/${target.noteTotal}`;
   }
 
   applySwipeVisual(dx, dy);
   ev.preventDefault();
-}
-
-async function loadDescriptorDirect(target) {
-  if (!target?.key) return false;
-  try {
-    await openDb();
-    const record = await getRecord(target.key);
-    session.storageReads++;
-    currentDate = target.date || currentDate;
-    currentPageKind = target.kind || 'agenda';
-    currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode || plannerModeFromKind(target.kind) || 'daily') : currentPlannerMode;
-    currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
-    currentNoteIndex = target.kind === 'note' ? (Number(target.noteIndex) || 1) : 0;
-    currentNoteTotal = target.kind === 'note' ? Math.max(currentNoteIndex, Number(target.noteTotal) || currentNoteIndex) : 0;
-    if (target.kind === 'free-note') {
-      currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
-      currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || currentFreeNoteTotal || 1);
-      freeNoteCountLoaded = true;
-    }
-    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
-    images = imagesFromRecord(record);
-    selectedImageId = null;
-    const previousPaperColor = pageStyle.color;
-    pageStyle = target.kind === 'planner-timetable'
-      ? normalizePageStyle({ color:'black', template:'blank' })
-      : target.kind === 'free-note' && !record
-        ? normalizePageStyle({ color:globalPageStyle.color, template:'ruled' })
-        : pageStyleFromRecord(record);
-    applyPageStyle();
-    updatePageStyleUi();
-    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
-    resetUndoHistory();
-    dirty = false;
-    await migrateLegacyErasersOnCurrentPage();
-    updateHeader();
-    resizeCanvas();
-    renderAll();
-    renderImages();
-    updateToolUi();
-    updateStyleUi();
-    return true;
-  } catch (err) {
-    session.storageErrors++;
-    console.warn('Ripristino pagina dopo Rubrica non riuscito', err);
-    return false;
-  }
-}
-
-function applyRubricaPage(page, letter = currentRubricaLetter, pageIndex = 1, pageTotal = 1) {
-  currentRubricaLetter = String(letter || 'A').toUpperCase();
-  currentRubricaPageIndex = Math.max(1, Number(pageIndex ?? page?.pageIndex) || 1);
-  currentRubricaPageTotal = Math.max(currentRubricaPageIndex, Number(pageTotal ?? page?.pageTotal) || 1);
-  strokes = Array.isArray(page?.strokes) ? page.strokes.map((item)=>globalThis.structuredClone ? globalThis.structuredClone(item) : JSON.parse(JSON.stringify(item))) : [];
-  images = Array.isArray(page?.images) ? page.images.map(normalizeImageObject).filter(Boolean) : [];
-  selectedImageId = null;
-  const requestedStyle = normalizePageStyle(page?.pageStyle || { color:'yellow', template:'ruled' });
-  pageStyle = { ...requestedStyle, template:'ruled' };
-  applyPageStyle();
-  updatePageStyleUi();
-  resetUndoHistory();
-  dirty = false;
-  lassoTool?.clearSelection?.();
-  updateHeader();
-  resizeCanvas();
-  renderAll();
-  renderImages();
-  updateToolUi();
-  updateStyleUi();
-  passwordVault?.noteActivity?.();
-}
-
-async function enterRubricaFromVault(payload = {}) {
-  if (!passwordVault?.isUnlocked?.() || rubricaPageSwitchBusy) return false;
-  if (currentPageKind === 'rubrica') return true;
-  rubricaPageSwitchBusy = true;
-  pageTurning = true;
-  cancelPendingSave();
-  try {
-    const oldDescriptor = pageDescriptor();
-    const oldStrokes = strokes;
-    const oldImages = images;
-    const oldStyle = { ...pageStyle };
-    const saveOk = dirty ? await persistSnapshot(oldDescriptor, oldStrokes, false, oldStyle, oldImages) : true;
-    if (!saveOk) {
-      statusLabel.textContent = 'salvataggio pagina non riuscito';
-      return false;
-    }
-    rubricaReturnDescriptor = { ...oldDescriptor };
-    currentPageKind = 'rubrica';
-    currentNoteIndex = 0;
-    currentNoteTotal = 0;
-    currentRubricaLetter = String(payload.letter || 'A').toUpperCase();
-    if (!/^[A-Z]$/.test(currentRubricaLetter)) currentRubricaLetter = 'A';
-    currentRubricaPageIndex = Math.max(1, Number(payload.pageIndex) || 1);
-    currentRubricaPageTotal = Math.max(currentRubricaPageIndex, Number(payload.pageTotal) || passwordVault.getPageCount?.(currentRubricaLetter) || 1);
-    const page = payload.page || passwordVault.getPage?.(currentRubricaLetter, currentRubricaPageIndex) || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
-    if (activeTool !== 'pen') {
-      deactivatePageTool('rubrica-enter');
-      selectTool('pen');
-    }
-    applyRubricaPage(page, currentRubricaLetter, currentRubricaPageIndex, currentRubricaPageTotal);
-    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · ${currentRubricaPageIndex}/${currentRubricaPageTotal}`;
-    return true;
-  } finally {
-    pageTurning = false;
-    rubricaPageSwitchBusy = false;
-  }
-}
-
-async function flushRubricaCurrentPage(updateStatus = false) {
-  if (currentPageKind !== 'rubrica' || !passwordVault?.isUnlocked?.()) return true;
-  if (drawing) finalizeStroke('rubrica-flush');
-  cancelPendingSave();
-  const descriptor = pageDescriptor();
-  const snapshot = strokes;
-  const imageSnapshot = images;
-  const ok = await persistSnapshot(descriptor, snapshot, updateStatus, { ...pageStyle, template:'ruled' }, imageSnapshot);
-  if (ok && currentPageKind === 'rubrica' && currentRubricaLetter === descriptor.rubricaLetter && currentRubricaPageIndex === descriptor.rubricaPageIndex && strokes === snapshot) dirty = false;
-  return ok;
-}
-
-async function switchRubricaLetter(letter) {
-  const targetLetter = String(letter || '').toUpperCase();
-  if (currentPageKind !== 'rubrica' || !/^[A-Z]$/.test(targetLetter) || targetLetter === currentRubricaLetter || rubricaPageSwitchBusy) return;
-  rubricaPageSwitchBusy = true;
-  pageTurning = true;
-  try {
-    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-tab');
-    const saved = dirty ? await flushRubricaCurrentPage(false) : true;
-    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return; }
-    currentRubricaPageIndex = 1;
-    currentRubricaPageTotal = Math.max(1, passwordVault?.getPageCount?.(targetLetter) || 1);
-    const page = passwordVault?.setActiveLetter?.(targetLetter, 1) || passwordVault?.getPage?.(targetLetter, 1);
-    applyRubricaPage(page || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } }, targetLetter, 1, currentRubricaPageTotal);
-    statusLabel.textContent = `Rubrica · ${targetLetter} · 1/${currentRubricaPageTotal}`;
-  } finally {
-    pageTurning = false;
-    rubricaPageSwitchBusy = false;
-  }
-}
-
-async function switchRubricaPage(direction) {
-  if (currentPageKind !== 'rubrica' || !passwordVault?.isUnlocked?.() || rubricaPageSwitchBusy) return false;
-  const step = direction > 0 ? 1 : -1;
-  if (step < 0 && currentRubricaPageIndex <= 1) {
-    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · 1/${currentRubricaPageTotal}`;
-    return false;
-  }
-  rubricaPageSwitchBusy = true;
-  pageTurning = true;
-  try {
-    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-page-swipe');
-    const saved = await flushRubricaCurrentPage(false);
-    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return false; }
-
-    let targetIndex = currentRubricaPageIndex + step;
-    let total = Math.max(1, passwordVault?.getPageCount?.(currentRubricaLetter) || currentRubricaPageTotal || 1);
-    if (step > 0 && targetIndex > total) {
-      // Swipe destra -> sinistra sull'ultima scheda: crea e persiste subito una nuova scheda vuota.
-      targetIndex = total + 1;
-      const created = await passwordVault.savePage(
-        currentRubricaLetter,
-        targetIndex,
-        [],
-        [],
-        { color:pageStyle?.color || 'yellow', template:'ruled' },
-        true
-      );
-      if (!created) return false;
-      total = Math.max(targetIndex, passwordVault?.getPageCount?.(currentRubricaLetter) || targetIndex);
-    }
-    targetIndex = Math.max(1, Math.min(total, targetIndex));
-    const page = passwordVault?.setActiveLetter?.(currentRubricaLetter, targetIndex)
-      || passwordVault?.getPage?.(currentRubricaLetter, targetIndex)
-      || { strokes:[], images:[], pageStyle:{ color:'yellow', template:'ruled' } };
-    applyRubricaPage(page, currentRubricaLetter, targetIndex, total);
-    statusLabel.textContent = `Rubrica · ${currentRubricaLetter} · ${targetIndex}/${total}`;
-    return true;
-  } finally {
-    pageTurning = false;
-    rubricaPageSwitchBusy = false;
-  }
-}
-
-function startRubricaTouchSwipe(touch) {
-  rubricaTouchSwipe = {
-    id:touch.identifier,
-    startX:touch.clientX,
-    startY:touch.clientY,
-    lastX:touch.clientX,
-    lastY:touch.clientY,
-    startedAt:performance.now(),
-    lastAt:performance.now(),
-    horizontal:false
-  };
-}
-
-function moveRubricaTouchSwipe(touch, ev) {
-  if (!rubricaTouchSwipe || touch.identifier !== rubricaTouchSwipe.id || pageTurning) return;
-  const dx = touch.clientX - rubricaTouchSwipe.startX;
-  const dy = touch.clientY - rubricaTouchSwipe.startY;
-  rubricaTouchSwipe.lastX = touch.clientX;
-  rubricaTouchSwipe.lastY = touch.clientY;
-  rubricaTouchSwipe.lastAt = performance.now();
-  if (!rubricaTouchSwipe.horizontal && Math.hypot(dx,dy) >= 12 && Math.abs(dx) > Math.abs(dy) * 1.2) rubricaTouchSwipe.horizontal = true;
-  if (rubricaTouchSwipe.horizontal) ev.preventDefault();
-}
-
-function finishRubricaTouchSwipe(touch, cancelled = false) {
-  const swipe = rubricaTouchSwipe;
-  rubricaTouchSwipe = null;
-  if (!swipe || cancelled || !touch || touch.identifier !== swipe.id || !swipe.horizontal) return false;
-  const dx = touch.clientX - swipe.startX;
-  const dy = touch.clientY - swipe.startY;
-  if (Math.abs(dx) <= Math.abs(dy) * 1.15) return false;
-  const elapsed = Math.max(1, performance.now() - swipe.startedAt);
-  const velocity = Math.abs(dx) / elapsed;
-  const threshold = Math.max(54, paper.getBoundingClientRect().width * 0.10);
-  if (Math.abs(dx) < threshold && velocity < .42) return false;
-  void switchRubricaPage(dx < 0 ? 1 : -1);
-  return true;
-}
-
-async function restoreAfterRubrica(reason = 'manual') {
-  if (currentPageKind !== 'rubrica') return;
-  const target = rubricaReturnDescriptor || pageDescriptor(currentDate, 'agenda', 0, 0);
-  rubricaReturnDescriptor = null;
-  rubricaImageClipboard = null;
-  currentPageKind = 'agenda'; // evita che eventuali routine UI vedano ancora la pagina privata durante il load
-  const ok = await loadDescriptorDirect(target);
-  statusLabel.textContent = reason === 'timeout' ? 'Rubrica salvata e bloccata automaticamente' : (ok ? 'Rubrica salvata' : 'Rubrica chiusa');
-}
-
-async function exitRubrica() {
-  if (currentPageKind !== 'rubrica' || rubricaExitInProgress) return;
-  rubricaExitInProgress = true;
-  pageTurning = true;
-  try {
-    if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-exit');
-    const saved = await flushRubricaCurrentPage(false);
-    if (!saved) { statusLabel.textContent = 'salvataggio Rubrica non riuscito'; return; }
-    await passwordVault?.lock?.('manual');
-    await restoreAfterRubrica('manual');
-  } finally {
-    pageTurning = false;
-    rubricaExitInProgress = false;
-  }
-}
-
-async function toggleFreeNotes() {
-  if (!ready || drawing || pageTurning || pageStyleBulkBusy || storageBusy) return;
-  const leavingFreeNotes = currentPageKind === 'free-note';
-  if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('note-libere');
-  if (activeTool !== 'pen') {
-    deactivatePageTool();
-    selectTool('pen');
-  }
-  pageTurning = true;
-  closeStylePanel();
-  closeShapePalette();
-  cancelPendingSave();
-  const oldDescriptor = pageDescriptor();
-  const saveOk = dirty ? await persistSnapshot(oldDescriptor, strokes, false, pageStyle, images) : true;
-  if (!saveOk) {
-    pageTurning = false;
-    statusLabel.textContent = 'salvataggio non riuscito';
-    if (dirty) scheduleSave();
-    return;
-  }
-
-  try {
-    await openDb();
-    let target;
-    if (leavingFreeNotes) {
-      target = pageDescriptor(currentDate, 'agenda', 0, 0);
-    } else {
-      await ensureFreeNoteCount(true);
-      target = freeNoteDescriptor(currentFreeNoteIndex, currentFreeNoteTotal);
-    }
-    const record = await getRecord(target.key);
-    session.storageReads++;
-
-    currentPageKind = target.kind;
-    currentNoteIndex = 0;
-    currentNoteTotal = 0;
-    if (target.kind === 'free-note') {
-      currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
-      currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || 1);
-      freeNoteCountLoaded = true;
-    }
-    strokes = Array.isArray(record?.strokes) ? record.strokes : [];
-    images = imagesFromRecord(record);
-    selectedImageId = null;
-    const previousPaperColor = pageStyle.color;
-    pageStyle = target.kind === 'free-note' && !record
-      ? normalizePageStyle({ color:globalPageStyle.color, template:'ruled' })
-      : pageStyleFromRecord(record);
-    applyPageStyle();
-    updatePageStyleUi();
-    if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
-    resetUndoHistory();
-    dirty = false;
-    await migrateLegacyErasersOnCurrentPage();
-    updateHeader();
-    resizeCanvas();
-    renderAll();
-    renderImages();
-    statusLabel.textContent = target.kind === 'free-note'
-      ? ((strokes.length || images.length) ? `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal}` : `Nota libera ${currentFreeNoteIndex}/${currentFreeNoteTotal} · nuova`)
-      : ((strokes.length || images.length) ? 'Agenda caricata' : 'pagina Agenda');
-  } catch (err) {
-    session.storageErrors++;
-    console.warn('Apertura Note libere non riuscita', err);
-    statusLabel.textContent = 'Note libere non disponibili';
-  } finally {
-    pageTurning = false;
-    updateToolUi();
-  }
 }
 
 async function switchPlannerMode(mode) {
@@ -7019,7 +9674,7 @@ async function switchPlannerMode(mode) {
     return;
   }
   const target = pageDescriptor(currentDate, plannerKind(mode), 0, 0);
-  statusLabel.textContent = `apro Planner ${mode}`;
+  statusLabel.textContent = mode === 'daily' ? 'apro Obiettivi della lezione' : `apro Planner ${mode}`;
   try {
     await openDb();
     const record = await getRecord(target.key);
@@ -7043,7 +9698,7 @@ async function switchPlannerMode(mode) {
     resizeCanvas();
     renderAll();
     renderImages();
-    statusLabel.textContent = (strokes.length || images.length) ? `Planner ${mode} caricato` : `Planner ${mode}`;
+    statusLabel.textContent = mode === 'daily' ? ((strokes.length || images.length) ? 'Obiettivi della lezione caricati' : 'Obiettivi della lezione') : ((strokes.length || images.length) ? `Planner ${mode} caricato` : `Planner ${mode}`);
   } catch (err) {
     session.storageErrors++;
     console.warn('Cambio modello Planner non riuscito', err);
@@ -7093,13 +9748,8 @@ async function commitPageTurn() {
   const target = swipe.target;
   const enteringTimetable = oldDescriptor.kind !== 'planner-timetable' && target.kind === 'planner-timetable';
   const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
-  // 0.1.103-fix1 — quando si lascia una scheda Orario settimanale, persiste
-  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.103.
-  const mustPersistOldPage = dirty || oldDescriptor.kind === 'planner-timetable';
-  const savePromise = mustPersistOldPage
-    ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages)
-    : Promise.resolve(true);
-  const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal) : Promise.resolve(true);
+  const savePromise = dirty ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages) : Promise.resolve(true);
+  const metaPromise = target.createNote ? persistNotesCount(target.date, target.noteTotal, target.lessonId || '', target.lessonBoardIndex || 0) : Promise.resolve(true);
   const duration = swipe.axis === 'y' ? NOTE_TURN_MS : PAGE_TURN_MS;
 
   if (swipe.axis === 'x') {
@@ -7123,40 +9773,32 @@ async function commitPageTurn() {
   const [targetPage, , saveOk, metaOk] = await Promise.all([
     targetPromise, waitMs(duration + 20), savePromise, metaPromise
   ]);
-  if ((mustPersistOldPage && !saveOk) || !metaOk) {
+  if ((dirty && !saveOk) || !metaOk) {
     resetTurnStyles();
     removePreview();
     pageSwipe = null;
     pageTurning = false;
     statusLabel.textContent = !metaOk ? 'creazione nota non riuscita' : 'salvataggio non riuscito';
-    if (mustPersistOldPage) scheduleSave();
+    if (dirty) scheduleSave();
     return;
-  }
-  if (target.createFreeNote) {
-    const freeCreateOk = await persistSnapshot(
-      target,
-      Array.isArray(targetPage?.strokes) ? targetPage.strokes : [],
-      false,
-      targetPage?.pageStyle ?? { color:globalPageStyle.color, template:'ruled' },
-      Array.isArray(targetPage?.images) ? targetPage.images : []
-    );
-    if (!freeCreateOk) {
-      resetTurnStyles();
-      removePreview();
-      pageSwipe = null;
-      pageTurning = false;
-      statusLabel.textContent = 'creazione Nota libera non riuscita';
-      return;
-    }
   }
 
   currentDate = target.date;
   if (target.kind === 'agenda') calendarViewDate = target.date;
   currentPageKind = target.kind;
+  if (target.kind === 'agenda' && activeLesson?.id) {
+    currentLessonBoardIndex = Math.max(1, Number(target.lessonBoardIndex) || currentLessonBoardIndex);
+    if (target.createLessonBoard || currentLessonBoardIndex > Number(activeLesson.boardCount || 1)) {
+      activeLesson.boardCount = currentLessonBoardIndex;
+      saveActiveLesson({ touch:true });
+    } else {
+      saveActiveLesson();
+    }
+  }
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable && isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
-  if (enteringTimetable) activeTool = 'pen';
+  if (enteringTimetable) { activeTool = 'pen'; lassoSessionArmed = false; }
   if (enteringTimetable) {
     cancelShapeGesture();
     if (shapePalette) shapePalette.hidden = true;
@@ -7166,20 +9808,16 @@ async function commitPageTurn() {
   }
   currentNoteIndex = target.kind === 'note' ? target.noteIndex : 0;
   currentNoteTotal = target.kind === 'note' ? target.noteTotal : 0;
-  if (target.kind === 'free-note') {
-    currentFreeNoteIndex = Math.max(1, Number(target.freeNoteIndex) || 1);
-    currentFreeNoteTotal = Math.max(currentFreeNoteIndex, Number(target.freeNoteTotal) || currentFreeNoteTotal || 1);
-    freeNoteCountLoaded = true;
-  }
+  if (activeLesson?.id && (target.kind === 'agenda' || target.kind === 'note' || target.kind === 'planner-daily' || target.kind === 'planner-timetable')) saveActiveLesson({ touch:false });
   strokes = Array.isArray(targetPage?.strokes) ? targetPage.strokes : [];
   images = Array.isArray(targetPage?.images) ? targetPage.images.map(normalizeImageObject).filter(Boolean) : [];
   selectedImageId = null;
   const previousPaperColor = pageStyle.color;
   pageStyle = target.kind === 'planner-timetable'
     ? normalizePageStyle({ color:'black', template:'blank' })
-    : target.kind === 'free-note'
-      ? normalizePageStyle(targetPage?.pageStyle ?? { color:globalPageStyle.color, template:'ruled' })
-      : normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
+    : target.kind === 'planner-daily' && activeLesson?.id
+      ? normalizePageStyle({ color:oldPageStyle.color, template:'blank' })
+      : pageStyleForDescriptor(targetPage, target);
   applyPageStyle();
   updatePageStyleUi();
   if (pageStyle.color !== previousPaperColor) applyToolDefaultsForPaper(pageStyle.color);
@@ -7201,12 +9839,23 @@ async function commitPageTurn() {
   pageSwipe = null;
   if (swipe.axis === 'x') {
     session.pageTurns++;
-    await ensureNotesCount(currentDate);
+    // 0.1.30: ogni pagina Note mantiene il proprio conteggio di segmenti verticali.
+    currentNoteTotal = activeLesson?.id
+      ? await ensureNotesCount(currentDate, activeLesson.id, currentLessonBoardIndex)
+      : await ensureNotesCount(currentDate, '', 0);
   } else {
     session.noteTurns++;
   }
   pageTurning = false;
-  statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : (currentPageKind === 'free-note' ? 'nota libera nuova' : currentPageKind === 'note' ? 'nota nuova' : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
+  if (target.kind === 'agenda' && activeLesson?.id) {
+    const returnPosition = target.continuousScrollPosition || {
+      segment:Math.max(1, Number(target.lessonBoardIndex) || Number(activeLesson.lastScrollSegment) || 1),
+      offset:Math.max(0, Math.min(.999999, Number(activeLesson.lastScrollOffset) || 0))
+    };
+    await continuousActivate({ segmentIndex:returnPosition.segment, offset:returnPosition.offset, preserveCache:true });
+    restoreAgendaInteractiveTools('planner-return-continuous');
+  }
+  statusLabel.textContent = (strokes.length || images.length) ? 'pagina caricata' : (currentPageKind === 'note' ? (activeLesson?.id ? 'continuazione pagina Note' : 'nota nuova') : isPlannerKind() ? `planner ${currentPlannerMode}` : 'pagina nuova');
 }
 
 function endPageSwipe(ev, cancelled = false) {
@@ -7236,7 +9885,7 @@ function endPageSwipe(ev, cancelled = false) {
 }
 
 
-// 0.1.21a — gesture pagina affidate ai Touch Events nativi per il dito.
+// 0.1.32a — gesture pagina affidate ai Touch Events nativi per il dito.
 // La Pencil continua a usare esclusivamente Pointer Events. Questo evita che Safari/iPadOS
 // perda o interrompa una sequenza verticale prima che il Planner venga agganciato.
 function findNativeTouch(list, identifier) {
@@ -7257,26 +9906,6 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
     preventDefault: () => originalEvent.preventDefault(),
     stopPropagation: () => originalEvent.stopPropagation?.()
   };
-}
-
-// 0.1.103 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
-// i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
-// continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
-function lassoMixedPointerProxy(pointerEvent) {
-  return {
-    pointerId: NATIVE_LASSO_TOUCH_POINTER_ID,
-    pointerType: String(pointerEvent?.pointerType || 'touch'),
-    clientX: pointerEvent.clientX,
-    clientY: pointerEvent.clientY,
-    target: pointerEvent.target,
-    preventDefault: () => pointerEvent.preventDefault?.(),
-    stopPropagation: () => pointerEvent.stopPropagation?.()
-  };
-}
-
-function isLassoMixedPointerCandidate(ev) {
-  const type = String(ev?.pointerType || '').toLowerCase();
-  return (type === 'pen' || type === 'touch') && ev?.isPrimary !== false;
 }
 
 // 0.1.86 — Lazo intercettato a livello Window in capture phase.
@@ -7313,7 +9942,16 @@ function lassoBlockedStatus() {
   return 'lazo · input temporaneamente non disponibile';
 }
 
+function updateLassoGestureStatus(prefix = 'lazo · contorno in corso') {
+  const count = Number(lassoTool?.getGesturePointCount?.() || 0);
+  const suffix = `${count} ${count === 1 ? 'punto' : 'punti'} · torna al punto iniziale`;
+  statusLabel.textContent = `${prefix} · ${suffix}`;
+  if (lassoHint) lassoHint.textContent = `Contorno in corso · ${suffix}`;
+}
+
 function handleLassoGlobalPointerDown(ev, captureElement = paper) {
+  // Nel foglio continuo il dito è riservato allo scroll; il Lazo usa Pencil/mouse.
+  if (continuousLessonActive && currentPageKind === 'agenda' && ev.pointerType === 'touch') return false;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed() || isLassoUiControlTarget(ev.target)) return false;
   if (ev.pointerType === 'mouse' && ev.button !== 0) return false;
@@ -7353,8 +9991,7 @@ function handleLassoGlobalPointerDown(ev, captureElement = paper) {
     lassoPointerCaptureElement = paper || canvas || null;
     try { lassoPointerCaptureElement?.setPointerCapture?.(ev.pointerId); } catch {}
   }
-  statusLabel.textContent = 'lazo · contorno in corso · torna al punto iniziale';
-  if (lassoHint) lassoHint.textContent = 'Contorno in corso · torna al punto iniziale';
+  updateLassoGestureStatus();
   ev.preventDefault();
   ev.stopPropagation();
   return true;
@@ -7363,20 +10000,6 @@ function handleLassoGlobalPointerDown(ev, captureElement = paper) {
 function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
-
-  // 0.1.103 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.103 questi campioni venivano scartati perché il canale
-  // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
-  // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
-  // già aperto senza cambiare il pointerId logico del controller.
-  if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
-    lassoLastTouch = { clientX: ev.clientX, clientY: ev.clientY, target: ev.target };
-    lassoTool?.handlePointerMove?.(lassoMixedPointerProxy(ev));
-    ev.preventDefault();
-    ev.stopPropagation();
-    return true;
-  }
-
   if (lassoPointerId == null && lassoTouchId == null && !isLassoUiControlTarget(ev.target)) {
     const penIsDown = ev.pointerType === 'pen' && (ev.pressure > 0 || (ev.buttons & 1) === 1);
     const mouseIsDown = ev.pointerType === 'mouse' && (ev.buttons & 1) === 1;
@@ -7391,6 +10014,7 @@ function handleLassoGlobalPointerMove(ev) {
     return true;
   }
   lassoTool?.handlePointerMove?.(ev);
+  updateLassoGestureStatus();
   ev.preventDefault();
   ev.stopPropagation();
   return true;
@@ -7399,20 +10023,6 @@ function handleLassoGlobalPointerMove(ev) {
 function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
-
-  // 0.1.103 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
-  // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
-  // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
-  if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
-    lassoTouchId = null;
-    lassoLastTouch = null;
-    lassoTool?.handlePointerUp?.(lassoMixedPointerProxy(ev), cancelled);
-    voiceScript?.flushIfIdle?.();
-    ev.preventDefault();
-    ev.stopPropagation();
-    return true;
-  }
-
   if (lassoPointerId == null || ev.pointerId !== lassoPointerId) return true;
   const id = lassoPointerId;
   lassoPointerId = null;
@@ -7433,6 +10043,9 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
 // Fallback Touch nativo, anch'esso su Window: copre i percorsi Safari/iPadOS
 // nei quali il gesto lungo a dito/Pencil di compatibilità non raggiunge il canvas.
 function handleLassoWindowTouchStart(ev, directSurface = false) {
+  // 0.1.34 — nel foglio continuo il dito è sempre riservato allo scroll.
+  // Il Lazo resta disponibile con Apple Pencil/Pointer senza catturare Touch nativi.
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed() || isLassoUiControlTarget(ev.target)) return;
   if (lassoHint) lassoHint.textContent = 'Contatto Touch ricevuto · avvio Lazo';
@@ -7453,8 +10066,7 @@ function handleLassoWindowTouchStart(ev, directSurface = false) {
   if (handled) {
     lassoTouchId = touch.identifier;
     lassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
-    statusLabel.textContent = 'lazo · contorno in corso · torna al punto iniziale';
-    if (lassoHint) lassoHint.textContent = 'Contorno in corso · torna al punto iniziale';
+    updateLassoGestureStatus();
   } else {
     statusLabel.textContent = 'lazo · inizia nell’area scrivibile';
     if (lassoHint) lassoHint.textContent = 'Inizia nell’area scrivibile';
@@ -7464,21 +10076,9 @@ function handleLassoWindowTouchStart(ev, directSurface = false) {
 }
 
 function handleLassoWindowTouchMove(ev, directSurface = false) {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
-
-  // 0.1.103 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
-  // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
-  // logico già aperto nel controller Lazo.
-  if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
-    const touch = ev.touches[0];
-    lassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
-    lassoTool?.handlePointerMove?.(nativeTouchProxy(touch, ev, lassoPointerId));
-    ev.preventDefault();
-    ev.stopPropagation();
-    return;
-  }
-
   if (lassoTouchId == null && lassoPointerId == null && ev.touches?.length === 1 && !isLassoUiControlTarget(ev.target)) {
     if (lassoHint) lassoHint.textContent = 'Touch recuperato dal movimento';
     handleLassoWindowTouchStart(ev, directSurface);
@@ -7489,35 +10089,16 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (touch) {
     lassoLastTouch = { clientX: touch.clientX, clientY: touch.clientY, target: ev.target };
     lassoTool?.handlePointerMove?.(nativeTouchProxy(touch, ev, NATIVE_LASSO_TOUCH_POINTER_ID));
+    updateLassoGestureStatus();
   }
   ev.preventDefault();
   ev.stopPropagation();
 }
 
 function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
-  if (!isLassoUiArmed()) return;
-
-  // 0.1.103 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
-  if (lassoTouchId == null && lassoPointerId != null) {
-    const id = lassoPointerId;
-    const ended = ev.changedTouches?.[0] || null;
-    const fallback = lassoLastTouch;
-    lassoPointerId = null;
-    lassoLastTouch = null;
-    const captureElement = lassoPointerCaptureElement;
-    lassoPointerCaptureElement = null;
-    try { if (captureElement?.hasPointerCapture?.(id)) captureElement.releasePointerCapture(id); } catch {}
-    if (ended || fallback) {
-      lassoTool?.handlePointerUp?.(nativeTouchProxy(ended || fallback, ev, id), cancelled);
-      voiceScript?.flushIfIdle?.();
-    }
-    ev.preventDefault();
-    ev.stopPropagation();
-    return;
-  }
-
-  if (lassoTouchId == null) return;
+  if (!isLassoUiArmed() || lassoTouchId == null) return;
   const ended = findNativeTouch(ev.changedTouches, lassoTouchId);
   const fallback = lassoLastTouch;
   lassoTouchId = null;
@@ -7531,12 +10112,31 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
 }
 
 function handlePaperTouchStart(ev) {
-  if (activeTool === 'shape' || activeTool === 'ruler') { ev.preventDefault(); return; }
-  // 0.1.86: il Lazo viene catturato a livello Window prima dei gesti pagina.
-  // Il listener del paper non deve duplicare o reinterpretare quel contatto.
-  if (isLassoUiArmed()) return;
   if (!ready || drawing || pageTurning || pageStyleBulkBusy || reportPanel.hidden === false) return;
   if (ev.touches.length !== 1) return;
+  if (isUiControlTarget(ev.target)) return;
+  if (!paper.contains(ev.target)) return;
+
+  // 0.1.36 — il dito sul righello manipola il righello; fuori dal righello
+  // conserva la semantica di scroll/navigazione. La Pencil non entra mai qui.
+  if (rulerTool?.beginTouch?.(ev.touches[0])) {
+    if (continuousLessonActive) continuousStopMomentum();
+    ev.preventDefault();
+    return;
+  }
+
+  // 0.1.34 — nel foglio continuo il dito ha una semantica unica e prevedibile:
+  // scroll verticale. Vale anche quando Lazo, Figure o Voce sono armati.
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+    if (performance.now() - lastPenPointerDownAt < 120) return;
+    continuousBeginTouchScroll(ev.touches[0]);
+    ev.preventDefault();
+    return;
+  }
+
+  if (activeTool === 'shape') { ev.preventDefault(); return; }
+  // Fuori dal foglio continuo il Lazo conserva il fallback Touch storico.
+  if (isLassoUiArmed()) return;
   if (performance.now() - lastVoicePlacementTouchAt < 500) { ev.preventDefault(); return; }
   if (activeTool === 'voice') {
     const touch = ev.touches[0];
@@ -7544,8 +10144,6 @@ function handlePaperTouchStart(ev) {
     ev.preventDefault();
     return;
   }
-  if (isUiControlTarget(ev.target)) return;
-  if (!paper.contains(ev.target)) return;
 
   // Protezione: se iPadOS producesse anche un touch compatibility-event subito dopo
   // Apple Pencil, non deve mai essere interpretato come gesto di navigazione.
@@ -7553,39 +10151,53 @@ function handlePaperTouchStart(ev) {
 
   const touch = ev.touches[0];
   nativeTouchGestureId = touch.identifier;
-  if (currentPageKind === 'rubrica') {
-    startRubricaTouchSwipe(touch);
-    return;
-  }
   startPageSwipe(nativeTouchProxy(touch, ev));
   if (pageSwipe) pageSwipe.nativeTouch = true;
 }
 
 function handlePaperTouchMove(ev) {
-  if (isLassoUiArmed()) return;
-  if (nativeTouchGestureId == null || pageTurning) return;
-  const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
-  if (!touch) return;
-  if (currentPageKind === 'rubrica' && rubricaTouchSwipe) {
-    moveRubricaTouchSwipe(touch, ev);
+  if (rulerTool?.isTouching?.()) {
+    const touch = ev.touches?.[0];
+    if (touch && rulerTool.moveTouch(touch)) { ev.preventDefault(); return; }
+  }
+  if (continuousTouch && continuousLessonActive && currentPageKind === 'agenda') {
+    const touch = findNativeTouch(ev.touches, continuousTouch.id);
+    if (!touch) return;
+    continuousMoveTouchScroll(touch);
+    ev.preventDefault();
     return;
   }
-  if (!pageSwipe || !pageSwipe.nativeTouch) return;
+  if (isLassoUiArmed()) return;
+  if (nativeTouchGestureId == null || !pageSwipe || !pageSwipe.nativeTouch || pageTurning) return;
+  const touch = findNativeTouch(ev.touches, nativeTouchGestureId);
+  if (!touch) return;
   movePageSwipe(nativeTouchProxy(touch, ev));
   if (pageSwipe?.locked) ev.preventDefault();
 }
 
 function handlePaperTouchEnd(ev, cancelled = false) {
+  if (rulerTool?.isTouching?.()) {
+    const ended = ev.changedTouches?.[0] || null;
+    rulerTool.endTouch(ended);
+    ev.preventDefault();
+    return;
+  }
+  if (continuousTouch && continuousLessonActive && currentPageKind === 'agenda') {
+    const ended = findNativeTouch(ev.changedTouches, continuousTouch.id);
+    const fallback = ended || { identifier:continuousTouch.id, clientX:continuousTouch.lastX, clientY:continuousTouch.lastY };
+    const tapTarget = ev.target;
+    const tapX = fallback?.clientX ?? 0;
+    const tapY = fallback?.clientY ?? 0;
+    const result = continuousEndTouchScroll(fallback, cancelled);
+    if (!cancelled && result.handled && !result.moved) registerPageDoubleTap(tapTarget, tapX, tapY);
+    ev.preventDefault();
+    return;
+  }
   if (isLassoUiArmed()) return;
   if (nativeTouchGestureId == null) return;
   const ended = findNativeTouch(ev.changedTouches, nativeTouchGestureId);
   if (!ended && !cancelled) return;
   nativeTouchGestureId = null;
-  if (currentPageKind === 'rubrica' && rubricaTouchSwipe) {
-    const committed = finishRubricaTouchSwipe(ended, cancelled);
-    if (committed || cancelled) ev.preventDefault();
-    return;
-  }
   if (!pageSwipe?.nativeTouch) return;
   const wasSwipeLocked = Boolean(pageSwipe.locked);
   const tapTarget = ev.target;
@@ -7621,16 +10233,20 @@ function activateUiFromDirectContact(button, ev, source = 'pointerdown') {
   ev?.stopPropagation?.();
 }
 
-function registerEraserTriplePenTap(button, ev) {
-  if (button !== eraserToolButton || ev?.pointerType !== 'pen') return false;
+function registerEraserTripleToolbarActivation(button, ev, source = 'pointer') {
+  if (button !== eraserToolButton) return false;
+  const pointerType = String(ev?.pointerType || source || 'unknown');
+  if (!['pen','touch','mouse','click'].includes(pointerType) && source !== 'click') return false;
   const now = performance.now();
-  const key = currentPageKey();
+  const key = continuousLessonActive && activeLesson?.id
+    ? `lesson::${activeLesson.id}::continuous-sheet`
+    : currentPageKey();
   if (eraserPenTapPageKey !== key) {
     eraserPenTapPageKey = key;
     eraserPenTapTimes = [];
   }
   const last = eraserPenTapTimes.at(-1);
-  // Scarta eventuali pointerdown duplicati generati dalla compatibilità Safari.
+  // Scarta duplicati troppo ravvicinati ma conserva il normale ritmo di un triple-click mouse.
   if (Number.isFinite(last) && now - last < ERASER_TRIPLE_TAP_MIN_INTERVAL_MS) return false;
   eraserPenTapTimes = eraserPenTapTimes.filter((at) => now - at <= ERASER_TRIPLE_TAP_WINDOW_MS);
   eraserPenTapTimes.push(now);
@@ -7647,7 +10263,7 @@ function bindDirectUiButton(button) {
   button.addEventListener('pointerdown', (ev) => {
     if (ev.pointerType === 'mouse') return;
     pencilUiPointers.set(ev.pointerId, { button, startedAt: performance.now() });
-    registerEraserTriplePenTap(button, ev);
+    registerEraserTripleToolbarActivation(button, ev, ev.pointerType || 'pointer');
     activateUiFromDirectContact(button, ev, `pointerdown-${ev.pointerType || 'unknown'}`);
   }, { passive: false });
 
@@ -7682,7 +10298,12 @@ lassoTool = initLassoTool({
   hint: lassoHint,
   canvas,
   statusLabel,
-  getPageKey: () => currentPageKey(),
+  getPageKey: () => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      return continuousEnsureViewportToolState()?.key || `lesson::${activeLesson.id}::viewport`;
+    }
+    return currentPageKey();
+  },
   getDescriptor: () => ({ ...pageDescriptor() }),
   getWritableBounds: () => {
     const h = Math.max(1, canvas.clientHeight || rect?.height || 1);
@@ -7691,63 +10312,179 @@ lassoTool = initLassoTool({
       yMax: Math.max(0, Math.min(1, (h - FOOTER_PX) / h))
     };
   },
-  getStrokes: () => strokes,
-  setStrokes: (value) => { strokes = Array.isArray(value) ? value : []; },
-  getImages: () => images,
-  setImages: (value) => { images = Array.isArray(value) ? value : []; },
+  getStrokes: () => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return continuousEnsureViewportToolState()?.strokes || [];
+    return strokes;
+  },
+  setStrokes: (value) => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      const state = continuousEnsureViewportToolState();
+      if (state) state.strokes = Array.isArray(value) ? value : [];
+    } else strokes = Array.isArray(value) ? value : [];
+  },
+  getImages: () => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return continuousEnsureViewportToolState()?.images || [];
+    return images;
+  },
+  setImages: (value) => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) {
+      const state = continuousEnsureViewportToolState();
+      if (state) state.images = Array.isArray(value) ? value : [];
+    } else images = Array.isArray(value) ? value : [];
+  },
   makeStrokeId: () => makeId(),
   makeImageId: () => makeImageId(),
   cloneImage: (image) => cloneImageObject(image),
-  recordStrokeAdded: (descriptor, stroke) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeAdded(descriptor, stroke); },
-  recordStrokeDeleted: (descriptor, strokeId, reason) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordStrokeDeleted(descriptor, strokeId, reason); },
-  recordImageAdded: (descriptor, image, sourcePageKey) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageMetadata(descriptor, 'image.add', image, { reason:'lasso-paste', sourcePageKey }); },
-  recordImageUpdated: (descriptor, image, before) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageMetadata(descriptor, 'image.update', image, { before, reason:'lasso-move' }); },
-  recordImageDeleted: (descriptor, imageId) => { if (pageSyncAllowed(descriptor)) syncFoundation?.recordImageDeleted(descriptor, imageId); },
-  renderAll: () => renderAll(),
-  renderImages: () => renderImages(),
-  rememberUndo: (action) => rememberUndo(action),
+  recordStrokeAdded: (descriptor, stroke) => {
+    if (!(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)) syncFoundation?.recordStrokeAdded(descriptor, stroke);
+  },
+  recordStrokeDeleted: (descriptor, strokeId, reason) => {
+    if (!(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)) syncFoundation?.recordStrokeDeleted(descriptor, strokeId, reason);
+  },
+  recordImageAdded: (descriptor, image, sourcePageKey) => {
+    if (!(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)) syncFoundation?.recordImageMetadata(descriptor, 'image.add', image, { reason:'lasso-paste', sourcePageKey });
+  },
+  recordImageUpdated: (descriptor, image, before) => {
+    if (!(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)) syncFoundation?.recordImageMetadata(descriptor, 'image.update', image, { before, reason:'lasso-move' });
+  },
+  recordImageDeleted: (descriptor, imageId) => {
+    if (!(continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id)) syncFoundation?.recordImageDeleted(descriptor, imageId);
+  },
+  renderAll: () => { if (continuousLessonActive) continuousSetToolPreview(true); renderAll(); },
+  renderImages: () => { if (continuousLessonActive) continuousSetToolPreview(true); renderImages(); },
+  rememberUndo: (action) => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) continuousPendingLassoUndoProxyAction = action;
+    else rememberUndo(action);
+  },
   scheduleSave: () => scheduleSave(),
-  markDirty: () => { dirty = true; }
+  markDirty: () => {
+    if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) continuousCommitViewportToolState('lasso');
+    else dirty = true;
+  }
+});
+
+rulerTool = initRulerTool({
+  overlay:rulerOverlay,
+  angleBadge:rulerAngleBadge,
+  paper,
+  getWritableBounds:() => ({
+    top:Math.max(0, protectedTop),
+    bottom:Math.max(Math.max(0, protectedTop) + 1, (rect?.height || paper?.clientHeight || 1) - FOOTER_PX)
+  }),
+  onStateChange:(next, meta) => {
+    updateToolUi();
+    if (next?.enabled && meta?.reason === 'double-tap-mode') {
+      const labels = { ruler:'righello', protractor:'goniometro', triangle306090:'squadra 30°/60°/90°', triangle4545:'squadra 45°/45°/90°' };
+      statusLabel.textContent = `${labels[next.mode] || 'strumento geometrico'} · ${Math.round(next.angleDeg || 0)}°`;
+    }
+  }
 });
 
 const directUiButtons = [...new Set([
   calendarButton,
-  freeNotesButton,
   ...toolButtons,
+  rulerButton,
   ...shapeChoiceButtons,
-  ...shapeFillButtons,
   undoButton,
   redoButton,
   styleButton,
   ...plannerModeButtons,
   importImageButton, cropImageButton, rotateImageLeftButton, rotateImageRightButton, cutImageButton, pasteImageButton,
   lassoCutButton, lassoPasteButton, lassoClearButton,
-  cancelImageCropButton, applyImageCropButton
+  cancelImageCropButton, applyImageCropButton,
+  ...quickPaperChoices,
+  newLessonButton, closeLessonButton, lessonArchiveButton, lessonSetupStartButton, lessonSetupResumeButton, lessonSetupNewTabButton, lessonSetupOpenTabButton, lessonSetupCloseButton, lessonArchiveCloseButton, lessonSubjectAddButton
 ].filter(Boolean))];
 for (const button of directUiButtons) bindDirectUiButton(button);
-for (const button of rubricaTabButtons) {
-  button.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
-    recentPencilUiActivation.set(button, performance.now());
-    void switchRubricaLetter(button.dataset.rubricaLetter);
+
+// 0.1.25 — Beautify ha un attivatore dedicato e deterministico.
+// Un solo contatto deve produrre SEMPRE feedback immediato e una sola esecuzione,
+// sia con dito, Apple Pencil, mouse o click sintetico Safari.
+let beautifyLastActivationAt = -Infinity;
+function triggerBeautifyCommand(ev, source = 'unknown') {
+  const now = performance.now();
+  if (now - beautifyLastActivationAt < 420) {
+    ev?.preventDefault?.();
+    ev?.stopPropagation?.();
+    return;
+  }
+  beautifyLastActivationAt = now;
+  recentPencilUiActivation.set(beautifyButton, now);
+  if (drawing) finalizeStroke(`beautify-${source}-recovery`);
+  setBeautifyFeedback('Beautify · comando ricevuto', 'busy');
+  ev?.preventDefault?.();
+  ev?.stopPropagation?.();
+  // Microtask: lascia terminare il dispatch del pointer senza dipendere da click.
+  queueMicrotask(() => { void beautifyCurrentBoard(); });
+}
+
+beautifyButton?.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType === 'mouse') return;
+  pencilUiPointers.set(ev.pointerId, { button:beautifyButton, startedAt:performance.now() });
+  triggerBeautifyCommand(ev, `pointerdown-${ev.pointerType || 'unknown'}`);
+}, { passive:false, capture:true });
+beautifyButton?.addEventListener('pointerup', (ev) => {
+  if (!pencilUiPointers.has(ev.pointerId)) return;
+  pencilUiPointers.delete(ev.pointerId);
+  ev.preventDefault();
+  ev.stopPropagation();
+}, { passive:false, capture:true });
+beautifyButton?.addEventListener('pointercancel', (ev) => {
+  pencilUiPointers.delete(ev.pointerId);
+}, { passive:true, capture:true });
+beautifyButton?.addEventListener('touchstart', (ev) => {
+  // Fallback solo se Safari non ha appena consegnato il Pointer Event.
+  if (performance.now() - beautifyLastActivationAt < 420) {
     ev.preventDefault();
     ev.stopPropagation();
-  }, { passive:false });
-  button.addEventListener('click', (ev) => {
+    return;
+  }
+  triggerBeautifyCommand(ev, 'touchstart-fallback');
+}, { passive:false, capture:true });
+beautifyButton?.addEventListener('click', (ev) => {
+  // Mouse/trackpad o click sintetico. I click compatibili dopo Pencil/touch vengono deduplicati.
+  if (performance.now() - beautifyLastActivationAt < 650) {
     ev.preventDefault();
-    if (wasJustActivatedByPencil(button)) return;
-    void switchRubricaLetter(button.dataset.rubricaLetter);
-  });
+    ev.stopPropagation();
+    return;
+  }
+  triggerBeautifyCommand(ev, 'click');
+});
+
+// 0.1.26 — verifica runtime non invasiva dell'hit target Beautify.
+// Non entra mai nel percorso Ink: controlla solo la geometria del footer dopo layout/resize.
+function verifyBeautifyHitTarget() {
+  if (!beautifyButton || !document.body?.contains(beautifyButton)) return;
+  const r = beautifyButton.getBoundingClientRect();
+  if (!(r.width > 0 && r.height > 0)) return;
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  const ok = hit === beautifyButton || beautifyButton.contains(hit);
+  beautifyButton.dataset.hitTargetOk = ok ? 'true' : 'false';
+  if (!ok) {
+    // Self-healing: il gruppo dei comandi rapidi deve prevalere su eventuali elementi decorativi.
+    const actions = beautifyButton.closest('.footer-actions');
+    if (actions instanceof HTMLElement) actions.style.zIndex = '20';
+    beautifyButton.style.zIndex = '21';
+    console.warn('Beautify hit target coperto; elevato automaticamente', hit);
+  }
 }
+requestAnimationFrame(() => requestAnimationFrame(verifyBeautifyHitTarget));
+window.addEventListener('resize', () => requestAnimationFrame(verifyBeautifyHitTarget), { passive:true });
+
+// 0.1.7 — latch sincrono del Lazo sul controllo reale, prima di click/touch compatibili.
+lassoToolButton?.addEventListener('pointerdown', () => { lassoSessionArmed = true; }, { capture:true, passive:true });
+lassoToolButton?.addEventListener('touchstart', () => { lassoSessionArmed = true; }, { capture:true, passive:true });
 
 // 0.1.77 — qualsiasi altro comando UI richiude la finestra Figure.
 document.addEventListener('pointerdown', (ev) => {
   const button = getUiButtonTarget(ev.target);
-  if (!button || button === shapeToolButton || button.matches('[data-shape-type], [data-shape-fill]')) return;
+  if (!button || button === shapeToolButton || button.matches('[data-shape-type]')) return;
   closeShapePalette();
 }, { passive:true, capture:true });
 
-// 0.1.19 — gestione delegata del pannello Stile. Pencil e dito applicano
+// 0.1.20 — gestione delegata del pannello Stile. Pencil e dito applicano
 // l'opzione al pointerdown, risalendo dal target interno al relativo button.
 function handleStylePanelDirectPointer(ev) {
   if (ev.pointerType === 'mouse') return;
@@ -7824,18 +10561,21 @@ initializeShapePaletteIcons();
 // 0.1.50 — Orario settimanale = normale pagina Planner.
 // Nessun router Ink dedicato: tutti i Pointer Events passano dagli stessi handler core dell'Agenda.
 function routeGlobalPointerDown(ev) {
-  if (currentPageKind === 'rubrica') passwordVault?.noteActivity?.();
+  if (ev.target?.closest?.('[data-restore-recovery-action]')) return;
+  if (restoreOperationLocked || backupSnapshotFreeze || ev.target?.closest?.('.backup-snapshot-guard')) { ev.preventDefault(); return; }
   if (isSyncRestorePending() && !isUiControlTarget(ev.target) && ev.pointerType !== 'touch') {
     denyMutationDuringSyncRecovery();
     ev.preventDefault();
     return;
   }
   if (isLassoUiArmed()) {
+    // Strategia Agenda 0.1.93: Window in capture phase è AUTOREVOLE anche
+    // quando il target reale è lo shield. Così un singolo router vede sempre
+    // DOWN/MOVE/UP del gesto prima di canvas, immagini e compatibilità Safari.
     ensureLassoInputShieldRuntime();
     handleLassoGlobalPointerDown(ev, isLassoInputSurfaceTarget(ev.target) ? lassoInputShield : paper);
     return;
   }
-  if (activeTool === 'ruler' && beginRulerGesture(ev)) return;
   if (activeTool === 'voice') { beginVoiceScriptPlacement(ev); return; }
   if (beginShapeGesture(ev)) return;
   handlePointerDown(ev);
@@ -7846,11 +10586,10 @@ function routeGlobalPointerMove(ev) {
     handleLassoGlobalPointerMove(ev);
     return;
   }
-  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture && !rulerGesture) {
+  if (isSyncRestorePending() && ev.pointerType !== 'touch' && !drawing && !shapeGesture) {
     ev.preventDefault();
     return;
   }
-  if (activeTool === 'ruler' && moveRulerGesture(ev)) return;
   if (moveShapeGesture(ev)) return;
   handlePointerMove(ev);
 }
@@ -7860,7 +10599,6 @@ function routeGlobalPointerUp(ev) {
     finishLassoGlobalPointer(ev, false);
     return;
   }
-  if (endRulerGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, false)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerUp(ev);
   voiceScript?.flushIfIdle?.();
@@ -7871,15 +10609,14 @@ function routeGlobalPointerCancel(ev) {
     finishLassoGlobalPointer(ev, true);
     return;
   }
-  if (endRulerGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   if (endShapeGesture(ev, true)) { voiceScript?.flushIfIdle?.(); return; }
   handlePointerCancel(ev);
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.103 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
-// del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
-// shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
+// 0.1.8 — shield mantenuto come seconda rete di sicurezza.
+// Il percorso autorevole è Window capture; se un engine non propaga il gesto
+// come Pointer fino a Window, questi listener diretti restano disponibili.
 function handleLassoShieldPointerDown(ev) {
   if (!ensureLassoInputShieldRuntime()) return;
   // Percorso primario reale: l'evento raggiunge lo shield e il capture resta
@@ -7897,22 +10634,24 @@ function handleLassoShieldPointerUp(ev, cancelled = false) {
   finishLassoGlobalPointer(ev, cancelled);
 }
 function handleLassoShieldTouchStart(ev) {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (!ensureLassoInputShieldRuntime()) return;
   handleLassoWindowTouchStart(ev, true);
 }
 function handleLassoShieldTouchMove(ev) {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (!isLassoUiArmed()) return;
   ensureLassoInputShieldRuntime();
   handleLassoWindowTouchMove(ev, true);
 }
 function handleLassoShieldTouchEnd(ev, cancelled = false) {
+  if (continuousLessonActive && currentPageKind === 'agenda' && activeLesson?.id) return;
   if (!isLassoUiArmed()) return;
   ensureLassoInputShieldRuntime();
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.103 — listener diretti sullo shield mantenuti solo come fallback.
-// Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
+// 0.1.8 — listener DIRETTI sullo shield: fallback iPad/Pencil/dito.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointerup', (ev) => handleLassoShieldPointerUp(ev, false), { passive:false, capture:true });
@@ -7922,12 +10661,21 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.103 — Window capture è il percorso primario iPad/Pencil/dito.
-// Non viene più saltato quando event.target è lo shield.
+// 0.1.8 — Touch Window capture autorevole, come nella strategia Agenda 0.1.93.
+// Gli ID del gesto impediscono doppioni Pointer/Touch compatibili.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
 window.addEventListener('touchend', (ev) => finishLassoWindowTouch(ev, false), { passive:false, capture:true });
 window.addEventListener('touchcancel', (ev) => finishLassoWindowTouch(ev, true), { passive:false, capture:true });
+
+paper.addEventListener('wheel', (ev) => {
+  if (!continuousLessonActive || currentPageKind !== 'agenda' || !activeLesson?.id || drawing || isUiControlTarget(ev.target)) return;
+  continuousStopMomentum();
+  continuousViewport.scrollTop = Math.max(0, continuousViewport.scrollTop + ev.deltaY);
+  continuousEnsureVirtualGrowth(continuousViewport.scrollTop);
+  continuousHandleScroll();
+  ev.preventDefault();
+}, { passive:false });
 
 paper.addEventListener('touchstart', handlePaperTouchStart, { passive: false, capture: true });
 paper.addEventListener('touchmove', handlePaperTouchMove, { passive: false, capture: true });
@@ -7940,7 +10688,7 @@ window.addEventListener('pointerup', routeGlobalPointerUp, { passive: false, cap
 window.addEventListener('pointercancel', routeGlobalPointerCancel, { passive: false, capture: true });
 
 document.addEventListener('touchmove', (ev) => {
-  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .history-detail-body, .audio-library-body')) return;
+  if (ev.target instanceof Element && ev.target.closest('.settings-scroll, .saint-detail-body, .history-detail-body, .audio-library-body, .lesson-archive-body, .lesson-pdf-body, .lesson-pdf-viewport')) return;
   ev.preventDefault();
 }, { passive: false });
 document.addEventListener('gesturestart', (ev) => ev.preventDefault(), { passive: false });
@@ -7997,8 +10745,10 @@ paper?.addEventListener('dblclick', (ev) => {
   if (!(ev.target instanceof Element) || isUiControlTarget(ev.target)) return;
   ev.preventDefault();
   ev.stopPropagation();
-  // 0.1.50 — doppio clic/tap sempre riservato alla copertina privacy.
-  // L'Orario settimanale si apre soltanto con swipe verso il basso dal Planning settimanale.
+  // 0.1.34 — la stessa catena didattica vale anche quando iPadOS/Safari
+  // traduce il doppio tap (anche Pencil) in dblclick.
+  if (activeLesson?.id && currentPageKind === 'agenda') { void openLessonGoalsFromPage(); return; }
+  if (currentPageKind === 'planner-daily') { void openWeeklyTimetable(); return; }
   if (currentPageKind === 'agenda' || currentPageKind === 'note' || isPlannerKind(currentPageKind)) showIdleCover(true);
 });
 
@@ -8102,8 +10852,9 @@ clearPageButton.addEventListener('click', clearCurrentPage);
 
 
 for (const button of toolButtons) {
-  button.addEventListener('click', () => {
+  button.addEventListener('click', (ev) => {
     if (wasJustActivatedByPencil(button)) return;
+    if (button === eraserToolButton) registerEraserTripleToolbarActivation(button, { pointerType:'mouse' }, 'click');
     if (button === imageToolButton) activateImageTool();
     else if (button === shapeToolButton) activateShapeTool();
     else if (button === lassoToolButton) activateLassoTool();
@@ -8125,19 +10876,9 @@ for (const button of shapeChoiceButtons) {
     setSelectedShapeType(button.dataset.shapeType);
   });
 }
-for (const button of shapeFillButtons) {
-  button.addEventListener('click', () => {
-    if (wasJustActivatedByPencil(button)) return;
-    setSelectedShapeFill(button.dataset.shapeFill);
-  });
-}
 calendarButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(calendarButton)) return;
   toggleCalendar();
-});
-freeNotesButton?.addEventListener('click', () => {
-  if (wasJustActivatedByPencil(freeNotesButton)) return;
-  void toggleFreeNotes();
 });
 styleButton?.addEventListener('click', () => {
   if (wasJustActivatedByPencil(styleButton)) return;
@@ -8157,7 +10898,7 @@ rotateImageLeftButton?.addEventListener('click', () => { if (!wasJustActivatedBy
 rotateImageRightButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(rotateImageRightButton)) rotateSelectedImage(15); });
 cutImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(cutImageButton)) void cutSelectedImage(); });
 pasteImageButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(pasteImageButton)) void pasteCutImage(); });
-lassoCutButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoCutButton)) void lassoTool?.cutSelection?.(true); });
+lassoCutButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoCutButton)) void lassoTool?.cutSelection?.(); });
 lassoPasteButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoPasteButton)) void lassoTool?.pasteClipboard?.(); });
 lassoClearButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lassoClearButton)) lassoTool?.clearSelection?.('selezione annullata'); });
 imageFileInput?.addEventListener('change', () => {
@@ -8166,7 +10907,209 @@ imageFileInput?.addEventListener('change', () => {
   if (file) void importImageFile(file);
 });
 
-// 0.1.37 — i comandi nelle Impostazioni non usano il pointerdown della toolbar Ink.
+// 0.1.32 — ogni contesto in cui si DIGITA TESTO richiede il layout testuale
+// completo. iPadOS mantiene comunque il controllo finale sulla dimensione fisica
+// della tastiera (completa/flottante): una PWA non può forzare quel toggle di sistema.
+function requestExpandedKeyboardFor(element) {
+  const isField = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element?.isContentEditable;
+  if (!isField) return;
+  if (element instanceof HTMLInputElement && ['file','checkbox','radio','range','color','date','time','month','week'].includes(element.type)) return;
+
+  // I campi numerici reali restano numerici: non sono contesti di digitazione testo.
+  // Tutti gli altri campi editabili, inclusi URL/password/search/email/tel, chiedono
+  // esplicitamente la tastiera alfabetica standard a larghezza piena quando iPadOS la consente.
+  if (!(element instanceof HTMLInputElement) || element.type !== 'number') {
+    element.setAttribute('inputmode', 'text');
+  }
+  element.setAttribute('autocapitalize', element.getAttribute('autocapitalize') || 'sentences');
+  if (!element.hasAttribute('enterkeyhint')) element.setAttribute('enterkeyhint', element.id === 'lessonTopicInput' || element.id === 'lessonSetupTopic' ? 'done' : 'next');
+  element.classList?.add('expanded-keyboard-input');
+}
+function prepareExpandedKeyboards(root = document) {
+  root.querySelectorAll?.('input,textarea,[contenteditable="true"]').forEach(requestExpandedKeyboardFor);
+}
+prepareExpandedKeyboards();
+document.addEventListener('focusin', (ev) => requestExpandedKeyboardFor(ev.target), { capture:true });
+
+// Anche i campi creati dinamicamente (Nuova materia e future finestre) ereditano
+// automaticamente la richiesta di tastiera testuale completa.
+const expandedKeyboardObserver = new MutationObserver((records) => {
+  for (const record of records) {
+    for (const node of record.addedNodes || []) {
+      if (!(node instanceof Element)) continue;
+      requestExpandedKeyboardFor(node);
+      prepareExpandedKeyboards(node);
+    }
+  }
+});
+expandedKeyboardObserver.observe(document.documentElement, { childList:true, subtree:true });
+
+newLessonButton?.addEventListener('click', async () => {
+  if (wasJustActivatedByPencil(newLessonButton)) return;
+  if (ready && dirty) await persistNow();
+  openLessonSetup({ startup:false, tab:'new' });
+});
+closeLessonButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(closeLessonButton)) void closeCurrentLessonToStartup(); });
+lessonArchiveButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(lessonArchiveButton)) return;
+  openLessonArchive();
+});
+lessonSetupStartButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lessonSetupStartButton)) void startNewLessonFromDialog(); });
+lessonSetupResumeButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lessonSetupResumeButton)) void resumeLastLessonFromStartup(); });
+lessonSetupNewTabButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lessonSetupNewTabButton)) setLessonSetupMode('new'); });
+lessonSetupOpenTabButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lessonSetupOpenTabButton)) setLessonSetupMode('open'); });
+lessonSetupCloseButton?.addEventListener('click', () => { if (!wasJustActivatedByPencil(lessonSetupCloseButton)) closeLessonSetup(); });
+lessonArchiveCloseButton?.addEventListener('click', () => { if (wasJustActivatedByPencil(lessonArchiveCloseButton)) return; if (lessonArchivePanel) lessonArchivePanel.hidden = true; restoreAgendaInteractiveTools('lesson-archive-close'); });
+let lessonArchivePenScroll = null;
+let lessonArchivePenClickBlockedUntil = 0;
+
+function finishLessonArchivePenScroll(ev) {
+  if (!lessonArchivePenScroll || ev.pointerId !== lessonArchivePenScroll.pointerId) return;
+  lessonArchivePenClickBlockedUntil = performance.now() + 800;
+  try { lessonArchiveBody?.releasePointerCapture?.(ev.pointerId); } catch {}
+  lessonArchivePenScroll = null;
+}
+
+// 0.1.18 — Apple Pencil nell'Archivio e' uno strumento di SCROLL, non di apertura.
+// Il trascinamento modifica direttamente scrollTop ed e' completamente separato
+// dal motore Ink. Il dito continua a usare lo scrolling nativo iPadOS.
+lessonArchiveBody?.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType !== 'pen') return;
+  lessonArchivePenScroll = {
+    pointerId: ev.pointerId,
+    startY: ev.clientY,
+    startScrollTop: lessonArchiveBody.scrollTop,
+    moved: false
+  };
+  try { lessonArchiveBody.setPointerCapture?.(ev.pointerId); } catch {}
+  ev.stopPropagation();
+}, { passive:false, capture:true });
+lessonArchiveBody?.addEventListener('pointermove', (ev) => {
+  const state = lessonArchivePenScroll;
+  if (!state || ev.pointerId !== state.pointerId) return;
+  const dy = ev.clientY - state.startY;
+  if (!state.moved && Math.abs(dy) >= 3) state.moved = true;
+  if (!state.moved) return;
+  lessonArchiveBody.scrollTop = state.startScrollTop - dy;
+  ev.preventDefault();
+  ev.stopPropagation();
+}, { passive:false, capture:true });
+lessonArchiveBody?.addEventListener('pointerup', finishLessonArchivePenScroll, { passive:true, capture:true });
+lessonArchiveBody?.addEventListener('pointercancel', finishLessonArchivePenScroll, { passive:true, capture:true });
+
+lessonArchiveBody?.addEventListener('click', (ev) => {
+  const target = ev.target instanceof Element ? ev.target : null;
+  // Un click sintetico generato dalla Pencil dopo uno scroll/tap non apre e non
+  // elimina nulla: la Pencil resta disponibile per scorrere l'elenco.
+  if (performance.now() < lessonArchivePenClickBlockedUntil) { ev.preventDefault(); ev.stopPropagation(); return; }
+  const pdfButton = target?.closest('button[data-lesson-pdf-open], button[data-lesson-pdf-export]');
+  if (pdfButton) { activateUiButton(pdfButton); return; }
+  const remove = target?.closest('button[data-lesson-delete]');
+  if (remove) { void deleteLessonGroup(remove.dataset.lessonDelete); return; }
+  const button = target?.closest('button[data-lesson-open]');
+  if (!button) return;
+  const lesson = lessonIndex.find((item) => item.id === button.dataset.lessonOpen);
+  if (!lesson) return;
+  const boardIndex = Math.max(1, Number(lesson.currentBoardIndex) || 1);
+  void resumeLessonAtSavedPosition(lesson, 'lezione aperta').then((ok) => {
+    if (!ok) return;
+    hideLessonHomeScreen();
+    if (lessonArchivePanel) lessonArchivePanel.hidden = true;
+    restoreAgendaInteractiveTools('lesson-archive-open');
+  });
+});
+lessonSubjectPicker?.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType === 'mouse') return;
+  const newButton = ev.target instanceof Element ? ev.target.closest('[data-lesson-new-subject]') : null;
+  if (newButton) {
+    selectLessonSetupNewSubject({ expand:true, focus:true });
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  const addButton = ev.target instanceof Element ? ev.target.closest('#lessonSetupAddNewSubjectButton') : null;
+  if (addButton) {
+    commitLessonSetupNewSubject();
+    ev.preventDefault();
+    ev.stopPropagation();
+    return;
+  }
+  const button = ev.target instanceof Element ? ev.target.closest('[data-lesson-setup-subject]') : null;
+  if (!button) return;
+  selectLessonSetupSubject(button.dataset.lessonSetupSubject || '');
+  ev.preventDefault();
+  ev.stopPropagation();
+}, { passive:false });
+lessonSubjectPicker?.addEventListener('click', (ev) => {
+  const newButton = ev.target instanceof Element ? ev.target.closest('[data-lesson-new-subject]') : null;
+  if (newButton) { selectLessonSetupNewSubject({ expand:true, focus:true }); return; }
+  const addButton = ev.target instanceof Element ? ev.target.closest('#lessonSetupAddNewSubjectButton') : null;
+  if (addButton) { commitLessonSetupNewSubject(); return; }
+  const button = ev.target instanceof Element ? ev.target.closest('[data-lesson-setup-subject]') : null;
+  if (!button) return;
+  selectLessonSetupSubject(button.dataset.lessonSetupSubject || '');
+});
+lessonSubjectPicker?.addEventListener('keydown', (ev) => {
+  if (ev.key !== 'Enter' || ev.target?.id !== 'lessonSetupNewSubjectInput') return;
+  ev.preventDefault();
+  commitLessonSetupNewSubject();
+});
+lessonStartupArchiveBody?.addEventListener('click', (ev) => {
+  const pdfButton = ev.target instanceof Element ? ev.target.closest('button[data-lesson-pdf-open], button[data-lesson-pdf-export]') : null;
+  if (pdfButton) { activateUiButton(pdfButton); return; }
+  const button = ev.target instanceof Element ? ev.target.closest('button[data-lesson-open]') : null;
+  if (!button) return;
+  const lesson = lessonIndex.find((item) => item.id === button.dataset.lessonOpen);
+  if (!lesson) return;
+  void resumeLessonAtSavedPosition(lesson, 'lezione aperta').then((ok) => {
+    if (!ok) return;
+    if (lessonSetupPanel) lessonSetupPanel.hidden = true;
+    restoreAgendaInteractiveTools('lesson-startup-open');
+  });
+});
+
+lessonSubjectSelect?.addEventListener('change', () => updateActiveLessonMetadata(lessonSubjectSelect.value, lessonTopicInput?.value || activeLesson?.topic));
+lessonTopicInput?.addEventListener('input', () => {
+  if (!activeLesson || currentLessonBoardIndex !== 1) return;
+  activeLesson = { ...activeLesson, topic: cleanLessonText(lessonTopicInput.value, 160) || activeLesson.topic };
+  saveActiveLesson({ touch:true });
+  clearTimeout(lessonMetaRenderTimer);
+  lessonMetaRenderTimer = window.setTimeout(() => { renderLessonHeaderFor(document); }, 350);
+});
+lessonTopicInput?.addEventListener('change', () => updateActiveLessonMetadata(lessonSubjectSelect?.value || activeLesson?.subject, lessonTopicInput.value));
+lessonSubjectAddButton?.addEventListener('click', () => {
+  if (wasJustActivatedByPencil(lessonSubjectAddButton)) return;
+  const value = cleanLessonText(lessonSubjectNewInput?.value, 80);
+  if (!value) return;
+  if (!lessonSubjects.includes(value)) lessonSubjects.push(value);
+  saveLessonSubjects();
+  if (lessonSubjectNewInput) lessonSubjectNewInput.value = '';
+  renderLessonSubjectSettings();
+});
+lessonSubjectNewInput?.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); lessonSubjectAddButton?.click(); } });
+lessonSubjectSettingsList?.addEventListener('click', (ev) => {
+  const button = ev.target instanceof Element ? ev.target.closest('button[data-lesson-subject-remove]') : null;
+  if (!button) return;
+  const value = button.dataset.lessonSubjectRemove;
+  if (lessonSubjects.length <= 1) return;
+  lessonSubjects = lessonSubjects.filter((item) => item !== value);
+  saveLessonSubjects();
+  renderLessonSubjectSettings();
+});
+settingsTabSubjectsButton?.addEventListener('click', () => {
+  document.getElementById('settingsSyncBackupTab')?.setAttribute('hidden','');
+  document.getElementById('settingsRecordingTab')?.setAttribute('hidden','');
+  settingsSubjectsTab?.removeAttribute('hidden');
+  document.getElementById('settingsTabSyncBackupButton')?.classList.remove('active');
+  document.getElementById('settingsTabRecordingButton')?.classList.remove('active');
+  settingsTabSubjectsButton.classList.add('active');
+  document.getElementById('settingsTabSyncBackupButton')?.setAttribute('aria-selected','false');
+  document.getElementById('settingsTabRecordingButton')?.setAttribute('aria-selected','false');
+  settingsTabSubjectsButton.setAttribute('aria-selected','true');
+  renderLessonSubjectSettings();
+});
+
+// 0.1.39 — i comandi nelle Impostazioni non usano il pointerdown della toolbar Ink.
 // Dito/mouse: click nativo. Apple Pencil: pointerup.
 const settingsCommandPenActivation = new WeakMap();
 function bindSettingsCommand(button, action) {
@@ -8234,18 +11177,23 @@ for (const choice of pageTemplateChoices) {
     setPageTemplate(choice.dataset.pageTemplate);
   });
 }
+for (const choice of quickPaperChoices) {
+  choice.addEventListener('click', async () => {
+    if (wasJustActivatedByPencil(choice) || drawing || pageTurning) return;
+    if (choice.dataset.quickTemplate) await setPageTemplate(choice.dataset.quickTemplate);
+    else if (choice.dataset.quickColor) await setPageColor(choice.dataset.quickColor);
+  });
+}
 
 window.addEventListener('resize', () => {
-  if (imageCropEditor) requestAnimationFrame(reflowImageCropEditor);
   if (drawing || pageTurning) return;
   removePreview();
   pageSwipe = null;
+  const continuousPosition = continuousLessonActive ? continuousCurrentScrollPosition() : null;
   resizeCanvas();
   renderImages();
+  if (continuousPosition) continuousRelayoutAfterResize(continuousPosition);
   if (currentPageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(document));
-});
-window.visualViewport?.addEventListener('resize', () => {
-  if (imageCropEditor) requestAnimationFrame(reflowImageCropEditor);
 });
 
 window.addEventListener('blur', () => {
@@ -8256,7 +11204,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (drawing) finalizeStroke('visibility-hidden');
     if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
-    if (ready && dirty) persistNow();
+    if (continuousLessonActive) void flushContinuousSegmentSaves();
+    else if (ready && dirty) persistNow();
     } else if (ready) {
     scheduleCloudAuto('foreground', 1200);
   }
@@ -8266,24 +11215,26 @@ window.addEventListener('online', () => { if (ready) scheduleCloudAuto('network-
 
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
-  if (ready && dirty) persistNow();
+  if (continuousLessonActive) void flushContinuousSegmentSaves();
+  else if (ready && dirty) persistNow();
 });
 
 async function loadInitialPage() {
   statusLabel.textContent = 'caricamento';
   try {
     await openDb();
-    const [record, globalRecord] = await Promise.all([
+    const [record, globalRecord, initialNoteTotal] = await Promise.all([
       getRecord(currentPageKey()),
       getRecord(GLOBAL_PAGE_STYLE_KEY),
-      ensureNotesCount(currentDate)
+      ensureNotesCount(currentDate, activeLesson?.id || '', currentLessonBoardIndex)
     ]);
+    currentNoteTotal = Math.max(0, Number(initialNoteTotal) || 0);
     session.storageReads += 2;
     globalPageStyle = globalRecord?.pageStyle ? normalizePageStyle(globalRecord.pageStyle) : { ...DEFAULT_PAGE_STYLE };
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
     images = imagesFromRecord(record);
     selectedImageId = null;
-    pageStyle = pageStyleFromRecord(record);
+    pageStyle = pageStyleForDescriptor(record, pageDescriptor());
     applyPageStyle();
     applyToolDefaultsForPaper(pageStyle.color);
     updatePageStyleUi();
@@ -8308,7 +11259,85 @@ async function loadInitialPage() {
   }
 }
 
+async function setRestoreOperationLocked(locked) {
+  restoreOperationLocked = Boolean(locked);
+  if (!locked) { restoreMutationActive = false; return; }
+  lanTransport?.suspendForInk(); cloudTransport?.suspendForInk();
+  const start = performance.now();
+  while (syncRemoteApplyBusy || lanTransport?.isRunning?.() || cloudTransport?.isRunning?.()) {
+    if (performance.now() - start > 8000) throw new Error('Ripristino sospeso: sincronizzazione ancora in chiusura');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+function initializeBackupFoundation() {
+  if (!backupFoundation) {
+    backupFoundation = initBackupFoundation({
+      appVersion: APP_VERSION,
+      mainDbName: DB_NAME,
+      mainStore: STORE,
+      setRestoreOperationLocked,
+      canStartBackup: () => ready && !isSyncRestorePending() && !lessonPdfBusy && !lessonPdfSnapshotBusy,
+      canStartRestore: () => !isSyncRestorePending() && !lessonPdfSnapshotBusy,
+      flushCurrent: async () => {
+        cancelPendingSave();
+        if (continuousLessonActive && activeLesson?.id && currentPageKind === 'agenda') {
+          const ok = await flushContinuousSegmentSaves();
+          if (!ok) throw new Error('Backup sospeso: uno o più segmenti della lezione non risultano ancora salvati');
+          return;
+        }
+        if (dirty) { await persistNow(); if (dirty) throw new Error('Backup sospeso: pagina corrente non salvata'); }
+      },
+      setAppStatus: (message) => { statusLabel.textContent = message; },
+      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isBusy?.()) || Boolean(voiceScript?.isActive?.()) || beautifyBusy || lassoPointerId !== null || lassoTouchId !== null,
+      beginConsistentSnapshot: beginBackupSnapshotFreeze,
+      endConsistentSnapshot: async () => endBackupSnapshotFreeze(),
+      getSecurePasswordVaultBackup: getPasswordVaultBackupPayload,
+      restoreSecurePasswordVaultBackup: restorePasswordVaultBackupPayload,
+      beforeRestoreApplied: async () => {
+        // Un disaster recovery locale non deve mai innescare un pull automatico dal gruppo.
+        // Sospendiamo soltanto i trasporti durante la sostituzione atomica dei dati.
+        restoreMutationActive = true;
+        cancelPendingSave();
+        lanTransport?.suspendForInk();
+        cloudTransport?.suspendForInk();
+      },
+      afterRestoreApplied: async (details) => {
+        // Nel formato completo indici, metadati e preferenze sono già nello snapshot.
+        // Ricostruirli con lo stato in memoria altera lezioni, posizione e font.
+        if (Number(details.manifest?.formatVersion) < 2) {
+          lessonSubjects = loadLessonSubjects(); lessonIndex = loadLessonIndex(); activeLesson = loadActiveLesson();
+          await rebuildNotesMetadataFromPages(); await rebuildLessonIndexFromPages();
+        }
+        clearSyncRestoreGuard();
+        // Dopo un restore riuscito (o un recovery/rollback) i cursori/outbox precedenti non
+        // descrivono più con certezza lo stato locale. Li azzeriamo, ma NON eseguiamo alcun
+        // pull: se esiste una configurazione Sync viene attivata una quarantena scrivibile.
+        await resetSyncStores();
+        beginLocalRestoreSyncQuarantine(details);
+      },
+      beforeGlobalRestoreApplied: async (details) => {
+        // Operazione distruttiva esplicita: il backup locale diventerà una nuova generazione
+        // autorevole del gruppo, ma soltanto dopo pubblicazione e commit remoto completi.
+        beginGlobalGroupRestoreGuard(details);
+        clearLocalRestoreSyncQuarantine();
+        restoreMutationActive = true;
+        cancelPendingSave();
+        lanTransport?.suspendForInk();
+        cloudTransport?.suspendForInk();
+      },
+      afterGlobalRestoreApplied: async (details) => {
+        await resetSyncStores();
+        updateSyncRestoreGuard({ phase: 'global-restore-applied', restoredAt: new Date().toISOString(), ...details });
+      }
+    });
+  }
+}
+
 async function bootAgenda() {
+  await openDb();
+  initializeBackupFoundation();
+  if (await backupFoundation.initialized) return;
   updateHeader();
   await loadLocalImageCutClipboard().catch((err) => console.warn('Clipboard immagini locale non caricata', err));
   updateToolUi();
@@ -8331,41 +11360,22 @@ async function bootAgenda() {
         appVersion: APP_VERSION,
         persistedState,
         storedPending,
-        onStats: (stats) => { syncStats = stats; }
+        onStats: (stats) => { syncStats = stats; },
       });
       syncStats = syncFoundation.getDiagnostics();
       // Identità replica persistita all'avvio, fuori dalla pipeline realtime Ink.
       await putSyncMeta(syncFoundation.getStateRow()).catch((err) => console.warn('Identità Sync non persistita', err));
       // La prima pagina è stata caricata prima dell'inizializzazione Sync: eseguiamo
-      // ora l'eventuale normalizzazione degli eraser legacy 0.1.31.
+      // ora l'eventuale normalizzazione degli eraser legacy 0.1.32.
       await migrateLegacyErasersOnCurrentPage().catch((err) => console.warn('Migrazione eraser legacy non riuscita', err));
     } catch (err) {
       console.warn('Agenda Sync Core non disponibile', err);
     }
   }
-  if (!passwordVault && syncFoundation) {
-    passwordVault = initPasswordVault({
-      getRow: getPasswordVaultRow,
-      putLocalRow: putPasswordVaultLocalRow,
-      deleteLocalRow: deletePasswordVaultLocalRow,
-      commitPortableRows: commitPasswordVaultPortableRows,
-      onStatus: (message) => { if (message) statusLabel.textContent = message; },
-      onOpen: () => {
-        if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('rubrica-password');
-        deactivatePageTool('password-vault');
-      },
-      onUnlocked: async (payload) => { await enterRubricaFromVault(payload); },
-      onBeforeLock: async () => {
-        if (currentPageKind === 'rubrica' && !rubricaExitInProgress) await flushRubricaCurrentPage(false);
-      },
-      onLocked: async (reason) => {
-        if (currentPageKind === 'rubrica' && !rubricaExitInProgress) await restoreAfterRubrica(reason);
-      },
-      isExternalPageActive: () => currentPageKind === 'rubrica',
-      onExternalExit: async () => { await exitRubrica(); },
-      onClose: () => { updateToolUi(); }
-    });
-  }
+
+
+  // 0.1.10: Rubrica Password rimossa dall'app. I record legacy cifrati restano
+  // compatibili con restore/sync, ma nessuna UI o sessione vault viene inizializzata.
   if (!cloudTransport && syncFoundation) {
     const config = loadCloudConfig();
     if (cloudEndpointInput) cloudEndpointInput.value = config.endpoint || CLOUD_DEFAULT_ENDPOINT;
@@ -8387,7 +11397,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()) || Boolean(passwordVault?.isWriting?.()),
+      isRealtimeBusy: () => restoreOperationLocked || isLocalRestoreSyncQuarantined() || backupSnapshotFreeze || drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
       onStats: (stats) => { cloudStats = stats; updateCloudStatus(); }
     });
     cloudStats = cloudTransport.getDiagnostics();
@@ -8419,7 +11429,7 @@ async function bootAgenda() {
       getLocalBlob: getSyncBlob,
       putLocalBlob: putSyncBlob,
       applyRemoteEvents: applyRemoteSyncEvents,
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()) || Boolean(passwordVault?.isWriting?.()),
+      isRealtimeBusy: () => restoreOperationLocked || isLocalRestoreSyncQuarantined() || backupSnapshotFreeze || drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()),
       onStats: (stats) => { lanStats = stats; updateLanStatus(); }
     });
     lanStats = lanTransport.getDiagnostics();
@@ -8428,82 +11438,28 @@ async function bootAgenda() {
     lanSyncKeyInput?.addEventListener('change', saveLanConfig);
   }
   if (isSyncRestorePending()) {
-    const pendingMode = String(syncRestoreGuard?.mode || 'local-restore');
-    if (pendingMode === 'local-restore') {
-      const transport = String(syncRestoreGuard?.transport || 'none');
-      if (transport === 'none') {
-        clearSyncRestoreGuard();
-        const text = 'Backup locale ripristinato completamente. Nessun gruppo Sync configurato: lo snapshot resta lo stato corrente del dispositivo.';
-        updateCloudStatus(text);
-        updateLanStatus(text);
-      } else {
-        const text = 'Backup locale ripristinato e mantenuto sul dispositivo. Sync sospesa per non sovrascrivere lo snapshot.\nUsa “Ripristina gruppo attivo” per rendere questo stato autorevole, oppure “Sincronizza adesso” per abbandonarlo e riallinearti al gruppo corrente.';
-        updateCloudStatus(text);
-        updateLanStatus(text);
-      }
-    } else {
-      const result = await runPendingRestoreReconciliation();
-      if (result?.error) {
-        const title = pendingMode === 'global-authoritative'
-          ? 'Ripristino globale non completato'
-          : pendingMode === 'group-authoritative' ? 'Riallineamento alla nuova generazione non completato' : 'Ripristino locale completato, ma riallineamento Sync non riuscito';
-        const text = `${title}.\nInvio bloccato e Agenda in sola lettura per sicurezza. Premi “Sincronizza adesso” per riprovare.\n${result.error}`;
-        updateCloudStatus(text);
-        updateLanStatus(text);
-      }
+    const pendingMode = String(syncRestoreGuard?.mode || 'group-authoritative');
+    const result = await runPendingRestoreReconciliation();
+    if (result?.error) {
+      const title = pendingMode === 'global-authoritative'
+        ? 'Ripristino globale non completato'
+        : pendingMode === 'group-authoritative' ? 'Riallineamento alla nuova generazione non completato' : 'Ripristino locale completato, ma riallineamento Sync non riuscito';
+      const text = `${title}.\nInvio bloccato e Agenda in sola lettura per sicurezza. Premi “Sincronizza adesso” per riprovare.\n${result.error}`;
+      updateCloudStatus(text);
+      updateLanStatus(text);
     }
   }
   startCloudHeartbeat();
   scheduleCloudAuto('startup', 1800);
   ready = true;
-  if (!backupFoundation) {
-    backupFoundation = initBackupFoundation({
-      appVersion: APP_VERSION,
-      mainDbName: DB_NAME,
-      mainStore: STORE,
-      flushCurrent: async () => { if (dirty) await persistNow(); },
-      setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(audioRecorder?.isRecording?.()) || Boolean(passwordVault?.isWriting?.()),
-      getSecurePasswordVaultBackup: getPasswordVaultBackupPayload,
-      restoreSecurePasswordVaultBackup: restorePasswordVaultBackupPayload,
-      beforeRestoreApplied: async (details) => {
-        // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
-        // cambiare gruppo né propagare automaticamente uno snapshot storico.
-        beginSyncRestoreGuard(details);
-        lanTransport?.suspendForInk();
-        cloudTransport?.suspendForInk();
-      },
-      afterRestoreApplied: async (details) => {
-        // Lo snapshot ripristinato non genera eventi. Azzeriamo identità, cursori, outbox e blob Sync;
-        // al riavvio una nuova replica eseguirà prima un pull-only completo del gruppo.
-        await resetSyncStores();
-        updateSyncRestoreGuard({ phase: 'restore-applied', restoredAt: new Date().toISOString(), ...details });
-      },
-      beforeGlobalRestoreApplied: async (details) => {
-        // Operazione distruttiva esplicita: il backup locale diventerà una nuova generazione
-        // autorevole del gruppo, ma soltanto dopo pubblicazione e commit remoto completi.
-        beginGlobalGroupRestoreGuard(details);
-        lanTransport?.suspendForInk();
-        cloudTransport?.suspendForInk();
-      },
-      afterGlobalRestoreApplied: async (details) => {
-        await resetSyncStores();
-        updateSyncRestoreGuard({ phase: 'global-restore-applied', restoredAt: new Date().toISOString(), ...details });
-      }
-    });
-  }
   if (!audioRecorder) {
     audioRecorder = initAudioRecorder({
       appVersion: APP_VERSION,
       getPageDescriptor: () => ({ ...pageDescriptor() }),
       setAppStatus: (message) => { statusLabel.textContent = message; },
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(passwordVault?.isWriting?.()),
+      isRealtimeBusy: () => restoreOperationLocked || backupSnapshotFreeze || drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
       cloudBridge: backupFoundation?.cloudBridge || null,
       onRecordingsChanged: (pageKey) => { if (pageKey === currentPageKey()) void refreshAudioPageIndicator(); }
-    });
-    backupFoundation?.attachAudioProvider?.({
-      exportBackup: () => audioRecorder.exportFullBackup(),
-      restoreBackup: (snapshot) => audioRecorder.restoreFullBackup(snapshot)
     });
     void refreshAudioPageIndicator();
   }
@@ -8511,8 +11467,8 @@ async function bootAgenda() {
     voiceScript = initVoiceScript({
       getPageDescriptor: () => ({ ...pageDescriptor() }),
       getPenColor: () => toolStrokeStyle('pen').color || PEN_COLOR,
-      isRealtimeBusy: () => drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(passwordVault?.isWriting?.()),
-      isAudioRecorderActive: () => Boolean(audioRecorder?.isRecording?.()) || Boolean(passwordVault?.isWriting?.()),
+      isRealtimeBusy: () => restoreOperationLocked || backupSnapshotFreeze || drawing || Boolean(shapeGesture) || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture),
+      isAudioRecorderActive: () => Boolean(audioRecorder?.isRecording?.()),
       onCommit: commitVoiceScriptText,
       onStatus: (message) => { statusLabel.textContent = message; },
       onStateChange: () => updateToolUi()
@@ -8522,6 +11478,8 @@ async function bootAgenda() {
       deactivatePageTool();
     }, { capture:true, passive:true });
   }
+  // Allinea gli strumenti derivati da Agenda dopo l'inizializzazione asincrona.
+  restoreAgendaInteractiveTools('boot-ready');
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
@@ -8563,6 +11521,7 @@ async function finishStartup() {
   try {
     await beginAgendaBoot();
   } finally {
+    if (backupFoundation?.isRecoveryBlocked?.()) { startup.finishing = false; return; }
     startup.phase = 'done';
     lastUserActivityAt = Date.now();
     scheduleIdleCover();
@@ -8571,6 +11530,10 @@ async function finishStartup() {
     window.setTimeout(() => {
       startupOverlay.hidden = true;
       startupOverlay.remove();
+      if (!lessonStartupPromptShown) {
+        lessonStartupPromptShown = true;
+        showLessonHomeScreen('pronto');
+      }
     }, 260);
   }
 }
@@ -8593,7 +11556,11 @@ function handleStartupClick(ev) {
   finishStartup();
 }
 
+window.addEventListener('pageshow', () => {
+  if (startup.phase === 'done') window.setTimeout(() => restoreAgendaInteractiveTools('pageshow'), 0);
+});
+
 startupOverlay.addEventListener('click', handleStartupClick);
 startup.timer = window.setTimeout(showCredits, 1900);
 
-console.info(`Agenda iPad ${APP_VERSION} · Sync Core local-first + pointermove Ink invariato + eraser strutturale + backup portabile`);
+console.info(`Note iPad ${APP_VERSION} · CONTINUOUS LESSON · Ink prioritario · ${DATA_COMPATIBILITY_GENERATION}`);

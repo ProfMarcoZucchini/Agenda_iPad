@@ -107,6 +107,7 @@ export function initCloudSyncTransport(options = {}) {
       if (requireCredentials) {
         headers['X-Agenda-Group-ID'] = cfg.groupId;
         headers['X-Agenda-Auth-Key'] = cfg.authKey;
+        headers['X-Agenda-Restore-Protocol'] = '2';
         if (!init.skipEpoch) {
           const epoch = String(init.groupEpoch || activeRestoreEpoch || await getGroupEpoch() || '').trim();
           if (epoch) headers['X-Agenda-Group-Epoch'] = epoch;
@@ -389,6 +390,7 @@ export function initCloudSyncTransport(options = {}) {
     if (!rid) throw new Error('Identificatore ripristino globale mancante.');
     await healthCheck();
     let group = await readGroupStatus();
+    if (Number(group.restoreProtocolVersion) !== 2) throw new Error('Aggiorna le API Aruba alla versione 0.1.37 prima del ripristino di gruppo.');
     if (group.restoreState === 'pending') {
       if (String(group.restoreId || '') !== rid) throw new Error('Il gruppo è già in ripristino globale da un altro dispositivo.');
       activeRestoreId = rid;
@@ -396,6 +398,7 @@ export function initCloudSyncTransport(options = {}) {
       await setGroupEpoch(activeRestoreEpoch);
       return group;
     }
+    if (group.committedRestoreId === rid) { await setGroupEpoch(group.groupEpoch); return { ...group, alreadyCommitted:true }; }
     const currentEpoch = String(group.groupEpoch || 'legacy-1');
     const reset = await request('group_reset.php', {
       method: 'POST', skipEpoch: true, json: { protocolVersion, confirm: 'RESTORE_GROUP', restoreId: rid, expectedEpoch: currentEpoch, replicaId: String(getReplicaId() || '') }
@@ -415,6 +418,7 @@ export function initCloudSyncTransport(options = {}) {
     running = true; suspendedForInk = false; stats.state = 'restoring-group'; stats.lastError = ''; emit();
     try {
       const group = await beginOrResumeGlobalRestore(rid);
+      if (group.alreadyCommitted) { stats.state='idle'; stats.restoreState='ready'; emit(); return { pushed:0, pulled:0, globalRestore:true, alreadyCommitted:true, groupEpoch:group.groupEpoch, groupId:cfg.groupId }; }
       activeRestoreId = rid; activeRestoreEpoch = String(group.groupEpoch || activeRestoreEpoch || '');
       const pushed = await pushPending(cfg.encryptionKey);
       const commit = await request('group_restore_commit.php', {
@@ -462,6 +466,7 @@ export function initCloudSyncTransport(options = {}) {
   emit();
   return {
     createGroup, testConnection, syncNow, recoverPullOnly, publishAndCommitGlobalRestore, scheduleAuto, suspendForInk, resumeAfterInk,
+    isRunning: () => running,
     getDiagnostics: () => ({ ...stats }), normalizeEndpoint
   };
 }

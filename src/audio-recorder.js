@@ -79,38 +79,6 @@ async function dbGet(storeName, key) {
   });
 }
 
-async function dbGetAll(storeName) {
-  const db = await openAudioDb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(storeName, 'readonly');
-      const req = tx.objectStore(storeName).getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => reject(req.error);
-    });
-  } finally { db.close(); }
-}
-
-async function replaceAudioStores({ recordings = [], settings = [] } = {}) {
-  const db = await openAudioDb();
-  try {
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction([RECORDINGS_STORE, CHUNKS_STORE, SETTINGS_STORE], 'readwrite');
-      const recordingsStore = tx.objectStore(RECORDINGS_STORE);
-      const chunksStore = tx.objectStore(CHUNKS_STORE);
-      const settingsStore = tx.objectStore(SETTINGS_STORE);
-      recordingsStore.clear();
-      chunksStore.clear();
-      settingsStore.clear();
-      for (const row of recordings) recordingsStore.put(row);
-      for (const row of settings) settingsStore.put(row);
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error || new Error('Ripristino archivio audio annullato'));
-    });
-  } finally { db.close(); }
-}
-
 async function dbPut(storeName, value) {
   const db = await openAudioDb();
   return new Promise((resolve, reject) => {
@@ -276,8 +244,10 @@ export function initAudioRecorder(options = {}) {
 
   const tabSync = document.getElementById('settingsTabSyncBackupButton');
   const tabAudio = document.getElementById('settingsTabRecordingButton');
+  const tabSubjects = document.getElementById('settingsTabSubjectsButton');
   const syncTab = document.getElementById('settingsSyncBackupTab');
   const audioTab = document.getElementById('settingsRecordingTab');
+  const subjectsTab = document.getElementById('settingsSubjectsTab');
   const configDestination = document.getElementById('audioDefaultDestination');
   const codecSelect = document.getElementById('audioCodecProfile');
   const channelSelect = document.getElementById('audioChannels');
@@ -326,12 +296,17 @@ export function initAudioRecorder(options = {}) {
 
   function switchSettingsTab(name) {
     const audioActive = name === 'recording';
-    if (syncTab) syncTab.hidden = audioActive;
+    const subjectsActive = name === 'subjects';
+    const syncActive = !audioActive && !subjectsActive;
+    if (syncTab) syncTab.hidden = !syncActive;
     if (audioTab) audioTab.hidden = !audioActive;
-    tabSync?.classList.toggle('active', !audioActive);
+    if (subjectsTab) subjectsTab.hidden = !subjectsActive;
+    tabSync?.classList.toggle('active', syncActive);
     tabAudio?.classList.toggle('active', audioActive);
-    tabSync?.setAttribute('aria-selected', audioActive ? 'false' : 'true');
+    tabSubjects?.classList.toggle('active', subjectsActive);
+    tabSync?.setAttribute('aria-selected', syncActive ? 'true' : 'false');
     tabAudio?.setAttribute('aria-selected', audioActive ? 'true' : 'false');
+    tabSubjects?.setAttribute('aria-selected', subjectsActive ? 'true' : 'false');
     if (audioActive) {
       refreshStorageStatus();
       refreshCloudUi();
@@ -995,6 +970,7 @@ export function initAudioRecorder(options = {}) {
   bindButton(closeLibraryButton, () => { if (libraryPanel) libraryPanel.hidden = true; });
   bindButton(tabSync, () => switchSettingsTab('sync'));
   bindButton(tabAudio, () => switchSettingsTab('recording'));
+  bindButton(tabSubjects, () => switchSettingsTab('subjects'));
   bindButton(refreshStorageButton, refreshStorageStatus);
 
   bindButton(googleConnectAudio, async () => {
@@ -1039,39 +1015,6 @@ export function initAudioRecorder(options = {}) {
     ev.preventDefault(); ev.stopPropagation();
   }, { passive:false });
 
-
-  async function exportFullBackup() {
-    if (activeSession) throw new Error('Termina la registrazione audio prima di creare il backup completo.');
-    const rows = await dbGetAll(RECORDINGS_STORE);
-    const settings = await dbGetAll(SETTINGS_STORE);
-    const recordings = [];
-    for (const row of rows) {
-      const blob = await fetchRecordingBlob(row);
-      if (!(blob instanceof Blob) || !blob.size) throw new Error(`Audio non disponibile per il backup: ${row?.name || row?.id || 'registrazione'}`);
-      const metadata = { ...row };
-      delete metadata.blob;
-      recordings.push({ metadata, blob });
-    }
-    return { schemaVersion: 1, settings, recordings };
-  }
-
-  async function restoreFullBackup(snapshot) {
-    if (activeSession) throw new Error('Impossibile ripristinare l’audio durante una registrazione.');
-    if (!snapshot) {
-      await replaceAudioStores({ recordings: [], settings: [] });
-      return { restored: 0 };
-    }
-    if (Number(snapshot.schemaVersion) !== 1 || !Array.isArray(snapshot.recordings)) throw new Error('Archivio audio del backup non compatibile');
-    const restored = snapshot.recordings.map((item) => {
-      if (!item?.metadata || !(item.blob instanceof Blob) || !item.blob.size) throw new Error('Registrazione audio del backup non valida');
-      return { ...item.metadata, blob:item.blob, localStored:true, size:item.blob.size };
-    });
-    await replaceAudioStores({ recordings: restored, settings: Array.isArray(snapshot.settings) ? snapshot.settings : [] });
-    config = cloneConfig((Array.isArray(snapshot.settings) ? snapshot.settings : []).find((row) => row?.key === SETTINGS_KEY)?.value || config);
-    notifyRecordingsChanged(getPageDescriptor()?.key || '');
-    return { restored: restored.length };
-  }
-
   player?.addEventListener('timeupdate', updatePlayerTime);
   player?.addEventListener('durationchange', updatePlayerTime);
   player?.addEventListener('play', updatePlayerTime);
@@ -1112,13 +1055,12 @@ export function initAudioRecorder(options = {}) {
   return {
     openPanel, closePanel, openLibrary, refreshStorageStatus,
     countForPage: async (pageKey) => (await listRecordingsForPage(pageKey)).length,
+    isBusy:() => Boolean(activeSession || recordingStartPending || networkController),
     isRecording:() => Boolean(activeSession && !activeSession.stopping && activeSession.recorder?.state !== 'inactive'),
     startQuickRecording:() => startRecording({ quick:true }),
     stopQuickRecording:() => stopRecording('registrazione veloce'),
     suspendForInk,
     resumeAfterInk,
-    exportFullBackup,
-    restoreFullBackup,
     destroy:() => { clearInterval(emergencyTimer); clearTimeout(retryTimer); clearTimeout(audioTapTimer); suspendForInk(); stopRecordingClock(); clearPlayerUrl(); }
   };
 }
