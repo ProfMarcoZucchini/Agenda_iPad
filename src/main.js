@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.103';
+const APP_VERSION = '0.1.106';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -33,6 +33,7 @@ const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SYNC_RESTORE_GUARD_STORAGE_KEY = 'agenda-ipad-sync-restore-guard-v1';
+const LIFECYCLE_JOURNAL_STORAGE_KEY = 'agenda-ipad-lifecycle-journal-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
 const SHARED_WEEKLY_TIMETABLE_KEY = '::shared-weekly-timetable-v3';
@@ -348,6 +349,7 @@ let cloudTransport = null;
 let cloudStats = null;
 let cloudHeartbeatTimer = 0;
 let syncRestoreGuard = loadSyncRestoreGuard();
+let restoreSyncRollbackSnapshot = null;
 let syncRecoveryRebuildActive = false;
 const syncRecoveryRebuiltPages = new Set();
 let pageStyleBulkBusy = false;
@@ -1782,11 +1784,17 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
 function alignNoteTitleToPen(root = document) {
   const pageRoot = root?.classList?.contains?.('paper') ? root : root?.querySelector?.('.paper');
   const label = root?.querySelector?.('.page-kind-label');
-  const toolbar = root?.querySelector?.('.quick-toolbar');
-  const pen = root?.querySelector?.('[data-tool="pen"]');
-  if (!pageRoot || !label || !toolbar || !pen || !pageRoot.classList.contains('note-view')) return;
-  const x = Number(toolbar.offsetLeft || 0) + Number(pen.offsetLeft || 0);
-  if (x > 0) label.style.left = `${Math.round(x)}px`;
+  const monthYear = root?.querySelector?.('.month-year-row');
+  if (!pageRoot || !label || !monthYear || !pageRoot.classList.contains('note-view')) return;
+
+  // 0.1.106 — Note: il titolo segue il blocco mese/anno, non la toolbar.
+  // Il margine di 4ch garantisce una separazione visiva di almeno quattro caratteri.
+  const pageRect = pageRoot.getBoundingClientRect();
+  const monthYearRect = monthYear.getBoundingClientRect();
+  const monthYearRight = Math.max(0, monthYearRect.right - pageRect.left);
+  label.style.left = `calc(${Math.round(monthYearRight)}px + 4ch)`;
+  label.style.transform = 'none';
+  label.style.textAlign = 'left';
 }
 
 function plannerModeTitle(mode, dateString) {
@@ -1972,7 +1980,7 @@ async function closeWeeklyTimetable() {
   pageTurning = true;
   cancelPendingSave();
   const currentDescriptor = pageDescriptor();
-  // 0.1.103-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
+  // 0.1.104-fix1 — Orario settimanale: salva SEMPRE lo snapshot corrente
   // prima di uscire dalla scheda, indipendentemente dal flag dirty.
   const saveOk = await persistSnapshot(currentDescriptor, strokes, false, pageStyle, images);
   if (!saveOk) {
@@ -1988,7 +1996,13 @@ async function closeWeeklyTimetable() {
   weeklyTimetableReturnDescriptor = null;
   try {
     await loadDescriptorAsCurrentPage(target, null, true);
-    statusLabel.textContent = target.kind === 'agenda' ? 'Agenda' : 'Planner settimanale';
+    statusLabel.textContent = target.kind === 'agenda'
+      ? 'Agenda'
+      : target.kind === 'note'
+        ? 'Nota del giorno'
+        : target.kind === 'free-note'
+          ? 'Note libere'
+          : 'Planner';
   } catch (err) {
     session.storageErrors++;
     console.warn('Ritorno al Planner settimanale non riuscito', err);
@@ -2007,7 +2021,9 @@ function isWeeklyTimetableTitleTarget(target) {
 function registerPageDoubleTap(target, x, y) {
   if (!(target instanceof Element) || !paper.contains(target) || isUiControlTarget(target)) return false;
   const now = performance.now();
-  const pageKey = `${currentPageKind}|${currentDate}|${currentNoteIndex}`;
+  // 0.1.106 — usa la chiave completa della pagina: include Note libere,
+  // Planner e indice della scheda Orario, evitando doppi tap incrociati tra pagine diverse.
+  const pageKey = currentPageKey();
   const previous = pageDoubleTapLastTap;
   pageDoubleTapLastTap = { at: now, x, y, title: isWeeklyTimetableTitleTarget(target), pageKey };
   if (!previous) return false;
@@ -2017,21 +2033,19 @@ function registerPageDoubleTap(target, x, y) {
   if (!closeInTime || !closeInSpace || !samePage) return false;
   pageDoubleTapLastTap = null;
 
-  // 0.1.103 — navigazione rapida Agenda ↔ Orario settimanale.
-  // Il doppio tap sul corpo dell'Agenda memorizza esattamente la pagina di origine
-  // tramite openWeeklyTimetable(); il doppio tap su qualunque scheda Orario la ripristina.
-  if (currentPageKind === 'agenda') {
-    void openWeeklyTimetable();
-    return true;
-  }
+  // 0.1.106 — navigazione simmetrica verso Orario settimanale.
+  // Da qualunque scheda Orario si torna esattamente al descriptor memorizzato
+  // da openWeeklyTimetable(): Agenda, Nota, Nota libera o Planner di provenienza.
   if (currentPageKind === 'planner-timetable') {
     void closeWeeklyTimetable();
     return true;
   }
-
-  // Note e gli altri Planner mantengono il comportamento privacy preesistente.
-  if (currentPageKind === 'note' || (isPlannerKind(currentPageKind) && currentPageKind !== 'planner-timetable')) {
-    showIdleCover(true);
+  if (
+    currentPageKind === 'agenda' ||
+    currentPageKind === 'note' ||
+    isPlannerKind(currentPageKind)
+  ) {
+    void openWeeklyTimetable();
     return true;
   }
   return false;
@@ -2313,7 +2327,7 @@ function pageDescriptor(dateString = currentDate, pageKind = currentPageKind, no
   };
 }
 
-// 0.1.103-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
+// 0.1.104-fix4 — guardia Sync mancante dalla migrazione Rubrica→motore Note.
 // La Rubrica viene persistita esclusivamente nel Vault cifrato; tutte le altre
 // pagine continuano a usare il normale Sync. Questa funzione deve restare
 // fuori dal percorso pointermove e non modifica il motore realtime Ink.
@@ -3811,6 +3825,35 @@ function resetSyncStores() {
   });
 }
 
+async function captureSyncStoresSnapshot() {
+  await openDb();
+  const readAll = (storeName) => new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const req = tx.objectStore(storeName).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+  const [events, meta, blobs] = await Promise.all([readAll(SYNC_EVENT_STORE), readAll(SYNC_META_STORE), readAll(SYNC_BLOB_STORE)]);
+  return { events, meta, blobs };
+}
+
+function restoreSyncStoresSnapshot(snapshot) {
+  if (!snapshot) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([SYNC_EVENT_STORE, SYNC_META_STORE, SYNC_BLOB_STORE], 'readwrite');
+    const eventStore = tx.objectStore(SYNC_EVENT_STORE);
+    const metaStore = tx.objectStore(SYNC_META_STORE);
+    const blobStore = tx.objectStore(SYNC_BLOB_STORE);
+    eventStore.clear(); metaStore.clear(); blobStore.clear();
+    for (const row of snapshot.events || []) eventStore.put(row);
+    for (const row of snapshot.meta || []) metaStore.put(row);
+    for (const row of snapshot.blobs || []) blobStore.put(row);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error('Rollback store Sync annullato'));
+  });
+}
+
 function putRecordWithSync(record, syncCommit) {
   const events = Array.isArray(syncCommit?.events) ? syncCommit.events : [];
   if (!events.length || !syncCommit?.stateRow) return putRecord(record);
@@ -4406,7 +4449,7 @@ function sizeImageCropStage() {
   const nh = imageCropPreview.naturalHeight;
   if (!nw || !nh) return false;
 
-  // 0.1.103 — usa il viewport realmente visibile su iPadOS e riserva spazio
+  // 0.1.104 — usa il viewport realmente visibile su iPadOS e riserva spazio
   // a titolo, pulsanti, gap e padding del dialogo. In questo modo stage,
   // maniglie e comandi non possono uscire dallo schermo, anche in landscape.
   const viewport = cropViewportSize();
@@ -4661,7 +4704,7 @@ function syncRulerOverlayBounds() {
   const svg = rulerOverlay.querySelector('.ruler-line-layer');
   svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
 
-  // 0.1.103 — il righello deve restare interamente raggiungibile anche ruotato.
+  // 0.1.104 — il righello deve restare interamente raggiungibile anche ruotato.
   // Calcoliamo l'ingombro del rettangolo ruotato e accorciamo il corpo, se serve,
   // prima di limitarne il centro all'area realmente scrivibile. La maniglia di
   // rotazione è dentro rulerBody, quindi rientra nello stesso ingombro protetto.
@@ -5625,10 +5668,95 @@ function cancelPendingSave() {
   idleHandle = 0;
 }
 
+function lifecycleRecordSnapshot() {
+  const descriptor = pageDescriptor();
+  // La Rubrica ha un proprio journal cifrato/Vault: non deve mai finire in chiaro in localStorage.
+  if (!descriptor?.key || descriptor.kind === 'rubrica') return null;
+  return {
+    date: descriptor.key,
+    kind: descriptor.kind === 'free-note' ? 'free-note-ink'
+      : descriptor.kind === 'note' ? 'day-note-ink'
+      : descriptor.kind === 'planner-daily' ? 'planner-day-ink'
+      : descriptor.kind === 'planner-weekly' ? 'planner-week-ink'
+      : descriptor.kind === 'planner-monthly' ? 'planner-month-ink'
+      : descriptor.kind === 'planner-yearly' ? 'planner-year-ink'
+      : descriptor.kind === 'planner-timetable' ? 'planner-timetable-ink'
+      : 'agenda-day-ink',
+    referenceDate: descriptor.date,
+    plannerMode: descriptor.plannerMode ?? null,
+    noteIndex: descriptor.kind === 'note' ? descriptor.noteIndex : 0,
+    freeNoteIndex: descriptor.kind === 'free-note' ? descriptor.freeNoteIndex : 0,
+    version: APP_VERSION,
+    pipeline: 'coalesced-retina-storage-sync-v1',
+    strokes: strokes.map((stroke) => structuredClone(stroke)),
+    images: images.map(cloneImageObject),
+    pageStyle: normalizePageStyle(pageStyle),
+    modifiedAt: new Date().toISOString()
+  };
+}
+
+function writeLifecycleJournal() {
+  try {
+    const record = lifecycleRecordSnapshot();
+    if (!record) return false;
+    const payload = { schemaVersion:1, savedAt:record.modifiedAt, imagesOmitted:false, record };
+    try {
+      localStorage.setItem(LIFECYCLE_JOURNAL_STORAGE_KEY, JSON.stringify(payload));
+      return true;
+    } catch (err) {
+      // Immagini Data-URL molto grandi possono superare la quota localStorage.
+      // In quel caso proteggiamo almeno Ink + stile, e al recovery riusiamo le immagini già in IndexedDB.
+      const compact = { ...payload, imagesOmitted:true, record:{ ...record, images:[] } };
+      localStorage.setItem(LIFECYCLE_JOURNAL_STORAGE_KEY, JSON.stringify(compact));
+      console.warn('Journal lifecycle salvato senza immagini per limite quota', err);
+      return true;
+    }
+  } catch (err) {
+    console.warn('Journal lifecycle non disponibile', err);
+    return false;
+  }
+}
+
+function clearLifecycleJournalForKey(pageKey = '') {
+  try {
+    const raw = localStorage.getItem(LIFECYCLE_JOURNAL_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!pageKey || String(parsed?.record?.date || '') === String(pageKey)) localStorage.removeItem(LIFECYCLE_JOURNAL_STORAGE_KEY);
+  } catch {
+    try { localStorage.removeItem(LIFECYCLE_JOURNAL_STORAGE_KEY); } catch {}
+  }
+}
+
+async function recoverLifecycleJournal() {
+  let parsed = null;
+  try { parsed = JSON.parse(localStorage.getItem(LIFECYCLE_JOURNAL_STORAGE_KEY) || 'null'); }
+  catch { clearLifecycleJournalForKey(); return false; }
+  const journalRecord = parsed?.record;
+  if (Number(parsed?.schemaVersion) !== 1 || !journalRecord?.date || !Array.isArray(journalRecord?.strokes)) {
+    clearLifecycleJournalForKey();
+    return false;
+  }
+  const existing = await getRecord(journalRecord.date);
+  const journalTime = Date.parse(String(parsed.savedAt || journalRecord.modifiedAt || '')) || 0;
+  const storedTime = Date.parse(String(existing?.modifiedAt || '')) || 0;
+  if (storedTime >= journalTime) {
+    clearLifecycleJournalForKey(journalRecord.date);
+    return false;
+  }
+  const recovered = parsed.imagesOmitted
+    ? { ...journalRecord, images:Array.isArray(existing?.images) ? existing.images : [] }
+    : journalRecord;
+  await putRecord(recovered);
+  clearLifecycleJournalForKey(journalRecord.date);
+  console.warn('Recuperata pagina dal journal lifecycle dopo sospensione iPadOS', journalRecord.date);
+  return true;
+}
+
 async function persistSnapshot(descriptor, pageStrokes, updateStatus = true, pageStyleSnapshot = pageStyle, pageImages = images) {
   let syncCommit = null;
   try {
-    // 0.1.103 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
+    // 0.1.104 — la Rubrica usa lo stesso motore Ink di Note, ma non viene mai
     // scritta in chiaro nello store pagine. Lo snapshot viene consegnato al Vault,
     // cifrato e sincronizzato come unico involucro opaco AES-GCM.
     if (descriptor?.kind === 'rubrica') {
@@ -5715,6 +5843,7 @@ async function persistNow() {
   // i tratti quando si cambiava pagina subito dopo avere scritto.
   if (ok && currentPageKey() === saveKey && strokes === snapshot && saveRequestSerial === requestSerial) {
     dirty = false;
+    clearLifecycleJournalForKey(saveKey);
     scheduleCloudAuto('local-commit', 5000);
   }
 }
@@ -7093,8 +7222,8 @@ async function commitPageTurn() {
   const target = swipe.target;
   const enteringTimetable = oldDescriptor.kind !== 'planner-timetable' && target.kind === 'planner-timetable';
   const targetPromise = swipe.previewPromise ?? Promise.resolve({ strokes: [], images: [], pageStyle: { ...globalPageStyle } });
-  // 0.1.103-fix1 — quando si lascia una scheda Orario settimanale, persiste
-  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.103.
+  // 0.1.104-fix1 — quando si lascia una scheda Orario settimanale, persiste
+  // sempre lo snapshot corrente. Le altre pagine mantengono la logica 0.1.104.
   const mustPersistOldPage = dirty || oldDescriptor.kind === 'planner-timetable';
   const savePromise = mustPersistOldPage
     ? persistSnapshot(oldDescriptor, oldStrokes, false, oldPageStyle, oldImages)
@@ -7259,7 +7388,7 @@ function nativeTouchProxy(touch, originalEvent, pointerId = NATIVE_TOUCH_POINTER
   };
 }
 
-// 0.1.103 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
+// 0.1.104 — bridge per il caso iPadOS in cui il Lazo parte come Touch ma
 // i campioni successivi della Pencil arrivano come Pointer/Pen. Il controller
 // continua a vedere un solo pointerId logico, quindi il gesto non si spezza.
 function lassoMixedPointerProxy(pointerEvent) {
@@ -7364,8 +7493,8 @@ function handleLassoGlobalPointerMove(ev) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.103 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
-  // Nelle 0.1.89/0.1.103 questi campioni venivano scartati perché il canale
+  // 0.1.104 — sequenza mista iPadOS: touchstart -> pointermove(Pen/Touch).
+  // Nelle 0.1.89/0.1.104 questi campioni venivano scartati perché il canale
   // Touch era già attivo: il Lazo rimaneva fermo al primo punto e la linea
   // tratteggiata non poteva comparire. Ora vengono inoltrati al gesto Touch
   // già aperto senza cambiare il pointerId logico del controller.
@@ -7400,7 +7529,7 @@ function finishLassoGlobalPointer(ev, cancelled = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return false;
 
-  // 0.1.103 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
+  // 0.1.104 — se la sequenza è partita come Touch ma termina come Pointer/Pen,
   // chiudiamo lo stesso gesto logico invece di ignorare il pointerup. Un
   // eventuale touchend successivo troverà lassoTouchId già nullo e non duplica.
   if (lassoPointerId == null && lassoTouchId != null && isLassoMixedPointerCandidate(ev)) {
@@ -7467,7 +7596,7 @@ function handleLassoWindowTouchMove(ev, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.103 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
+  // 0.1.104 — bridge simmetrico: se il gesto è nato come Pointer/Pen ma iPadOS
   // prosegue con TouchMove, inoltra comunque i campioni allo stesso pointerId
   // logico già aperto nel controller Lazo.
   if (lassoTouchId == null && lassoPointerId != null && ev.touches?.length === 1) {
@@ -7498,7 +7627,7 @@ function finishLassoWindowTouch(ev, cancelled = false, directSurface = false) {
   if (isLassoUiArmed()) ensureLassoInputShieldRuntime();
   if (!isLassoUiArmed()) return;
 
-  // 0.1.103 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
+  // 0.1.104 — chiusura simmetrica del gesto Pointer/Pen terminato come TouchEnd.
   if (lassoTouchId == null && lassoPointerId != null) {
     const id = lassoPointerId;
     const ended = ev.changedTouches?.[0] || null;
@@ -7877,7 +8006,7 @@ function routeGlobalPointerCancel(ev) {
   voiceScript?.flushIfIdle?.();
 }
 
-// 0.1.103 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
+// 0.1.104 — lo shield resta una superficie di compatibilità, ma il percorso autorevole
 // del gesto Lazo è ora Window capture. Su iPadOS il touchstart può arrivare allo
 // shield mentre i movimenti successivi non vengono consegnati ai suoi listener.
 function handleLassoShieldPointerDown(ev) {
@@ -7911,7 +8040,7 @@ function handleLassoShieldTouchEnd(ev, cancelled = false) {
   finishLassoWindowTouch(ev, cancelled, true);
 }
 
-// 0.1.103 — listener diretti sullo shield mantenuti solo come fallback.
+// 0.1.104 — listener diretti sullo shield mantenuti solo come fallback.
 // Window capture intercetta prima il gesto e lo consuma quando il Lazo è armato.
 lassoInputShield?.addEventListener('pointerdown', handleLassoShieldPointerDown, { passive:false, capture:true });
 lassoInputShield?.addEventListener('pointermove', handleLassoShieldPointerMove, { passive:false, capture:true });
@@ -7922,7 +8051,7 @@ lassoInputShield?.addEventListener('touchmove', handleLassoShieldTouchMove, { pa
 lassoInputShield?.addEventListener('touchend', (ev) => handleLassoShieldTouchEnd(ev, false), { passive:false, capture:true });
 lassoInputShield?.addEventListener('touchcancel', (ev) => handleLassoShieldTouchEnd(ev, true), { passive:false, capture:true });
 
-// 0.1.103 — Window capture è il percorso primario iPad/Pencil/dito.
+// 0.1.104 — Window capture è il percorso primario iPad/Pencil/dito.
 // Non viene più saltato quando event.target è lo shield.
 window.addEventListener('touchstart', handleLassoWindowTouchStart, { passive:false, capture:true });
 window.addEventListener('touchmove', handleLassoWindowTouchMove, { passive:false, capture:true });
@@ -8256,8 +8385,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (drawing) finalizeStroke('visibility-hidden');
     if (pageSwipe) { resetTurnStyles(); removePreview(); pageSwipe = null; pageTurning = false; }
-    if (ready && dirty) persistNow();
-    } else if (ready) {
+    if (ready && dirty) {
+      writeLifecycleJournal();
+      void persistNow().catch((err) => console.warn('Flush lifecycle visibility non completato', err));
+    }
+  } else if (ready) {
     scheduleCloudAuto('foreground', 1200);
   }
 });
@@ -8266,13 +8398,17 @@ window.addEventListener('online', () => { if (ready) scheduleCloudAuto('network-
 
 window.addEventListener('pagehide', () => {
   if (drawing) finalizeStroke('pagehide');
-  if (ready && dirty) persistNow();
+  if (ready && dirty) {
+    writeLifecycleJournal();
+    void persistNow().catch((err) => console.warn('Flush lifecycle pagehide non completato', err));
+  }
 });
 
 async function loadInitialPage() {
   statusLabel.textContent = 'caricamento';
   try {
     await openDb();
+    await recoverLifecycleJournal().catch((err) => console.warn('Recovery journal lifecycle non riuscito', err));
     const [record, globalRecord] = await Promise.all([
       getRecord(currentPageKey()),
       getRecord(GLOBAL_PAGE_STYLE_KEY),
@@ -8469,15 +8605,28 @@ async function bootAgenda() {
       beforeRestoreApplied: async (details) => {
         // Il gruppo Sync resta quello configurato sul dispositivo corrente: il backup non può
         // cambiare gruppo né propagare automaticamente uno snapshot storico.
+        // Blocchiamo prima i trasporti, poi fotografiamo gli store Sync in uno stato coerente
+        // perché un restore locale deve poter fare rollback completo.
         beginSyncRestoreGuard(details);
         lanTransport?.suspendForInk();
         cloudTransport?.suspendForInk();
+        restoreSyncRollbackSnapshot = await captureSyncStoresSnapshot();
       },
       afterRestoreApplied: async (details) => {
         // Lo snapshot ripristinato non genera eventi. Azzeriamo identità, cursori, outbox e blob Sync;
         // al riavvio una nuova replica eseguirà prima un pull-only completo del gruppo.
         await resetSyncStores();
         updateSyncRestoreGuard({ phase: 'restore-applied', restoredAt: new Date().toISOString(), ...details });
+        restoreSyncRollbackSnapshot = null;
+      },
+      afterRestoreRollback: async () => {
+        // Il restore locale è fallito ma il backup pre-restore è stato riapplicato: ripristiniamo
+        // anche gli store Sync temporaneamente azzerati e rimuoviamo il guard.
+        await restoreSyncStoresSnapshot(restoreSyncRollbackSnapshot);
+        restoreSyncRollbackSnapshot = null;
+        clearSyncRestoreGuard();
+        lanTransport?.resumeAfterInk?.();
+        cloudTransport?.resumeAfterInk?.();
       },
       beforeGlobalRestoreApplied: async (details) => {
         // Operazione distruttiva esplicita: il backup locale diventerà una nuova generazione

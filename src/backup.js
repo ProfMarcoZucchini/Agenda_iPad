@@ -17,7 +17,8 @@ const decoder = new TextDecoder();
 const NON_PORTABLE_PREFERENCE_KEYS = new Set([
   'agenda-ipad-cloud-sync-config-v1',
   'agenda-ipad-lan-sync-config-v1',
-  'agenda-ipad-sync-restore-guard-v1'
+  'agenda-ipad-sync-restore-guard-v1',
+  'agenda-ipad-lifecycle-journal-v1'
 ]);
 
 function isPortablePreferenceKey(key) {
@@ -213,8 +214,16 @@ function collectPortablePreferences() {
 
 function restorePortablePreferences(preferences) {
   if (!preferences || typeof preferences !== 'object') return;
-  for (const [key, value] of Object.entries(preferences)) {
-    if (!isPortablePreferenceKey(key)) continue;
+  const desired = new Map(Object.entries(preferences).filter(([key]) => isPortablePreferenceKey(key)));
+  try {
+    const removable = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (isPortablePreferenceKey(key) && !desired.has(key)) removable.push(key);
+    }
+    for (const key of removable) localStorage.removeItem(key);
+  } catch {}
+  for (const [key, value] of desired) {
     try { localStorage.setItem(key, String(value)); } catch {}
   }
 }
@@ -823,6 +832,7 @@ export function initBackupFoundation(options) {
   const {
     appVersion, mainDbName, mainStore, flushCurrent = async () => {}, setAppStatus = () => {},
     isRealtimeBusy = () => false, beforeRestoreApplied = async () => {}, afterRestoreApplied = async () => {},
+    afterRestoreRollback = async () => {},
     beforeGlobalRestoreApplied = async () => {}, afterGlobalRestoreApplied = async () => {},
     getSecurePasswordVaultBackup = async () => null, restoreSecurePasswordVaultBackup = async () => ({ restored: 0 })
   } = options;
@@ -1079,12 +1089,48 @@ export function initBackupFoundation(options) {
   async function renderHistory() {
     if (!history) return;
     const rows = await listArchives().catch(() => []);
-    if (!rows.length) { history.innerHTML = '<div class="backup-empty">Nessun backup ancora archiviato.</div>'; return; }
-    history.innerHTML = rows.slice(0, 12).map((row) => `
-      <div class="backup-item" data-backup-id="${row.id.replace(/"/g, '&quot;')}">
-        <div class="backup-item-main"><strong>${row.filename}</strong><small>${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${row.recordCount} record · ${row.audioCount || 0} audio · ${row.reason}</small><div class="delivery-badges">${(row.deliveries || [{label:'Archivio app',ok:true}]).map((d) => `<span class="delivery-badge ${d.ok ? 'ok' : 'fail'}" title="${String(d.message || '').replace(/"/g,'&quot;')}">${d.label} ${d.ok ? '✓' : '✗'}</span>`).join('')}</div></div>
-        <div class="backup-item-actions"><button type="button" data-backup-restore="1">Ripristina</button><button type="button" data-backup-export="1">Esporta</button><button type="button" data-backup-delete="1">Elimina</button></div>
-      </div>`).join('');
+    history.replaceChildren();
+    if (!rows.length) {
+      const empty = document.createElement('div');
+      empty.className = 'backup-empty';
+      empty.textContent = 'Nessun backup ancora archiviato.';
+      history.appendChild(empty);
+      return;
+    }
+    for (const row of rows.slice(0, 12)) {
+      const item = document.createElement('div');
+      item.className = 'backup-item';
+      item.dataset.backupId = String(row.id || '');
+
+      const main = document.createElement('div');
+      main.className = 'backup-item-main';
+      const title = document.createElement('strong');
+      title.textContent = String(row.filename || 'Backup senza nome');
+      const meta = document.createElement('small');
+      meta.textContent = `${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${Number(row.recordCount) || 0} record · ${Number(row.audioCount) || 0} audio · ${String(row.reason || '')}`;
+      const badges = document.createElement('div');
+      badges.className = 'delivery-badges';
+      for (const delivery of (row.deliveries || [{label:'Archivio app',ok:true}])) {
+        const badge = document.createElement('span');
+        badge.className = `delivery-badge ${delivery?.ok ? 'ok' : 'fail'}`;
+        badge.title = String(delivery?.message || '');
+        badge.textContent = `${String(delivery?.label || 'Destinazione')} ${delivery?.ok ? '✓' : '✗'}`;
+        badges.appendChild(badge);
+      }
+      main.append(title, meta, badges);
+
+      const actions = document.createElement('div');
+      actions.className = 'backup-item-actions';
+      for (const [key, label] of [['restore','Ripristina'], ['export','Esporta'], ['delete','Elimina']]) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset[`backup${key[0].toUpperCase()}${key.slice(1)}`] = '1';
+        button.textContent = label;
+        actions.appendChild(button);
+      }
+      item.append(main, actions);
+      history.appendChild(item);
+    }
   }
 
   async function openSettings() {
@@ -1137,6 +1183,22 @@ export function initBackupFoundation(options) {
     syncForm();
   }
 
+  async function applyBackupPayload(parsed) {
+    const records = parsed.pages?.records;
+    if (!Array.isArray(records)) throw new Error('Archivio senza records pagina');
+    const legacy = Number(parsed.formatVersion) < 2;
+    await replaceMainRecords(mainDbName, mainStore, records);
+    if (parsed.passwordVault) await restoreSecurePasswordVaultBackup(parsed.passwordVault);
+    if (!legacy) {
+      if (!audioProvider?.restoreBackup) throw new Error('Modulo audio non inizializzato: ripristino completo non consentito');
+      await audioProvider.restoreBackup(parsed.audioBackup || { schemaVersion:1, settings:[], recordings:[] });
+      await restoreLocalClipboards(parsed.clipboards);
+    }
+    restorePortablePreferences(parsed.preferences?.values || {});
+    await restoreBackupSettingsSnapshot(parsed.manifest?.backupSettingsSnapshot, parsed.manifest?.createdAt);
+    return { legacy, recordCount:records.length };
+  }
+
   async function applyParsedBackup(parsed, sourceLabel = 'backup') {
     const records = parsed.pages?.records;
     if (!Array.isArray(records)) throw new Error('Archivio senza records pagina');
@@ -1149,20 +1211,26 @@ export function initBackupFoundation(options) {
     );
     if (!ok) return false;
     const safety = await createBackup('pre-restore', { safety:true });
-    if (!safety) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
+    if (!safety?.blob) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
+    // Il backup di sicurezza viene verificato e parsato PRIMA di modificare qualunque
+    // archivio: deve essere già pronto come rollback compensativo se una fase successiva fallisce.
+    const safetyParsed = await verifyBackupBlob(safety.blob);
     const details = { fileName:sourceLabel, manifest:parsed.manifest, recordCount:records.length, restoreMode:'local' };
-    await beforeRestoreApplied(details);
-    await flushCurrent();
-    await replaceMainRecords(mainDbName, mainStore, records);
-    if (parsed.passwordVault) await restoreSecurePasswordVaultBackup(parsed.passwordVault);
-    if (!legacy) {
-      if (!audioProvider?.restoreBackup) throw new Error('Modulo audio non inizializzato: ripristino completo non consentito');
-      await audioProvider.restoreBackup(parsed.audioBackup || { schemaVersion:1, settings:[], recordings:[] });
-      await restoreLocalClipboards(parsed.clipboards);
+    try {
+      await beforeRestoreApplied(details);
+      await flushCurrent();
+      await applyBackupPayload(parsed);
+      await afterRestoreApplied(details);
+    } catch (err) {
+      setStatus(`Ripristino interrotto: ${err?.message || err}. Ripristino automatico dello stato precedente…`);
+      try {
+        await applyBackupPayload(safetyParsed);
+        await afterRestoreRollback({ ...details, rollbackAt:new Date().toISOString(), failedReason:String(err?.message || err) });
+      } catch (rollbackErr) {
+        throw new Error(`ERRORE CRITICO: ripristino incompleto (${err?.message || err}) e rollback non riuscito (${rollbackErr?.message || rollbackErr}). Usa il backup di sicurezza ${safety.filename}.`);
+      }
+      throw new Error(`Ripristino annullato: ${err?.message || err}. Lo stato precedente è stato ripristinato automaticamente.`);
     }
-    restorePortablePreferences(parsed.preferences?.values || {});
-    await restoreBackupSettingsSnapshot(parsed.manifest?.backupSettingsSnapshot, parsed.manifest?.createdAt);
-    await afterRestoreApplied(details);
     setStatus(legacy
       ? 'Ripristino locale completato da backup legacy. Sync sospesa: verifica lo stato prima di riallineare il gruppo.'
       : 'Ripristino locale completo eseguito. Sync sospesa: puoi usare “Ripristina gruppo attivo” per rendere questo stato autorevole.');

@@ -322,8 +322,14 @@ export function initCloudSyncTransport(options = {}) {
         stats.ignored += Number(applied?.ignored) || 0; stats.conflicts += Number(applied?.conflicts) || 0;
         pulled += events.length;
       }
+      const previousCursor = cursor;
       await setPullCursor(nextCursor); cursor = nextCursor; emit();
       if (!result?.hasMore) break;
+      // Protezione da event-log con buchi/corruzione: hasMore non può restare true
+      // senza avanzamento del cursor e senza eventi, altrimenti il pull entrerebbe in loop infinito.
+      if (nextCursor === previousCursor && wrappers.length === 0) {
+        throw new Error(`Cloud Sync bloccata: il server segnala altri eventi ma il cursor ${cursor} non avanza.`);
+      }
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     return pulled;

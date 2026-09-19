@@ -3611,3 +3611,10 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   cursor:pointer;
   font-size:100px;
 }
+
+
+/* 0.1.105 — Note: titolo separato dal blocco mese/anno. */
+.paper.note-view .page-kind-label {
+  transform:none;
+  text-align:left;
+}

@@ -619,14 +619,19 @@ export function initPasswordVault(options = {}) {
     selectionIds.clear();
     if (message) setStatus(message, true);
     renderPage();
-    void saveCurrentNotebook();
+    queueNotebookSave();
     armAutoLock();
   }
 
   async function persistNotebookSnapshot(snapshot, serialAtStart = changeSerial) {
-    if (!masterKeyBytes || !configRow || !dataRow) return;
+    if (!masterKeyBytes || !configRow || !dataRow) return saveChain;
     const keyCopy = new Uint8Array(masterKeyBytes);
-    saveChain = saveChain.then(async () => {
+    // Una coda fallita non deve avvelenare i salvataggi successivi, ma l'errore
+    // del commit corrente deve propagarsi fino a lock()/close(): la Rubrica non
+    // può dichiararsi salvata né cancellare la chiave dalla memoria se IndexedDB
+    // o la cifratura non hanno confermato il commit.
+    const previous = saveChain.catch(() => undefined);
+    const operation = previous.then(async () => {
       try {
         const revision = Math.max(1, Number(dataRow?.revision) || 1) + 1;
         const encrypted = await encryptPayload(keyCopy, configRow.vaultId, {
@@ -636,9 +641,11 @@ export function initPasswordVault(options = {}) {
         dataRow = { ...encrypted };
         if (serialAtStart === changeSerial) notebookDirty = false;
       } finally { keyCopy.fill(0); }
-    }).catch((err) => {
+    });
+    saveChain = operation.catch((err) => {
       notebookDirty = true;
       setStatus(`Salvataggio Rubrica non riuscito: ${err?.message || err}`);
+      throw err;
     });
     return saveChain;
   }
@@ -650,10 +657,18 @@ export function initPasswordVault(options = {}) {
     return persistNotebookSnapshot(snapshot, serial);
   }
 
+  function queueNotebookSave() {
+    void saveCurrentNotebook().catch(() => {
+      // persistNotebookSnapshot ha già marcato notebookDirty e mostrato lo stato.
+      // Il prossimo flush/lock ritenterà e, se fallisce ancora, impedirà la chiusura.
+    });
+  }
+
   async function flushNotebookBeforeExit() {
     if (activeGesture) finishGesture(null, false, true);
     if (notebookDirty) await saveCurrentNotebook(true);
-    try { await saveChain; } catch {}
+    await saveChain;
+    if (notebookDirty) throw new Error('Rubrica ancora modificata dopo il flush: blocco annullato');
   }
 
   // 0.1.101 — ponte verso il motore pagina principale di Agenda/Note.
@@ -897,16 +912,16 @@ export function initPasswordVault(options = {}) {
     const g=activeGesture; if(!g)return; activeGesture=null;activeTouchId=null;
     if(cancelled){ if(g.before) setCurrentItems(clone(g.before)); lassoPoints=[];renderPage();return; }
     if(g.type==='ink'){
-      if(ev) appendGesturePoint(ev.clientX,ev.clientY,ev.pressure); if(g.item.points.length){currentItems().push(sanitizeItem(g.item));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+      if(ev) appendGesturePoint(ev.clientX,ev.clientY,ev.pressure); if(g.item.points.length){currentItems().push(sanitizeItem(g.item));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();queueNotebookSave();}
     } else if(g.type==='eraser'){
-      if(g.changed){notebookDirty=true;changeSerial++;pushHistory(g.before);setStatus('Cancellazione salvata.',true);void saveCurrentNotebook();} renderPage();
+      if(g.changed){notebookDirty=true;changeSerial++;pushHistory(g.before);setStatus('Cancellazione salvata.',true);queueNotebookSave();} renderPage();
     } else if(g.type==='shape'){
-      if(g.previewItem){currentItems().push(sanitizeItem(g.previewItem));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();void saveCurrentNotebook();}
+      if(g.previewItem){currentItems().push(sanitizeItem(g.previewItem));notebookDirty=true;changeSerial++;pushHistory(g.before);renderPage();queueNotebookSave();}
     } else if(g.type==='lasso'){
       const poly=[...g.points]; lassoPoints=[];
       if(closeEnough(poly)){selectionIds=new Set(currentItems().filter(item=>{if(item.kind==='stroke')return item.points.some(p=>pointInPolygon(p,poly));const b=itemBounds(item);return pointInPolygon({x:(b.x0+b.x1)/2,y:(b.y0+b.y1)/2},poly);}).map(i=>i.id));setStatus(`Lazo · ${selectionIds.size} elementi selezionati`,true);} else {selectionIds.clear();setStatus('Lazo non chiuso.',true);} renderPage();
     } else if(g.type==='move-selection'){
-      const after=JSON.stringify(currentItems()); const before=JSON.stringify(g.before); if(after!==before){notebookDirty=true;changeSerial++;pushHistory(g.before);void saveCurrentNotebook();setStatus('Selezione spostata.',true);} renderPage();
+      const after=JSON.stringify(currentItems()); const before=JSON.stringify(g.before); if(after!==before){notebookDirty=true;changeSerial++;pushHistory(g.before);queueNotebookSave();setStatus('Selezione spostata.',true);} renderPage();
     }
     if(!internal)armAutoLock();
   }
@@ -929,10 +944,10 @@ export function initPasswordVault(options = {}) {
   }
 
   function undo(){
-    const historyKey=pageHistoryKey();const stack=undoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da annullare.',true);(redoByLetter[historyKey]||(redoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Annullato.',true);
+    const historyKey=pageHistoryKey();const stack=undoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da annullare.',true);(redoByLetter[historyKey]||(redoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();queueNotebookSave();setStatus('Annullato.',true);
   }
   function redo(){
-    const historyKey=pageHistoryKey();const stack=redoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da ripristinare.',true);(undoByLetter[historyKey]||(undoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();void saveCurrentNotebook();setStatus('Ripristinato.',true);
+    const historyKey=pageHistoryKey();const stack=redoByLetter[historyKey]||[];if(!stack.length)return setStatus('Niente da ripristinare.',true);(undoByLetter[historyKey]||(undoByLetter[historyKey]=[])).push(pageSnapshot());setCurrentItems(stack.pop());selectionIds.clear();notebookDirty=true;changeSerial++;renderPage();queueNotebookSave();setStatus('Ripristinato.',true);
   }
 
   function setActiveTool(tool){
@@ -973,12 +988,12 @@ export function initPasswordVault(options = {}) {
 
   function fileToDataUrl(file){return new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result||''));r.onerror=()=>reject(r.error||new Error('Lettura immagine non riuscita'));r.readAsDataURL(file);});}
   async function addImageFile(file){
-    if(!file||!masterKeyBytes)return;try{const before=pageSnapshot();const src=await fileToDataUrl(file);const probe=new Image();await new Promise((res,rej)=>{probe.onload=res;probe.onerror=rej;probe.src=src;});const aspect=Math.max(.2,Math.min(5,probe.naturalWidth/Math.max(1,probe.naturalHeight)));let w=.34,h=w/aspect;if(h>.42){h=.42;w=h*aspect;}const item=sanitizeItem({kind:'image',src,x:.12,y:.16,w,h});currentItems().push(item);notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Immagine inserita nella Rubrica.',true);}catch(err){setStatus(`Immagine non inserita: ${err?.message||err}`);}finally{if(imageInput)imageInput.value='';activeTool=lastInkTool;updateToolbarUi();}
+    if(!file||!masterKeyBytes)return;try{const before=pageSnapshot();const src=await fileToDataUrl(file);const probe=new Image();await new Promise((res,rej)=>{probe.onload=res;probe.onerror=rej;probe.src=src;});const aspect=Math.max(.2,Math.min(5,probe.naturalWidth/Math.max(1,probe.naturalHeight)));let w=.34,h=w/aspect;if(h>.42){h=.42;w=h*aspect;}const item=sanitizeItem({kind:'image',src,x:.12,y:.16,w,h});currentItems().push(item);notebookDirty=true;changeSerial++;pushHistory(before);renderPage();queueNotebookSave();setStatus('Immagine inserita nella Rubrica.',true);}catch(err){setStatus(`Immagine non inserita: ${err?.message||err}`);}finally{if(imageInput)imageInput.value='';activeTool=lastInkTool;updateToolbarUi();}
   }
 
   function startVoiceAt(point){
     const SR=globalThis.SpeechRecognition||globalThis.webkitSpeechRecognition;if(!SR){setStatus('Dettatura non disponibile in questo browser.');activeTool=lastInkTool;updateToolbarUi();return;}
-    try{const rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.maxAlternatives=1;setStatus('Dettatura Rubrica in ascolto…');rec.onresult=(e)=>{const text=String(e.results?.[0]?.[0]?.transcript||'').trim();if(!text)return;const before=pageSnapshot();currentItems().push(sanitizeItem({kind:'text',text,x:point.x,y:point.y,color:toolStyle.text.color,size:toolStyle.text.size}));notebookDirty=true;changeSerial++;pushHistory(before);renderPage();void saveCurrentNotebook();setStatus('Testo dettato inserito.',true);};rec.onerror=(e)=>setStatus(`Dettatura non riuscita: ${e.error||'errore'}`);rec.onend=()=>{activeTool=lastInkTool;updateToolbarUi();};rec.start();}catch(err){setStatus(`Dettatura non disponibile: ${err?.message||err}`);activeTool=lastInkTool;updateToolbarUi();}
+    try{const rec=new SR();rec.lang='it-IT';rec.interimResults=false;rec.maxAlternatives=1;setStatus('Dettatura Rubrica in ascolto…');rec.onresult=(e)=>{const text=String(e.results?.[0]?.[0]?.transcript||'').trim();if(!text)return;const before=pageSnapshot();currentItems().push(sanitizeItem({kind:'text',text,x:point.x,y:point.y,color:toolStyle.text.color,size:toolStyle.text.size}));notebookDirty=true;changeSerial++;pushHistory(before);renderPage();queueNotebookSave();setStatus('Testo dettato inserito.',true);};rec.onerror=(e)=>setStatus(`Dettatura non riuscita: ${e.error||'errore'}`);rec.onend=()=>{activeTool=lastInkTool;updateToolbarUi();};rec.start();}catch(err){setStatus(`Dettatura non disponibile: ${err?.message||err}`);activeTool=lastInkTool;updateToolbarUi();}
   }
 
   async function readLocalSecurityState(){return await getRow(VAULT_LOCAL_STATE_KEY).catch(()=>null)||{key:VAULT_LOCAL_STATE_KEY,failedAttempts:0,lockedUntil:0};}
@@ -1005,12 +1020,19 @@ export function initPasswordVault(options = {}) {
   async function enableBiometric(){try{if(!masterKeyBytes||!configRow)throw new Error('Sblocca prima la Rubrica con il PIN');setStatus('Conferma l’autenticazione biometrica di iPadOS…');const row=await createBiometricWrapper(masterKeyBytes,configRow.vaultId);await putLocalRow(row);localAuthRow=row;renderMode();setStatus('Impronta digitale / biometria associata e impostata come accesso predefinito.',true);}catch(err){if(err?.name==='NotAllowedError')setStatus('Configurazione biometrica annullata.');else setStatus(`Biometria non configurata: ${err?.message||err}`);}}
 
   async function lock(reason='manual'){
-    if(locking)return;locking=true;
+    if(locking)return false;locking=true;
     try{
       clearTimeout(autoLockTimer);
       if(masterKeyBytes) await onBeforeLock(reason);
-      await flushNotebookBeforeExit();if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();activePageIndex=1;legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
+      await flushNotebookBeforeExit();
+      if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=null;notebook=emptyNotebook();activePageIndex=1;legacyEntries=[];selectionIds.clear();lassoPoints=[];clearSecretInputs();renderMode();if(reason==='timeout')setStatus('Rubrica salvata e bloccata automaticamente.');else if(reason==='background')setStatus('Rubrica salvata e bloccata.');else setStatus('Rubrica salvata e protetta.');
       await onLocked(reason);
+      return true;
+    }catch(err){
+      notebookDirty=true;
+      setStatus(`Rubrica NON bloccata: salvataggio non confermato (${err?.message||err}).`,true);
+      armAutoLock();
+      return false;
     }finally{locking=false;}
   }
 
@@ -1027,7 +1049,7 @@ export function initPasswordVault(options = {}) {
     }else{setStatus('Prima configurazione: crea il PIN di 4 cifre.');setTimeout(()=>setupPin?.focus?.({preventScroll:true}),50);}
   }
 
-  async function close(){if(!panel)return;await flushNotebookBeforeExit();await lock('manual');panel.hidden=true;try{onClose();}catch{}}
+  async function close(){if(!panel)return;const locked=await lock('manual');if(!locked)return;panel.hidden=true;try{onClose();}catch{}}
   async function handleRemoteUpdate(key){if(key!==VAULT_CONFIG_KEY&&key!==VAULT_DATA_KEY)return;await refreshRows();if(masterKeyBytes)await lock('remote');setStatus('Rubrica aggiornata dal Sync. Accedi nuovamente.');}
 
   function bindDirectAction(element,action){if(!element)return;let lastDirect=-Infinity;element.addEventListener('pointerdown',(ev)=>{if(ev.pointerType==='mouse')return;lastDirect=performance.now();ev.preventDefault();ev.stopPropagation();action(ev);},{passive:false});element.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastDirect<650)return;action(ev);});}
@@ -1044,7 +1066,7 @@ export function initPasswordVault(options = {}) {
   imageInput?.addEventListener('change',()=>void addImageFile(imageInput.files?.[0]));
 
   canvas?.addEventListener('pointerdown',handleCanvasPointerDown,{passive:false});canvas?.addEventListener('pointermove',handleCanvasPointerMove,{passive:false});canvas?.addEventListener('pointerup',(ev)=>handleCanvasPointerUp(ev,false),{passive:false});canvas?.addEventListener('pointercancel',(ev)=>handleCanvasPointerUp(ev,true),{passive:false});canvas?.addEventListener('touchstart',handleCanvasTouchStart,{passive:false});canvas?.addEventListener('touchmove',handleCanvasTouchMove,{passive:false});canvas?.addEventListener('touchend',(ev)=>handleCanvasTouchEnd(ev,false),{passive:false});canvas?.addEventListener('touchcancel',(ev)=>handleCanvasTouchEnd(ev,true),{passive:false});
-  panel?.addEventListener('pointerdown',armAutoLock,{passive:true});panel?.addEventListener('keydown',armAutoLock,{passive:true});document.addEventListener('visibilitychange',()=>{if(document.hidden&&masterKeyBytes)void lock('background');});
+  panel?.addEventListener('pointerdown',armAutoLock,{passive:true});panel?.addEventListener('keydown',armAutoLock,{passive:true});document.addEventListener('visibilitychange',()=>{if(document.hidden&&masterKeyBytes)void lock('background').catch((err)=>setStatus(`Rubrica non bloccata: ${err?.message||err}`));});
   if(typeof ResizeObserver!=='undefined'&&page){resizeObserver=new ResizeObserver(()=>resizeCanvas());resizeObserver.observe(page);}globalThis.visualViewport?.addEventListener?.('resize',()=>resizeCanvas());globalThis.addEventListener?.('orientationchange',()=>setTimeout(()=>resizeCanvas(true),60));
 
   void refreshRows().then(renderMode);
