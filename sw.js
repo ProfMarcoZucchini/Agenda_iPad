@@ -1,11 +1,20 @@
 const CACHE_PREFIX = 'agenda-ipad-reintegration-';
-const CACHE = 'agenda-ipad-reintegration-0.1.106';
-const CORE = ['./', './index.html', './src/main.js?v=0.1.106', './src/audio-recorder.js', './src/voice-script.js', './src/lasso.js', './src/lasso-tool.js', './src/password-vault.js', './src/shapes.js', './src/extra-shapes.js', './src/sync-core.js', './src/lan-sync.js', './src/cloud-sync.js', './src/cloud-crypto.js', './src/blob-store.js', './src/backup.js', './src/cloud-auth.js', './src/styles.css?v=0.1.106', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './apple-touch-icon.png', './assets/cover-agenda-ipad.png', './assets/welcome-agenda-ipad.png', './assets/weather/sun.svg', './assets/weather/sun-cloud.svg', './assets/weather/cloud.svg', './assets/weather/rain.svg', './assets/weather/fog.svg', './assets/weather/snow.svg'];
+const CACHE = 'agenda-ipad-reintegration-0.1.131';
+const CORE = ['./', './index.html', './src/main.js?v=0.1.131', './src/audio-recorder.js', './src/voice-script.js', './src/lasso.js', './src/lasso-tool.js', './src/password-vault.js', './src/shapes.js', './src/extra-shapes.js', './src/sync-core.js', './src/lan-sync.js', './src/cloud-sync.js', './src/cloud-crypto.js', './src/blob-store.js', './src/backup.js', './src/cloud-auth.js', './src/styles.css?v=0.1.131', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './apple-touch-icon.png', './assets/cover-agenda-ipad.png', './assets/welcome-agenda-ipad.png', './assets/weather/sun.svg', './assets/weather/sun-cloud.svg', './assets/weather/cloud.svg', './assets/weather/rain.svg', './assets/weather/fog.svg', './assets/weather/snow.svg'];
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(CORE)).then(() => self.skipWaiting()));
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    const results = await Promise.allSettled(CORE.map(async (url) => {
+      const response = await fetch(url, { cache:'reload' });
+      if (!response.ok) throw new Error(`Precache ${url}: HTTP ${response.status}`);
+      await cache.put(url, response);
+    }));
+    const failures = results.filter((item) => item.status === 'rejected');
+    if (failures.length) console.warn(`Agenda precache parziale: ${failures.length}/${CORE.length} risorse non disponibili`);
+  })());
 });
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE).map((key) => caches.delete(key)))));
 });
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
@@ -13,8 +22,15 @@ self.addEventListener('fetch', (event) => {
   // I transport Sync non devono mai passare dalla cache PWA né dal fallback index.html.
   if (url.origin !== self.location.origin || url.pathname.startsWith('/agenda-sync/')) return;
   event.respondWith(fetch(event.request).then((response) => {
-    const copy = response.clone();
-    caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+    if (response.ok) {
+      const copy = response.clone();
+      caches.open(CACHE).then((cache) => cache.put(event.request, copy)).catch(() => {});
+    }
     return response;
-  }).catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html'))));
+  }).catch(async () => {
+    const cached = await caches.match(event.request);
+    if (cached) return cached;
+    if (event.request.mode === 'navigate') return caches.match('./index.html');
+    return Response.error();
+  }));
 });

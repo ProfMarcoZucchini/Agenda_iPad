@@ -148,13 +148,13 @@ export function initCloudSyncTransport(options = {}) {
     return health;
   }
 
-  async function createGroup() {
+  async function createGroup(bootstrapToken = '') {
     if (running) throw new Error('Sincronizzazione già in corso.');
     const cfg = config(false);
     const credentials = generateCloudCredentials();
     const authHash = await cloudAuthHash(credentials.authKey);
     const result = await request('group_create.php', {
-      method: 'POST', json: { protocolVersion, groupId: credentials.groupId, authHash }
+      method: 'POST', json: { protocolVersion, groupId: credentials.groupId, authHash, bootstrapToken:String(bootstrapToken || '') }
     }, 15000, false);
     if (!result?.ok || String(result.groupId) !== credentials.groupId) throw new Error('Creazione gruppo Cloud non confermata.');
     return { ...credentials, joinCode: encodeCloudJoinCode(credentials) };

@@ -15,6 +15,9 @@ export const VAULT_LOCAL_STATE_KEY = 'password-vault-local-state-v1';
 export const VAULT_SYNC_KEY = '::password-vault';
 export const VAULT_SCHEMA_VERSION = 1;
 export const VAULT_PIN_ITERATIONS = 600000;
+export const VAULT_PIN_POLICY_VERSION = 2;
+export const VAULT_PIN_MIN_DIGITS = 6;
+export const VAULT_PIN_MAX_DIGITS = 12;
 const AUTO_LOCK_MS = 2 * 60 * 1000;
 
 function randomBytes(length) {
@@ -50,8 +53,9 @@ async function importAesKey(rawBytes, usages = ['encrypt', 'decrypt']) {
 }
 
 async function derivePinKey(pin, saltBytes, iterations = VAULT_PIN_ITERATIONS) {
-  if (!/^\d{4}$/.test(String(pin || ''))) throw new Error('Il codice deve contenere esattamente 4 cifre');
-  const baseKey = await crypto.subtle.importKey('raw', te.encode(String(pin)), 'PBKDF2', false, ['deriveKey']);
+  const normalized = String(pin || '');
+  if (!/^\d{4,12}$/.test(normalized)) throw new Error('PIN non valido');
+  const baseKey = await crypto.subtle.importKey('raw', te.encode(normalized), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: saltBytes, iterations: Math.max(100000, Number(iterations) || VAULT_PIN_ITERATIONS), hash: 'SHA-256' },
     baseKey,
@@ -85,7 +89,24 @@ function wrapAad(vaultId, purpose) {
   return `Agenda iPad Password Vault|v1|${String(vaultId || '')}|${String(purpose || '')}`;
 }
 
+function validateNewPin(pin) {
+  const normalized = String(pin || '');
+  if (!/^\d{6,12}$/.test(normalized)) {
+    throw new Error(`Il PIN deve contenere da ${VAULT_PIN_MIN_DIGITS} a ${VAULT_PIN_MAX_DIGITS} cifre`);
+  }
+  return normalized;
+}
+
+function pinPolicyVersion(configRow) {
+  return Math.max(1, Number(configRow?.pinPolicyVersion) || 1);
+}
+
+function needsPinUpgrade(configRow) {
+  return pinPolicyVersion(configRow) < VAULT_PIN_POLICY_VERSION;
+}
+
 export async function createVaultMaterial(pin) {
+  pin = validateNewPin(pin);
   const vaultId = `vault-${bytesToB64url(randomBytes(18))}`;
   const masterKeyBytes = randomBytes(32);
   const pinSalt = randomBytes(24);
@@ -95,6 +116,7 @@ export async function createVaultMaterial(pin) {
   const configRow = {
     key: VAULT_CONFIG_KEY,
     schemaVersion: VAULT_SCHEMA_VERSION,
+    pinPolicyVersion: VAULT_PIN_POLICY_VERSION,
     vaultId,
     pinKdf: { name: 'PBKDF2-SHA256', iterations: VAULT_PIN_ITERATIONS, salt: bytesToB64url(pinSalt) },
     pinWrap,
@@ -115,11 +137,13 @@ export async function unwrapMasterKeyWithPin(configRow, pin) {
 }
 
 export async function rewrapMasterKeyWithPin(configRow, masterKeyBytes, newPin) {
+  newPin = validateNewPin(newPin);
   const salt = randomBytes(24);
   const pinKey = await derivePinKey(newPin, salt, VAULT_PIN_ITERATIONS);
   const pinWrap = await aesEncryptBytes(pinKey, masterKeyBytes, wrapAad(configRow.vaultId, 'pin-wrap'));
   return {
     ...portableVaultRow(configRow),
+    pinPolicyVersion: VAULT_PIN_POLICY_VERSION,
     pinKdf: { name: 'PBKDF2-SHA256', iterations: VAULT_PIN_ITERATIONS, salt: bytesToB64url(salt) },
     pinWrap,
     modifiedAt: new Date().toISOString()
@@ -337,6 +361,10 @@ export function initPasswordVault(options = {}) {
   const pinUnlockButton = document.getElementById('passwordVaultPinUnlockButton');
   const biometricUnlockButton = document.getElementById('passwordVaultBiometricUnlockButton');
   const biometricSetupButton = document.getElementById('passwordVaultBiometricSetupButton');
+  const pinUpgradeView = document.getElementById('passwordVaultPinUpgrade');
+  const pinUpgradeInput = document.getElementById('passwordVaultPinUpgradeValue');
+  const pinUpgradeConfirm = document.getElementById('passwordVaultPinUpgradeConfirm');
+  const pinUpgradeButton = document.getElementById('passwordVaultPinUpgradeButton');
   const securityStatus = document.getElementById('passwordVaultSecurityStatus');
   const vaultStatus = document.getElementById('passwordVaultStatus');
   const azBar = document.getElementById('passwordVaultAz');
@@ -370,6 +398,8 @@ export function initPasswordVault(options = {}) {
   let changeSerial = 0;
   let biometricOpening = false;
   let locking = false;
+  let pendingPinUpgradeKey = null;
+  let pendingPinUpgradeMethod = '';
   let activeTool = 'pen';
   let lastInkTool = 'pen';
   let activeShapeType = 'rectangle';
@@ -508,7 +538,7 @@ export function initPasswordVault(options = {}) {
 
   function sanitizePinControl(control) {
     if (!control) return;
-    const filtered = String(control.value || '').replace(/\D+/g, '').slice(0, 4);
+    const filtered = String(control.value || '').replace(/\D+/g, '').slice(0, VAULT_PIN_MAX_DIGITS);
     if (control.value !== filtered) control.value = filtered;
   }
 
@@ -537,6 +567,8 @@ export function initPasswordVault(options = {}) {
     if (pinInput) pinInput.value = '';
     if (setupPin) setupPin.value = '';
     if (setupPinConfirm) setupPinConfirm.value = '';
+    if (pinUpgradeInput) pinUpgradeInput.value = '';
+    if (pinUpgradeConfirm) pinUpgradeConfirm.value = '';
   }
 
   function armAutoLock() {
@@ -558,8 +590,10 @@ export function initPasswordVault(options = {}) {
   function renderMode() {
     const initialized = Boolean(configRow && dataRow);
     const unlocked = Boolean(masterKeyBytes);
-    if (setupView) setupView.hidden = initialized;
-    if (unlockView) unlockView.hidden = !initialized || unlocked;
+    const upgradingPin = Boolean(pendingPinUpgradeKey);
+    if (setupView) setupView.hidden = initialized || upgradingPin;
+    if (unlockView) unlockView.hidden = !initialized || unlocked || upgradingPin;
+    if (pinUpgradeView) pinUpgradeView.hidden = !upgradingPin;
     if (unlockedView) unlockedView.hidden = !unlocked;
     if (lockButton) lockButton.hidden = !unlocked;
     if (biometricUnlockButton) biometricUnlockButton.hidden = !initialized || unlocked || !localAuthRow;
@@ -1001,19 +1035,47 @@ export function initPasswordVault(options = {}) {
   async function clearPinFailures(){await putLocalRow({key:VAULT_LOCAL_STATE_KEY,failedAttempts:0,lockedUntil:0,modifiedAt:new Date().toISOString()}).catch(()=>{});}
   async function ensurePinAllowed(){const state=await readLocalSecurityState();const until=Math.max(0,Number(state.lockedUntil)||0);if(until>Date.now())throw new Error(`Troppi tentativi errati. Riprova tra ${Math.ceil((until-Date.now())/1000)} s.`);}
 
+  function clearPendingPinUpgrade(){
+    if(pendingPinUpgradeKey) pendingPinUpgradeKey.fill(0);
+    pendingPinUpgradeKey=null;pendingPinUpgradeMethod='';
+    if(pinUpgradeInput)pinUpgradeInput.value='';if(pinUpgradeConfirm)pinUpgradeConfirm.value='';
+  }
+
+  function beginPinUpgrade(rawKey,method){
+    clearPendingPinUpgrade();
+    pendingPinUpgradeKey=new Uint8Array(rawKey);pendingPinUpgradeMethod=String(method||'PIN');
+    renderMode();
+    setStatus(`Aggiornamento sicurezza richiesto: scegli un nuovo PIN di ${VAULT_PIN_MIN_DIGITS}–${VAULT_PIN_MAX_DIGITS} cifre.`);
+    setTimeout(()=>pinUpgradeInput?.focus?.({preventScroll:true}),60);
+  }
+
+  async function completePinUpgrade(){
+    try{
+      if(!pendingPinUpgradeKey||!configRow)throw new Error('Sessione di aggiornamento PIN scaduta');
+      const pin=String(pinUpgradeInput?.value||''),confirm=String(pinUpgradeConfirm?.value||'');
+      validateNewPin(pin);if(pin!==confirm)throw new Error('I due PIN non coincidono');
+      const nextConfig=await rewrapMasterKeyWithPin(configRow,pendingPinUpgradeKey,pin);
+      await commitPortableRows([nextConfig]);
+      configRow={...nextConfig};
+      const raw=new Uint8Array(pendingPinUpgradeKey);const method=pendingPinUpgradeMethod;
+      clearPendingPinUpgrade();
+      await unlockWithMasterKey(raw,`${method} · PIN aggiornato`);raw.fill(0);
+    }catch(err){setStatus(`Aggiornamento PIN non riuscito: ${err?.message||err}`);}
+  }
+
   async function unlockWithMasterKey(rawKey,method){
     const payload=await decryptPayload(rawKey,dataRow);if(masterKeyBytes)masterKeyBytes.fill(0);masterKeyBytes=new Uint8Array(rawKey);legacyEntries=Array.isArray(payload.entries)?clone(payload.entries):[];notebook=sanitizeNotebook(payload.notebook);activeLetter='A';activePageIndex=1;activeTool='pen';lastInkTool='pen';selectionIds.clear();undoByLetter={};redoByLetter={};notebookDirty=false;renderMode();armAutoLock();setStatus(`Rubrica sbloccata con ${method}.`,true);
     if(panel) panel.hidden=true;
     await onUnlocked({ method, letter:activeLetter, pageIndex:1, pageTotal:pageCount(activeLetter), page:mainPageFromLetter(activeLetter,1) });
   }
 
-  async function unlockPin(){try{await ensurePinAllowed();const pin=String(pinInput?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Inserisci le 4 cifre del PIN');const raw=await unwrapMasterKeyWithPin(configRow,pin);await clearPinFailures();if(pinInput)pinInput.value='';await unlockWithMasterKey(raw,'PIN');raw.fill(0);}catch(err){if(!String(err?.message||'').startsWith('Troppi tentativi'))await notePinFailure();setStatus(`Accesso non riuscito: ${err?.message||err}`);}}
+  async function unlockPin(){try{await ensurePinAllowed();const pin=String(pinInput?.value||'');const legacy=needsPinUpgrade(configRow);const pattern=legacy?/^\d{4,12}$/:/^\d{6,12}$/;if(!pattern.test(pin))throw new Error(legacy?'Inserisci il PIN esistente':'Inserisci un PIN da 6 a 12 cifre');const raw=await unwrapMasterKeyWithPin(configRow,pin);await clearPinFailures();if(pinInput)pinInput.value='';if(legacy){beginPinUpgrade(raw,'PIN');raw.fill(0);return;}await unlockWithMasterKey(raw,'PIN');raw.fill(0);}catch(err){if(!String(err?.message||'').startsWith('Troppi tentativi'))await notePinFailure();setStatus(`Accesso non riuscito: ${err?.message||err}`);}}
 
   async function unlockBiometric(){
-    if(biometricOpening)return;biometricOpening=true;try{if(!localAuthRow)throw new Error('Biometria non configurata su questo dispositivo');setStatus('Conferma impronta / biometria su iPad…');const raw=await unwrapMasterKeyWithBiometric(configRow,localAuthRow);await unlockWithMasterKey(raw,'biometria');raw.fill(0);}catch(err){if(err?.name==='NotAllowedError')setStatus('Accesso biometrico annullato. PIN disponibile come alternativa.');else setStatus(`Biometria non disponibile: ${err?.message||err}`);setTimeout(()=>pinInput?.focus?.({preventScroll:true}),60);}finally{biometricOpening=false;}
+    if(biometricOpening)return;biometricOpening=true;try{if(!localAuthRow)throw new Error('Biometria non configurata su questo dispositivo');setStatus('Conferma impronta / biometria su iPad…');const raw=await unwrapMasterKeyWithBiometric(configRow,localAuthRow);if(needsPinUpgrade(configRow)){beginPinUpgrade(raw,'biometria');raw.fill(0);return;}await unlockWithMasterKey(raw,'biometria');raw.fill(0);}catch(err){if(err?.name==='NotAllowedError')setStatus('Accesso biometrico annullato. PIN disponibile come alternativa.');else setStatus(`Biometria non disponibile: ${err?.message||err}`);setTimeout(()=>pinInput?.focus?.({preventScroll:true}),60);}finally{biometricOpening=false;}
   }
 
-  async function setupVault(){try{const pin=String(setupPin?.value||''),confirm=String(setupPinConfirm?.value||'');if(!/^\d{4}$/.test(pin))throw new Error('Il PIN deve contenere esattamente 4 cifre');if(pin!==confirm)throw new Error('I due PIN non coincidono');const material=await createVaultMaterial(pin);await commitPortableRows([material.configRow,material.dataRow]);configRow={...material.configRow};dataRow={...material.dataRow};
+  async function setupVault(){try{const pin=String(setupPin?.value||''),confirm=String(setupPinConfirm?.value||'');validateNewPin(pin);if(pin!==confirm)throw new Error('I due PIN non coincidono');const material=await createVaultMaterial(pin);await commitPortableRows([material.configRow,material.dataRow]);configRow={...material.configRow};dataRow={...material.dataRow};
     if(!localAuthRow){try{const bio=await createBiometricWrapper(material.masterKeyBytes,configRow.vaultId);await putLocalRow(bio);localAuthRow=bio;}catch(err){console.warn('Biometria iniziale Rubrica non configurata',err);}}
     await unlockWithMasterKey(material.masterKeyBytes,'nuovo PIN');material.masterKeyBytes.fill(0);clearSecretInputs();}catch(err){setStatus(`Creazione Rubrica non riuscita: ${err?.message||err}`);}}
 
@@ -1046,27 +1108,26 @@ export function initPasswordVault(options = {}) {
     if(configRow&&dataRow){
       if(localAuthRow){setStatus('Accesso biometrico predefinito…');void unlockBiometric();}
       else{setStatus('Accedi con il PIN. Puoi associare la biometria dopo lo sblocco.');setTimeout(()=>pinInput?.focus?.({preventScroll:true}),50);}
-    }else{setStatus('Prima configurazione: crea il PIN di 4 cifre.');setTimeout(()=>setupPin?.focus?.({preventScroll:true}),50);}
+    }else{setStatus(`Prima configurazione: crea un PIN di ${VAULT_PIN_MIN_DIGITS}–${VAULT_PIN_MAX_DIGITS} cifre.`);setTimeout(()=>setupPin?.focus?.({preventScroll:true}),50);}
   }
 
-  async function close(){if(!panel)return;const locked=await lock('manual');if(!locked)return;panel.hidden=true;try{onClose();}catch{}}
+  async function close(){if(!panel)return;if(pendingPinUpgradeKey){clearPendingPinUpgrade();renderMode();panel.hidden=true;try{onClose();}catch{}return;}const locked=await lock('manual');if(!locked)return;panel.hidden=true;try{onClose();}catch{}}
   async function handleRemoteUpdate(key){if(key!==VAULT_CONFIG_KEY&&key!==VAULT_DATA_KEY)return;await refreshRows();if(masterKeyBytes)await lock('remote');setStatus('Rubrica aggiornata dal Sync. Accedi nuovamente.');}
 
-  function bindDirectAction(element,action){if(!element)return;let lastDirect=-Infinity;element.addEventListener('pointerdown',(ev)=>{if(ev.pointerType==='mouse')return;lastDirect=performance.now();ev.preventDefault();ev.stopPropagation();action(ev);},{passive:false});element.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastDirect<650)return;action(ev);});}
+  function bindDirectAction(element,action){if(!element)return;let lastDirect=-Infinity;element.addEventListener('pointerdown',(ev)=>{if(ev.pointerType!=='pen')return;lastDirect=performance.now();ev.preventDefault();ev.stopPropagation();action(ev);},{passive:false});element.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastDirect<650)return;action(ev);});}
 
-  bindFullKeyboardPin(setupPin);bindFullKeyboardPin(setupPinConfirm);bindFullKeyboardPin(pinInput);
-  keyButton?.addEventListener('pointerdown',(ev)=>{if(ev.pointerType==='mouse')return;lastKeyDirectOpenAt=performance.now();ev.preventDefault();ev.stopPropagation();void open();},{passive:false});
+  bindFullKeyboardPin(setupPin);bindFullKeyboardPin(setupPinConfirm);bindFullKeyboardPin(pinInput);bindFullKeyboardPin(pinUpgradeInput);bindFullKeyboardPin(pinUpgradeConfirm);
+  keyButton?.addEventListener('pointerdown',(ev)=>{if(ev.pointerType!=='pen')return;lastKeyDirectOpenAt=performance.now();ev.preventDefault();ev.stopPropagation();void open();},{passive:false});
   keyButton?.addEventListener('pointerup',(ev)=>{if(ev.pointerType==='mouse')return;ev.preventDefault();ev.stopPropagation();},{passive:false});
-  keyButton?.addEventListener('touchstart',(ev)=>{if(performance.now()-lastKeyDirectOpenAt<220){ev.preventDefault();ev.stopPropagation();return;}lastKeyDirectOpenAt=performance.now();ev.preventDefault();ev.stopPropagation();void open();},{passive:false});
   keyButton?.addEventListener('click',(ev)=>{ev.preventDefault();if(performance.now()-lastKeyDirectOpenAt<650)return;void open();});
 
-  bindDirectAction(closeButton,()=>void close());bindDirectAction(lockButton,()=>void lock('manual'));bindDirectAction(createButton,()=>void setupVault());bindDirectAction(pinUnlockButton,()=>void unlockPin());bindDirectAction(biometricUnlockButton,()=>void unlockBiometric());bindDirectAction(biometricSetupButton,()=>void enableBiometric());
+  bindDirectAction(closeButton,()=>void close());bindDirectAction(lockButton,()=>void lock('manual'));bindDirectAction(createButton,()=>void setupVault());bindDirectAction(pinUnlockButton,()=>void unlockPin());bindDirectAction(biometricUnlockButton,()=>void unlockBiometric());bindDirectAction(biometricSetupButton,()=>void enableBiometric());bindDirectAction(pinUpgradeButton,()=>void completePinUpgrade());
   pinInput?.addEventListener('keydown',(ev)=>{if(ev.key==='Enter'){ev.preventDefault();void unlockPin();}});
   if(azBar)for(const button of azBar.querySelectorAll('[data-vault-letter]'))bindDirectAction(button,()=>selectLetter(String(button.dataset.vaultLetter||'A')));
   imageInput?.addEventListener('change',()=>void addImageFile(imageInput.files?.[0]));
 
   canvas?.addEventListener('pointerdown',handleCanvasPointerDown,{passive:false});canvas?.addEventListener('pointermove',handleCanvasPointerMove,{passive:false});canvas?.addEventListener('pointerup',(ev)=>handleCanvasPointerUp(ev,false),{passive:false});canvas?.addEventListener('pointercancel',(ev)=>handleCanvasPointerUp(ev,true),{passive:false});canvas?.addEventListener('touchstart',handleCanvasTouchStart,{passive:false});canvas?.addEventListener('touchmove',handleCanvasTouchMove,{passive:false});canvas?.addEventListener('touchend',(ev)=>handleCanvasTouchEnd(ev,false),{passive:false});canvas?.addEventListener('touchcancel',(ev)=>handleCanvasTouchEnd(ev,true),{passive:false});
-  panel?.addEventListener('pointerdown',armAutoLock,{passive:true});panel?.addEventListener('keydown',armAutoLock,{passive:true});document.addEventListener('visibilitychange',()=>{if(document.hidden&&masterKeyBytes)void lock('background').catch((err)=>setStatus(`Rubrica non bloccata: ${err?.message||err}`));});
+  panel?.addEventListener('pointerdown',armAutoLock,{passive:true});panel?.addEventListener('keydown',armAutoLock,{passive:true});document.addEventListener('visibilitychange',()=>{if(!document.hidden)return;if(pendingPinUpgradeKey){clearPendingPinUpgrade();renderMode();setStatus('Aggiornamento PIN annullato per sicurezza. Accedi nuovamente.');return;}if(masterKeyBytes)void lock('background').catch((err)=>setStatus(`Rubrica non bloccata: ${err?.message||err}`));});
   if(typeof ResizeObserver!=='undefined'&&page){resizeObserver=new ResizeObserver(()=>resizeCanvas());resizeObserver.observe(page);}globalThis.visualViewport?.addEventListener?.('resize',()=>resizeCanvas());globalThis.addEventListener?.('orientationchange',()=>setTimeout(()=>resizeCanvas(true),60));
 
   void refreshRows().then(renderMode);

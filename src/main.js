@@ -15,7 +15,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.106';
+const APP_VERSION = '0.1.131';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -76,7 +76,7 @@ const ALLOWED_PAGE_TEMPLATES = Object.freeze(['ruled', 'grid', 'blank']);
 const SAVE_IDLE_MS = 2400;
 const FOOTER_PX = 46;
 const MIN_DATE = '2026-01-01';
-const MAX_DATE = '2028-12-31';
+const MAX_DATE = `${new Date().getFullYear() + 20}-12-31`;
 const PAGE_TURN_MS = 280;
 const NOTE_TURN_MS = 260;
 const NOTES_META_SUFFIX = '::notes-meta';
@@ -180,6 +180,7 @@ const lanSyncNowButton = document.getElementById('lanSyncNowButton');
 const lanSyncStatus = document.getElementById('lanSyncStatus');
 const cloudEndpointInput = document.getElementById('cloudEndpoint');
 const cloudJoinCodeInput = document.getElementById('cloudJoinCode');
+const cloudBootstrapTokenInput = document.getElementById('cloudBootstrapToken');
 const cloudSyncModeSelect = document.getElementById('cloudSyncMode');
 const cloudCreateGroupButton = document.getElementById('cloudCreateGroupButton');
 const cloudCopyJoinCodeButton = document.getElementById('cloudCopyJoinCodeButton');
@@ -354,6 +355,9 @@ let syncRecoveryRebuildActive = false;
 const syncRecoveryRebuiltPages = new Set();
 let pageStyleBulkBusy = false;
 let currentPlannerMode = 'daily';
+// 0.1.130 — ultima modalità Planner ordinaria usata. Non viene sovrascritta
+// dall'Orario settimanale, che è una vista di servizio separata.
+let lastPlannerMode = 'daily';
 let calendarVisiblePreference = false;
 let calendarViewDate = null;
 try { calendarVisiblePreference = localStorage.getItem(CALENDAR_VISIBILITY_STORAGE_KEY) === '1'; } catch {}
@@ -1548,52 +1552,6 @@ function scheduleSaintRefresh(delay = 80) {
   }, delay);
 }
 
-function fetchSaintViaWidgetScript(dateString, signal) {
-  return new Promise((resolve, reject) => {
-    const [year, month, day] = dateString.split('-').map(Number);
-    const box = document.createElement('div');
-    box.id = 'BoxSantoDelGiorno';
-    box.hidden = true;
-    const image = document.createElement('img');
-    image.id = 'Immagine';
-    const text = document.createElement('p');
-    text.id = 'SantoDelGiorno';
-    box.append(image, text);
-    const script = document.createElement('script');
-    script.async = true;
-    script.src = `https://www.santodelgiorno.it/_scriptjs/santodelgiorno.php?v=${day}/${month}/${year}`;
-    let settled = false;
-    let timer = 0;
-
-    const cleanup = () => {
-      window.clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      script.remove();
-      box.remove();
-    };
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      fn(value);
-    };
-    const onAbort = () => finish(reject, new DOMException('Aborted', 'AbortError'));
-    if (signal?.aborted) return onAbort();
-    signal?.addEventListener('abort', onAbort, { once: true });
-    script.onerror = () => finish(reject, new Error('widget santo non raggiungibile'));
-    script.onload = () => {
-      const clone = text.cloneNode(true);
-      clone.querySelectorAll('i, em').forEach((node) => node.remove());
-      const name = String(clone.textContent || '').replace(/\s+/g, ' ').trim();
-      if (name) finish(resolve, name);
-      else finish(reject, new Error('widget santo senza nome principale'));
-    };
-    timer = window.setTimeout(() => finish(reject, new Error('timeout widget santo')), 9000);
-    document.body.appendChild(box);
-    box.appendChild(script);
-  });
-}
-
 async function refreshSaintForCurrentDate() {
   const dateString = currentDate;
   setSaintLabel(document, dateString);
@@ -1609,26 +1567,18 @@ async function refreshSaintForCurrentDate() {
   saintFetchController = controller;
   const serial = ++saintRequestSerial;
   try {
-    let name = '';
-    try {
-      const response = await fetch(`${SAINT_API_URL}?data=${encodeURIComponent(dateString)}`, {
-        method: 'GET',
-        mode: 'cors',
-        credentials: 'omit',
-        cache: 'force-cache',
-        signal: controller.signal
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const info = principalSaintInfo(await response.json());
-      name = info.name;
-      if (!name) throw new Error('santo principale non presente nella risposta');
-      cacheSaintInfo(dateString, info);
-    } catch (apiError) {
-      if (apiError?.name === 'AbortError') throw apiError;
-      // Fallback compatibile con Safari/iPadOS: il sito sorgente documenta anche
-      // un widget <script>, che non dipende dalle regole CORS della fetch JSON.
-      name = await fetchSaintViaWidgetScript(dateString, controller.signal);
-    }
+    const response = await fetch(`${SAINT_API_URL}?data=${encodeURIComponent(dateString)}`, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      cache: 'force-cache',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const info = principalSaintInfo(await response.json());
+    const name = info.name;
+    if (!name) throw new Error('santo principale non presente nella risposta');
+    cacheSaintInfo(dateString, info);
     if (!cachedSaintName(dateString)) cacheSaintInfo(dateString, { name, source: 'SantoDelGiorno.it' });
     if (serial === saintRequestSerial && currentDate === dateString) setSaintLabel(document, dateString);
   } catch (err) {
@@ -1724,6 +1674,11 @@ function plannerKind(mode = 'daily') {
   return `planner-${PLANNER_MODES.includes(mode) ? mode : 'daily'}`;
 }
 
+function rememberPlannerMode(mode) {
+  if (PLANNER_MODES.includes(mode)) lastPlannerMode = mode;
+  return lastPlannerMode;
+}
+
 function mondayOf(dateString) {
   const d = new Date(`${dateString}T12:00:00`);
   const day = d.getDay();
@@ -1787,7 +1742,7 @@ function alignNoteTitleToPen(root = document) {
   const monthYear = root?.querySelector?.('.month-year-row');
   if (!pageRoot || !label || !monthYear || !pageRoot.classList.contains('note-view')) return;
 
-  // 0.1.106 — Note: il titolo segue il blocco mese/anno, non la toolbar.
+  // 0.1.130 — Note: il titolo segue il blocco mese/anno, non la toolbar.
   // Il margine di 4ch garantisce una separazione visiva di almeno quattro caratteri.
   const pageRect = pageRoot.getBoundingClientRect();
   const monthYearRect = monthYear.getBoundingClientRect();
@@ -1917,6 +1872,7 @@ async function loadDescriptorAsCurrentPage(target, forcedStyle = null, preserveT
   session.storageReads++;
   currentPageKind = target.kind;
   currentPlannerMode = target.plannerMode ?? plannerModeFromKind(target.kind) ?? currentPlannerMode;
+  rememberPlannerMode(currentPlannerMode);
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable && isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
   if (enteringTimetable) activeTool = 'pen';
@@ -2021,7 +1977,7 @@ function isWeeklyTimetableTitleTarget(target) {
 function registerPageDoubleTap(target, x, y) {
   if (!(target instanceof Element) || !paper.contains(target) || isUiControlTarget(target)) return false;
   const now = performance.now();
-  // 0.1.106 — usa la chiave completa della pagina: include Note libere,
+  // 0.1.130 — usa la chiave completa della pagina: include Note libere,
   // Planner e indice della scheda Orario, evitando doppi tap incrociati tra pagine diverse.
   const pageKey = currentPageKey();
   const previous = pageDoubleTapLastTap;
@@ -2033,7 +1989,7 @@ function registerPageDoubleTap(target, x, y) {
   if (!closeInTime || !closeInSpace || !samePage) return false;
   pageDoubleTapLastTap = null;
 
-  // 0.1.106 — navigazione simmetrica verso Orario settimanale.
+  // 0.1.130 — navigazione simmetrica verso Orario settimanale.
   // Da qualunque scheda Orario si torna esattamente al descriptor memorizzato
   // da openWeeklyTimetable(): Agenda, Nota, Nota libera o Planner di provenienza.
   if (currentPageKind === 'planner-timetable') {
@@ -3678,7 +3634,10 @@ async function handleCloudCreateGroup() {
   saveCloudConfig();
   updateCloudStatus('Creazione nuovo gruppo Agenda Cloud…');
   try {
-    const created = await cloudTransport.createGroup();
+    const bootstrapToken = String(cloudBootstrapTokenInput?.value || '').trim();
+    if (!bootstrapToken) throw new Error('Token bootstrap obbligatorio per creare il primo gruppo Cloud');
+    const created = await cloudTransport.createGroup(bootstrapToken);
+    if (cloudBootstrapTokenInput) cloudBootstrapTokenInput.value = '';
     if (cloudJoinCodeInput) cloudJoinCodeInput.value = created.joinCode;
     saveCloudConfig();
     selectTextControl(cloudJoinCodeInput);
@@ -6133,6 +6092,74 @@ function getUiButtonTarget(target) {
   return target instanceof Element ? target.closest('button') : null;
 }
 
+
+// 0.1.131 — filtro globale anti-palmo per i controlli UI.
+// Non entra nel percorso Ink: osserva soltanto i Pointer Events di tipo touch
+// nati su un button. Un vero tap resta un normale click; un contatto che scorre
+// oltre la soglia o con area molto ampia viene marcato e il click sintetico viene
+// bloccato in capture prima che raggiunga qualunque comando dell'app.
+const PALM_UI_MOVE_THRESHOLD_PX = 16;
+const PALM_UI_LARGE_CONTACT_PX = 52;
+const PALM_UI_CLICK_GUARD_MS = 900;
+const palmUiTouches = new Map();
+const palmRejectedClicks = new WeakMap();
+
+function palmTouchButton(target) {
+  return target instanceof Element ? target.closest('button') : null;
+}
+
+function palmContactLooksLarge(ev) {
+  const width = Number(ev?.width || 0);
+  const height = Number(ev?.height || 0);
+  return Math.max(width, height) >= PALM_UI_LARGE_CONTACT_PX;
+}
+
+document.addEventListener('pointerdown', (ev) => {
+  if (ev.pointerType !== 'touch') return;
+  const button = palmTouchButton(ev.target);
+  if (!button) return;
+  palmUiTouches.set(ev.pointerId, {
+    button,
+    x: Number(ev.clientX || 0),
+    y: Number(ev.clientY || 0),
+    rejected: palmContactLooksLarge(ev)
+  });
+}, { capture:true, passive:true });
+
+document.addEventListener('pointermove', (ev) => {
+  if (ev.pointerType !== 'touch') return;
+  const state = palmUiTouches.get(ev.pointerId);
+  if (!state) return;
+  const dx = Number(ev.clientX || 0) - state.x;
+  const dy = Number(ev.clientY || 0) - state.y;
+  if (Math.hypot(dx, dy) > PALM_UI_MOVE_THRESHOLD_PX || palmContactLooksLarge(ev)) state.rejected = true;
+}, { capture:true, passive:true });
+
+function finishPalmUiTouch(ev, cancelled = false) {
+  const state = palmUiTouches.get(ev.pointerId);
+  if (!state) return;
+  palmUiTouches.delete(ev.pointerId);
+  if (cancelled || state.rejected || palmContactLooksLarge(ev)) {
+    palmRejectedClicks.set(state.button, performance.now());
+  }
+}
+
+document.addEventListener('pointerup', (ev) => {
+  if (ev.pointerType === 'touch') finishPalmUiTouch(ev, false);
+}, { capture:true, passive:true });
+document.addEventListener('pointercancel', (ev) => {
+  if (ev.pointerType === 'touch') finishPalmUiTouch(ev, true);
+}, { capture:true, passive:true });
+document.addEventListener('click', (ev) => {
+  const button = palmTouchButton(ev.target);
+  if (!button) return;
+  const rejectedAt = palmRejectedClicks.get(button);
+  if (!Number.isFinite(rejectedAt) || performance.now() - rejectedAt > PALM_UI_CLICK_GUARD_MS) return;
+  palmRejectedClicks.delete(button);
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+}, { capture:true });
+
 function activateUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
   if (button !== shapeToolButton && !button.matches('[data-shape-type], [data-shape-fill]')) closeShapePalette();
@@ -6680,9 +6707,11 @@ function verticalTarget(direction) {
     return direction > 0 ? pageDescriptor(currentDate, 'agenda', 0, 0) : null;
   }
 
-  // Agenda: swipe verso il basso apre sempre il Planner Giornaliero.
+  // 0.1.130 — Agenda: tornando al Planner riapre l'ultima modalità usata
+  // (giornaliera, settimanale, mensile o annuale) invece di forzare sempre Giornaliero.
   if (currentPageKind === 'agenda' && direction < 0) {
-    return pageDescriptor(currentDate, 'planner-daily', 0, 0);
+    const rememberedMode = PLANNER_MODES.includes(lastPlannerMode) ? lastPlannerMode : 'daily';
+    return pageDescriptor(currentDate, plannerKind(rememberedMode), 0, 0);
   }
 
   // Note del giorno: swipe verso il basso torna alla nota precedente/Agenda.
@@ -6804,9 +6833,11 @@ function movePageSwipe(ev) {
       ? `Orario settimanale ${target.timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}`
       : (direction === 1 ? 'giorno successivo' : 'giorno precedente');
     else if (target.kind === 'agenda') statusLabel.textContent = 'torna ad Agenda';
-    else if (target.kind === 'planner-daily') statusLabel.textContent = 'apri Planner giornaliero';
     else if (target.kind === 'planner-timetable') statusLabel.textContent = 'apri Orario settimanale';
-    else if (target.kind === 'planner-weekly') statusLabel.textContent = 'torna al Planning settimanale';
+    else if (PLANNER_MODES.includes(plannerModeFromKind(target.kind))) {
+      const mode = plannerModeFromKind(target.kind);
+      statusLabel.textContent = `apri Planner ${mode === 'daily' ? 'giornaliero' : mode === 'weekly' ? 'settimanale' : mode === 'monthly' ? 'mensile' : 'annuale'}`;
+    }
     else if (target.kind === 'free-note') statusLabel.textContent = `Nota libera ${target.freeNoteIndex}/${target.freeNoteTotal}`;
     else statusLabel.textContent = `Nota ${target.noteIndex}/${target.noteTotal}`;
   }
@@ -6824,6 +6855,7 @@ async function loadDescriptorDirect(target) {
     currentDate = target.date || currentDate;
     currentPageKind = target.kind || 'agenda';
     currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode || plannerModeFromKind(target.kind) || 'daily') : currentPlannerMode;
+    rememberPlannerMode(currentPlannerMode);
     currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
     currentNoteIndex = target.kind === 'note' ? (Number(target.noteIndex) || 1) : 0;
     currentNoteTotal = target.kind === 'note' ? Math.max(currentNoteIndex, Number(target.noteTotal) || currentNoteIndex) : 0;
@@ -7155,6 +7187,7 @@ async function switchPlannerMode(mode) {
     session.storageReads++;
     currentPageKind = target.kind;
     currentPlannerMode = mode;
+    rememberPlannerMode(mode);
     currentNoteIndex = 0;
     currentNoteTotal = 0;
     strokes = Array.isArray(record?.strokes) ? record.strokes : [];
@@ -7283,6 +7316,7 @@ async function commitPageTurn() {
   if (target.kind === 'agenda') calendarViewDate = target.date;
   currentPageKind = target.kind;
   currentPlannerMode = isPlannerKind(target.kind) ? (target.plannerMode ?? plannerModeFromKind(target.kind) ?? 'daily') : currentPlannerMode;
+  rememberPlannerMode(currentPlannerMode);
   currentTimetableIndex = target.kind === 'planner-timetable' ? (Number(target.timetableIndex) || 1) : currentTimetableIndex;
   if (enteringTimetable && isLassoUiArmed()) { resetLassoInputCapture(); lassoTool?.setActive?.(false); setLassoInputShieldActive(false); }
   if (enteringTimetable) activeTool = 'pen';
@@ -7774,10 +7808,13 @@ function bindDirectUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
 
   button.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
+    // 0.1.131 — Palm rejection: solo Apple Pencil attiva al contatto iniziale.
+    // Il touch intenzionale viene confermato dal normale click al rilascio;
+    // uno strisciamento del palmo non puo' quindi eseguire il comando al pointerdown.
+    if (ev.pointerType !== 'pen') return;
     pencilUiPointers.set(ev.pointerId, { button, startedAt: performance.now() });
     registerEraserTriplePenTap(button, ev);
-    activateUiFromDirectContact(button, ev, `pointerdown-${ev.pointerType || 'unknown'}`);
+    activateUiFromDirectContact(button, ev, 'pointerdown-pen');
   }, { passive: false });
 
   button.addEventListener('pointerup', (ev) => {
@@ -7794,9 +7831,9 @@ function bindDirectUiButton(button) {
     ev.stopPropagation();
   }, { passive: false });
 
-  button.addEventListener('touchstart', (ev) => {
-    activateUiFromDirectContact(button, ev, 'touchstart-fallback');
-  }, { passive: false });
+  // Nessuna attivazione su touchstart: il tap a dito viene confermato al click.
+  // Questo evita che un palmo in scorrimento attivi accidentalmente il pulsante.
+
 }
 
 lassoTool = initLassoTool({
@@ -7856,7 +7893,7 @@ const directUiButtons = [...new Set([
 for (const button of directUiButtons) bindDirectUiButton(button);
 for (const button of rubricaTabButtons) {
   button.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
+    if (ev.pointerType !== 'pen') return;
     recentPencilUiActivation.set(button, performance.now());
     void switchRubricaLetter(button.dataset.rubricaLetter);
     ev.preventDefault();
@@ -7879,7 +7916,7 @@ document.addEventListener('pointerdown', (ev) => {
 // 0.1.19 — gestione delegata del pannello Stile. Pencil e dito applicano
 // l'opzione al pointerdown, risalendo dal target interno al relativo button.
 function handleStylePanelDirectPointer(ev) {
-  if (ev.pointerType === 'mouse') return;
+  if (ev.pointerType !== 'pen') return;
   const button = getUiButtonTarget(ev.target);
   if (!button || !stylePanel?.contains(button)) return;
   if (drawing) finalizeStroke(`style-panel-${ev.pointerType || 'pointer'}-recovery`);
@@ -7889,24 +7926,13 @@ function handleStylePanelDirectPointer(ev) {
   ev.stopPropagation();
 }
 
-function handleStylePanelTouchFallback(ev) {
-  const button = getUiButtonTarget(ev.target);
-  if (!button || !stylePanel?.contains(button)) return;
-  const previous = recentPencilUiActivation.get(button);
-  if (Number.isFinite(previous) && performance.now() - previous < 180) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    return;
-  }
-  if (drawing) finalizeStroke('style-panel-touchstart-recovery');
-  recentPencilUiActivation.set(button, performance.now());
-  activateUiButton(button);
-  ev.preventDefault();
-  ev.stopPropagation();
+function handleStylePanelTouchFallback(_ev) {
+  // 0.1.131 — il touch non attiva piu' opzioni al touchstart.
+  // I controlli del pannello usano il click confermato al rilascio.
 }
 
 function handleMiniCalendarDirectPointer(ev) {
-  if (ev.pointerType === 'mouse') return;
+  if (ev.pointerType !== 'pen') return;
   const button = getUiButtonTarget(ev.target);
   if (!button || !miniCalendar?.contains(button) || button.disabled) return;
   if (drawing) finalizeStroke(`calendar-${ev.pointerType || 'pointer'}-recovery`);
@@ -7917,20 +7943,8 @@ function handleMiniCalendarDirectPointer(ev) {
   }
 }
 
-function handleMiniCalendarTouchFallback(ev) {
-  const button = getUiButtonTarget(ev.target);
-  if (!button || !miniCalendar?.contains(button) || button.disabled) return;
-  const previous = recentPencilUiActivation.get(button);
-  if (Number.isFinite(previous) && performance.now() - previous < 180) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    return;
-  }
-  if (handleCalendarCommand(button)) {
-    recentPencilUiActivation.set(button, performance.now());
-    ev.preventDefault();
-    ev.stopPropagation();
-  }
+function handleMiniCalendarTouchFallback(_ev) {
+  // 0.1.131 — niente azione al touchstart; il click conferma il tap intenzionale.
 }
 
 miniCalendar?.addEventListener('pointerdown', handleMiniCalendarDirectPointer, { passive: false, capture: true });
@@ -8444,8 +8458,28 @@ async function loadInitialPage() {
   }
 }
 
+async function ensurePersistentStorage() {
+  const label = document.getElementById('storagePersistenceStatus');
+  if (!navigator.storage?.persisted || !navigator.storage?.persist) {
+    if (label) label.textContent = 'Archivio locale: persistenza esplicita non supportata dal browser.';
+    return false;
+  }
+  try {
+    let persistent = await navigator.storage.persisted();
+    if (!persistent) persistent = await navigator.storage.persist();
+    if (label) label.textContent = persistent
+      ? 'Archivio locale persistente ✓ · i dati non sono candidati alla pulizia automatica del browser.'
+      : 'Archivio locale non persistente · mantenere backup esterni aggiornati.';
+    return persistent;
+  } catch (err) {
+    if (label) label.textContent = 'Archivio locale: stato persistenza non verificabile.';
+    return false;
+  }
+}
+
 async function bootAgenda() {
   updateHeader();
+  void ensurePersistentStorage();
   await loadLocalImageCutClipboard().catch((err) => console.warn('Clipboard immagini locale non caricata', err));
   updateToolUi();
   paper?.classList.toggle('image-edit-mode', activeTool === 'image');
@@ -8666,10 +8700,15 @@ async function bootAgenda() {
       onStatus: (message) => { statusLabel.textContent = message; },
       onStateChange: () => updateToolUi()
     });
-    audioButton?.addEventListener('pointerdown', () => {
+    audioButton?.addEventListener('pointerdown', (ev) => {
+      if (ev.pointerType !== 'pen') return;
       if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('registratore-audio');
       deactivatePageTool();
     }, { capture:true, passive:true });
+    audioButton?.addEventListener('click', () => {
+      if (voiceScript?.isActive?.()) voiceScript.stopAndFinalize('registratore-audio');
+      deactivatePageTool();
+    }, { capture:true });
   }
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});

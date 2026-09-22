@@ -165,6 +165,7 @@ export function initSyncFoundation(options = {}) {
   }
 
   function queueEvent({ entityId, entityType, operation, payload, descriptor, flags }) {
+    if (descriptor?.kind === 'rubrica') return null;
     const started = performance.now();
     state.replicaSequence += 1;
     state.versionVector[state.replicaId] = state.replicaSequence;

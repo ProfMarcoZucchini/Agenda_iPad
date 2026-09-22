@@ -14,6 +14,9 @@ const LOCAL_LASSO_CLIPBOARD_DB = 'AgendaIPadLocalLassoClipboardDB';
 const LOCAL_LASSO_CLIPBOARD_STORE = 'clipboard';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const ENCRYPTED_BACKUP_MAGIC = 'AGENDAIPADENC1\n';
+const ENCRYPTED_BACKUP_FORMAT = 'agenda-ipad-encrypted-backup';
+const BACKUP_KDF_ITERATIONS = 350000;
 const NON_PORTABLE_PREFERENCE_KEYS = new Set([
   'agenda-ipad-cloud-sync-config-v1',
   'agenda-ipad-lan-sync-config-v1',
@@ -35,7 +38,12 @@ const DEFAULT_CONFIG = Object.freeze({
   google: { clientId: '', folderId: '', folderName: 'Agenda iPad Backups' },
   oneDrive: { clientId: '', tenant: 'common', folder: 'Agenda iPad Backups' },
   lastBackupAt: null,
-  lastBackupId: null
+  lastBackupId: null,
+  lastLocalSnapshotAt: null,
+  lastLocalSnapshotId: null,
+  lastDisasterSafeBackupAt: null,
+  lastDisasterSafeBackupId: null,
+  backupPassphrase: ''
 });
 
 function cloneConfig(value = {}) {
@@ -63,44 +71,52 @@ function openBackupDb() {
 
 async function backupGet(store, key) {
   const db = await openBackupDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readonly');
-    const req = tx.objectStore(store).get(key);
-    req.onsuccess = () => resolve(req.result ?? null);
-    req.onerror = () => reject(req.error);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readonly');
+      const req = tx.objectStore(store).get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } finally { db.close(); }
 }
 
 async function backupPut(store, value) {
   const db = await openBackupDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readwrite');
-    tx.objectStore(store).put(value);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error || new Error('Backup DB transaction aborted'));
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).put(value);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Backup DB transaction aborted'));
+    });
+  } finally { db.close(); }
 }
 
 async function backupDelete(store, key) {
   const db = await openBackupDb();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readwrite');
-    tx.objectStore(store).delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally { db.close(); }
 }
 
 async function listArchives() {
   const db = await openBackupDb();
-  const rows = await new Promise((resolve, reject) => {
-    const tx = db.transaction(ARCHIVE_STORE, 'readonly');
-    const req = tx.objectStore(ARCHIVE_STORE).getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
-  return rows.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  try {
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARCHIVE_STORE, 'readonly');
+      const req = tx.objectStore(ARCHIVE_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    return rows.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  } finally { db.close(); }
 }
 
 async function readMainRecords(dbName, storeName) {
@@ -234,6 +250,60 @@ async function sha256Hex(bytesOrBlob) {
     : bytesOrBlob instanceof Uint8Array ? bytesOrBlob : new Uint8Array(bytesOrBlob);
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return [...hash].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+
+function b64urlEncodeBytes(bytes) {
+  let binary='';
+  const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode(...bytes.subarray(i,Math.min(bytes.length,i+chunk)));
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlDecodeBytes(value) {
+  const text=String(value||'').replace(/-/g,'+').replace(/_/g,'/');
+  const padded=text + '='.repeat((4-text.length%4)%4);
+  const binary=atob(padded); const out=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) out[i]=binary.charCodeAt(i);
+  return out;
+}
+async function deriveBackupEncryptionKey(passphrase, salt, iterations = BACKUP_KDF_ITERATIONS) {
+  if (String(passphrase||'').length < 8) throw new Error('Password backup troppo corta: minimo 8 caratteri');
+  const base=await crypto.subtle.importKey('raw', encoder.encode(String(passphrase)), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations,hash:'SHA-256'}, base, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
+}
+async function isEncryptedBackupBlob(blob) {
+  if (!(blob instanceof Blob) || blob.size < ENCRYPTED_BACKUP_MAGIC.length + 4) return false;
+  const prefix=decoder.decode(new Uint8Array(await blob.slice(0, ENCRYPTED_BACKUP_MAGIC.length).arrayBuffer()));
+  return prefix === ENCRYPTED_BACKUP_MAGIC;
+}
+async function encryptBackupBlob(zipBlob, passphrase) {
+  const salt=crypto.getRandomValues(new Uint8Array(16));
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const header={format:ENCRYPTED_BACKUP_FORMAT,version:1,kdf:'PBKDF2-SHA256',iterations:BACKUP_KDF_ITERATIONS,salt:b64urlEncodeBytes(salt),iv:b64urlEncodeBytes(iv),cipher:'AES-256-GCM',innerType:'application/zip'};
+  const headerBytes=encoder.encode(JSON.stringify(header));
+  const key=await deriveBackupEncryptionKey(passphrase,salt,header.iterations);
+  const plaintext=await zipBlob.arrayBuffer();
+  const ciphertext=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:headerBytes},key,plaintext));
+  const len=new Uint8Array(4); new DataView(len.buffer).setUint32(0,headerBytes.length,true);
+  return new Blob([encoder.encode(ENCRYPTED_BACKUP_MAGIC),len,headerBytes,ciphertext],{type:'application/vnd.agenda-ipad.encrypted-backup'});
+}
+async function decryptBackupBlob(blob, passphrase) {
+  if (!(await isEncryptedBackupBlob(blob))) return blob;
+  const all=new Uint8Array(await blob.arrayBuffer());
+  const magicLen=encoder.encode(ENCRYPTED_BACKUP_MAGIC).length;
+  const view=new DataView(all.buffer,all.byteOffset,all.byteLength);
+  const headerLen=view.getUint32(magicLen,true);
+  const headerStart=magicLen+4, headerEnd=headerStart+headerLen;
+  if (headerEnd>=all.length) throw new Error('Header backup cifrato non valido');
+  const headerBytes=all.slice(headerStart,headerEnd);
+  const header=JSON.parse(decoder.decode(headerBytes));
+  if(header?.format!==ENCRYPTED_BACKUP_FORMAT || Number(header?.version)!==1) throw new Error('Formato backup cifrato non compatibile');
+  const salt=b64urlDecodeBytes(header.salt), iv=b64urlDecodeBytes(header.iv);
+  const key=await deriveBackupEncryptionKey(passphrase,salt,Number(header.iterations)||BACKUP_KDF_ITERATIONS);
+  let plain;
+  try { plain=await crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:headerBytes},key,all.slice(headerEnd)); }
+  catch { throw new Error('Password backup non corretta oppure archivio cifrato alterato'); }
+  return new Blob([plain],{type:'application/zip'});
 }
 
 let crcTable = null;
@@ -489,6 +559,8 @@ function backupFileName(appVersion, createdAt) {
   return `Agenda_iPad_FULL_${stamp}_app-${appVersion}_fmt-${BACKUP_FORMAT_VERSION}.zip`;
 }
 
+function encryptedBackupFileName(zipName) { return String(zipName || 'Agenda_iPad_FULL.zip').replace(/\.zip$/i,'.agendaipadbackup'); }
+
 async function makeBackupPackage({ appVersion, records, preferences, config, secureVault = null, audioSnapshot = null, clipboards = null }) {
   const createdAt = new Date().toISOString();
   const media = extractMediaFromRecords(records);
@@ -559,8 +631,9 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums, audioCount:audio.count };
 }
 
-async function verifyBackupBlob(blob) {
-  const files = await parseStoredZip(blob);
+async function verifyBackupBlob(blob, passphrase = '') {
+  const zipBlob = await decryptBackupBlob(blob, passphrase);
+  const files = await parseStoredZip(zipBlob);
   const manifest = parseJsonBytes(files.get('manifest.json'), 'manifest.json');
   const formatVersion = Number(manifest.formatVersion);
   if (manifest.format !== BACKUP_FORMAT || !SUPPORTED_BACKUP_FORMAT_VERSIONS.has(formatVersion)) {
@@ -589,8 +662,9 @@ async function verifyBackupBlob(blob) {
 }
 
 function dueAt(config) {
-  if (!config.lastBackupAt) return new Date(0);
-  const last = new Date(config.lastBackupAt);
+  const lastStamp = config.lastLocalSnapshotAt || config.lastBackupAt;
+  if (!lastStamp) return new Date(0);
+  const last = new Date(lastStamp);
   if (!Number.isFinite(last.getTime())) return new Date(0);
   const next = new Date(last);
   if (config.frequency === 'daily') next.setDate(next.getDate() + 1);
@@ -775,6 +849,27 @@ async function uploadAudioOneDrive(blob, filename, token, folderPath, contentTyp
   return uploadOneDriveSession(blob, filename, token, folderPath, contentType, signal);
 }
 
+async function listGoogleDriveBackups(token, folderId, folderName = 'Agenda iPad Backups', signal = null) {
+  if (!token) throw new Error('Sessione Google Drive non connessa');
+  const resolvedFolderId = await ensureGoogleFolder(token, folderId, folderName, signal);
+  const q = `'${resolvedFolderId.replace(/'/g, "\'")}' in parents and trashed=false`;
+  const params = new URLSearchParams({ q, fields:'files(id,name,size,modifiedTime,mimeType)', orderBy:'modifiedTime desc', pageSize:'1000' });
+  const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, { headers:{ Authorization:`Bearer ${token}` }, signal });
+  if (!response.ok) throw new Error(`Google Drive elenco backup: HTTP ${response.status}`);
+  const payload = await response.json();
+  return (payload.files || []).filter((row) => /\.(zip|agendaipadbackup)$/i.test(String(row?.name || ''))).map((row) => ({ provider:'google', id:String(row.id || ''), name:String(row.name || ''), size:Number(row.size)||0, modifiedAt:String(row.modifiedTime || '') }));
+}
+
+async function listOneDriveBackups(token, folderPath, signal = null) {
+  if (!token) throw new Error('Sessione OneDrive non connessa');
+  const folderId = await ensureOneDriveFolder(token, folderPath, signal);
+  const params = new URLSearchParams({ '$select':'id,name,size,lastModifiedDateTime,file', '$top':'999', '$orderby':'lastModifiedDateTime desc' });
+  const response = await fetch(`https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(folderId)}/children?${params.toString()}`, { headers:{ Authorization:`Bearer ${token}` }, signal });
+  if (!response.ok) throw new Error(`OneDrive elenco backup: HTTP ${response.status}`);
+  const payload = await response.json();
+  return (payload.value || []).filter((row) => /\.(zip|agendaipadbackup)$/i.test(String(row?.name || ''))).map((row) => ({ provider:'onedrive', id:String(row.id || ''), name:String(row.name || ''), size:Number(row.size)||0, modifiedAt:String(row.lastModifiedDateTime || '') }));
+}
+
 async function downloadGoogleDriveFile(fileId, token, signal = null) {
   if (!token) throw new Error('Sessione Google Drive non connessa');
   if (!fileId) throw new Error('ID file Google Drive mancante');
@@ -846,6 +941,7 @@ export function initBackupFoundation(options) {
   const retention = document.getElementById('backupRetention');
   const onStartup = document.getElementById('backupOnStartup');
   const verifyAfter = document.getElementById('verifyAfterBackup');
+  const backupPassphraseInput = document.getElementById('backupEncryptionPassphrase');
   const destLocal = document.getElementById('destLocalFolder');
   const destGoogle = document.getElementById('destGoogleDrive');
   const destOneDrive = document.getElementById('destOneDrive');
@@ -873,6 +969,9 @@ export function initBackupFoundation(options) {
   const restoreGroupButton = document.getElementById('restoreGroupBackupButton');
   const status = document.getElementById('backupStatus');
   const history = document.getElementById('backupHistory');
+  const refreshRemoteBackupsButton = document.getElementById('refreshRemoteBackupsButton');
+  const remoteBackupStatus = document.getElementById('remoteBackupStatus');
+  const remoteBackupList = document.getElementById('remoteBackupList');
 
   let config = cloneConfig();
   let directoryHandle = null;
@@ -919,6 +1018,7 @@ export function initBackupFoundation(options) {
     retention.value = config.retention;
     onStartup.checked = Boolean(config.backupOnStartup);
     verifyAfter.checked = Boolean(config.verifyAfterBackup);
+    if (backupPassphraseInput) backupPassphraseInput.value = config.backupPassphrase || '';
     destLocal.checked = Boolean(config.destinations.localFolder);
     destGoogle.checked = Boolean(config.destinations.googleDrive);
     destOneDrive.checked = Boolean(config.destinations.oneDrive);
@@ -947,6 +1047,7 @@ export function initBackupFoundation(options) {
     config.retention = Math.max(3, Math.min(120, Number(retention.value) || 30));
     config.backupOnStartup = onStartup.checked;
     config.verifyAfterBackup = verifyAfter.checked;
+    if (backupPassphraseInput) config.backupPassphrase = String(backupPassphraseInput.value || '');
     config.destinations.localFolder = Boolean(destLocal.checked && ('showDirectoryPicker' in window));
     config.destinations.googleDrive = destGoogle.checked;
     config.destinations.oneDrive = destOneDrive.checked;
@@ -964,10 +1065,30 @@ export function initBackupFoundation(options) {
     customDaysField.hidden = config.frequency !== 'custom';
   }
 
+  async function deleteExternalCopies(row) {
+    for (const delivery of (row?.deliveries || [])) {
+      if (!delivery?.ok) continue;
+      try {
+        if (delivery.key === 'local' && directoryHandle?.removeEntry && row?.filename) {
+          await directoryHandle.removeEntry(row.filename).catch(() => {});
+        } else if (delivery.key === 'google' && delivery.remoteId && googleAuth.getAccessToken()) {
+          await deleteGoogleDriveFile(delivery.remoteId, googleAuth.getAccessToken());
+        } else if (delivery.key === 'onedrive' && delivery.remoteId && oneDriveAuth.getAccessToken()) {
+          await deleteOneDriveFile(delivery.remoteId, oneDriveAuth.getAccessToken());
+        }
+      } catch (err) {
+        console.warn('Retention backup remoto non riuscita', delivery.key, err);
+      }
+    }
+  }
+
   async function prune() {
     const rows = await listArchives();
     const keep = Math.max(3, Number(config.retention) || 30);
-    for (const row of rows.slice(keep)) await backupDelete(ARCHIVE_STORE, row.id);
+    for (const row of rows.slice(keep)) {
+      await deleteExternalCopies(row);
+      await backupDelete(ARCHIVE_STORE, row.id);
+    }
   }
 
   async function getLatest() {
@@ -989,7 +1110,7 @@ export function initBackupFoundation(options) {
   async function deliverExternal(archive, reason) {
     const results = [{ key: 'internal', label: 'Archivio app', ok: true, message: 'salvato' }];
     if (config.destinations.localFolder) {
-      try { await writeLocalFolder(archive); results.push({ key: 'local', label: 'Cartella locale', ok: true, message: 'salvato' }); }
+      try { await writeLocalFolder(archive); results.push({ key: 'local', label: 'Cartella locale', ok: true, message: 'salvato', remoteName:archive.filename }); }
       catch (err) { results.push({ key: 'local', label: 'Cartella locale', ok: false, message: err.message }); }
     }
     if (config.destinations.googleDrive) {
@@ -1002,19 +1123,83 @@ export function initBackupFoundation(options) {
           if (googleFolderId) googleFolderId.value = folderId;
           await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: new Date().toISOString() });
         }
-        await uploadGoogleDrive(archive.blob, archive.filename, token, folderId, config.google.folderName);
-        results.push({ key: 'google', label: 'Google Drive', ok: true, message: 'caricato' });
+        const uploaded = await uploadGoogleDrive(archive.blob, archive.filename, token, folderId, config.google.folderName);
+        results.push({ key: 'google', label: 'Google Drive', ok: true, message: 'caricato', remoteId:String(uploaded?.id || ''), remoteName:String(uploaded?.name || archive.filename) });
       } catch (err) { results.push({ key: 'google', label: 'Google Drive', ok: false, message: err.message }); }
     }
     if (config.destinations.oneDrive) {
       try {
         const token = oneDriveAuth.getAccessToken();
         if (!token) throw new Error('sessione non connessa: premi Connetti');
-        await uploadOneDrive(archive.blob, archive.filename, token, config.oneDrive.folder);
-        results.push({ key: 'onedrive', label: 'OneDrive', ok: true, message: 'caricato' });
+        const uploaded = await uploadOneDrive(archive.blob, archive.filename, token, config.oneDrive.folder);
+        results.push({ key: 'onedrive', label: 'OneDrive', ok: true, message: 'caricato', remoteId:String(uploaded?.id || ''), remoteName:String(uploaded?.name || archive.filename) });
       } catch (err) { results.push({ key: 'onedrive', label: 'OneDrive', ok: false, message: err.message }); }
     }
     return results;
+  }
+
+  async function requireBackupPassphrase({ allowPrompt = true } = {}) {
+    let passphrase=String(backupPassphraseInput?.value || config.backupPassphrase || '');
+    if(passphrase.length >= 8) return passphrase;
+    if(!allowPrompt) throw new Error('Configura una password backup di almeno 8 caratteri prima di usare il backup automatico');
+    const entered=window.prompt('Imposta/Inserisci la password dei backup cifrati (minimo 8 caratteri). Conservala fuori dall’iPad.');
+    passphrase=String(entered || '');
+    if(passphrase.length < 8) throw new Error('Password backup obbligatoria: minimo 8 caratteri');
+    config.backupPassphrase=passphrase;
+    if(backupPassphraseInput) backupPassphraseInput.value=passphrase;
+    await backupPut(SETTINGS_STORE,{key:SETTINGS_KEY,value:config,modifiedAt:new Date().toISOString()});
+    return passphrase;
+  }
+
+  async function verifyArchiveWithPassphrase(blob, { allowPrompt = true } = {}) {
+    if (!(await isEncryptedBackupBlob(blob))) return verifyBackupBlob(blob, '');
+    let passphrase=String(backupPassphraseInput?.value || config.backupPassphrase || '');
+    for(let attempt=0;attempt<3;attempt++) {
+      if(passphrase.length < 8) {
+        if(!allowPrompt) throw new Error('Password backup richiesta');
+        passphrase=String(window.prompt('Password del backup cifrato:') || '');
+      }
+      try {
+        const parsed=await verifyBackupBlob(blob,passphrase);
+        if(passphrase.length>=8 && passphrase!==config.backupPassphrase) {
+          config.backupPassphrase=passphrase;
+          if(backupPassphraseInput) backupPassphraseInput.value=passphrase;
+          await backupPut(SETTINGS_STORE,{key:SETTINGS_KEY,value:config,modifiedAt:new Date().toISOString()});
+        }
+        return parsed;
+      } catch(err) {
+        if(!String(err?.message||'').includes('Password backup')) throw err;
+        passphrase='';
+        if(attempt===2) throw err;
+      }
+    }
+    throw new Error('Password backup non valida');
+  }
+
+  async function ensureStorageCapacity(requiredBytes, operation = 'operazione') {
+    if (!navigator?.storage?.estimate) return { supported:false };
+    const estimate = await navigator.storage.estimate().catch(() => null);
+    if (!estimate || !Number.isFinite(estimate.quota) || !Number.isFinite(estimate.usage)) return { supported:false };
+    const free = Math.max(0, estimate.quota - estimate.usage);
+    const required = Math.max(0, Number(requiredBytes) || 0);
+    const reserve = Math.max(32 * 1024 * 1024, Math.ceil(required * 0.35));
+    const needed = required + reserve;
+    if (free < needed) {
+      throw new Error(`${operation}: spazio locale insufficiente. Disponibili ${humanBytes(free)}, richiesti circa ${humanBytes(needed)} (incluso margine di sicurezza).`);
+    }
+    return { supported:true, free, required, reserve, quota:estimate.quota, usage:estimate.usage };
+  }
+
+  function estimateBackupPayloadBytes({ records, preferences, secureVault, audioSnapshot, clipboards }) {
+    let bytes = 0;
+    try { bytes += new Blob([JSON.stringify(records || [])]).size; } catch {}
+    try { bytes += new Blob([JSON.stringify(preferences || {})]).size; } catch {}
+    try { bytes += new Blob([JSON.stringify(secureVault || {})]).size; } catch {}
+    try { bytes += new Blob([JSON.stringify(clipboards || {})]).size; } catch {}
+    for (const item of audioSnapshot?.recordings || []) bytes += Math.max(0, Number(item?.blob?.size) || Number(item?.metadata?.size) || 0);
+    // Manifest, checksums, metadati e cifratura aggiungono poco rispetto ai media;
+    // il 15% evita una sottostima senza duplicare il margine di quota applicato sopra.
+    return Math.ceil(bytes * 1.15) + (2 * 1024 * 1024);
   }
 
   async function createBackup(reason = 'manual', { safety = false } = {}) {
@@ -1031,23 +1216,29 @@ export function initBackupFoundation(options) {
     setStatus(`Backup ${reason === 'automatic' ? 'automatico' : 'manuale'} in corso…`);
     setAppStatus('backup in corso');
     try {
+      const backupPassphrase = await requireBackupPassphrase({ allowPrompt: reason !== 'automatic' });
       await flushCurrent();
       const records = await readMainRecords(mainDbName, mainStore);
       const preferences = collectPortablePreferences();
       const secureVault = await getSecurePasswordVaultBackup();
       const clipboards = await collectLocalClipboards();
       const audioSnapshot = await audioProvider.exportBackup();
+      const estimatedBytes = estimateBackupPayloadBytes({ records, preferences, secureVault, audioSnapshot, clipboards });
+      await ensureStorageCapacity(estimatedBytes, 'Creazione backup');
       const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault, audioSnapshot, clipboards });
-      if (config.verifyAfterBackup) await verifyBackupBlob(pkg.blob);
-      const zipHash = await sha256Hex(pkg.blob);
+      const encryptedBlob = await encryptBackupBlob(pkg.blob, backupPassphrase);
+      if (config.verifyAfterBackup) await verifyBackupBlob(encryptedBlob, backupPassphrase);
+      const zipHash = await sha256Hex(encryptedBlob);
       const id = `${pkg.createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
       const archive = {
-        id, filename: pkg.filename, createdAt: pkg.createdAt, size: pkg.blob.size,
+        id, filename: encryptedBackupFileName(pkg.filename), createdAt: pkg.createdAt, size: encryptedBlob.size,
         sha256: zipHash, recordCount: records.length, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
-        reason: safety ? 'pre-restore' : reason, appVersion, blob: pkg.blob
+        encrypted:true, encryption:'AES-256-GCM', reason: safety ? 'pre-restore' : reason, appVersion, blob: encryptedBlob
       };
       await backupPut(ARCHIVE_STORE, archive);
       if (!safety) {
+        config.lastLocalSnapshotAt = pkg.createdAt;
+        config.lastLocalSnapshotId = id;
         config.lastBackupAt = pkg.createdAt;
         config.lastBackupId = id;
         await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: pkg.createdAt });
@@ -1056,6 +1247,14 @@ export function initBackupFoundation(options) {
       const external = safety
         ? [{ key: 'internal', label: 'Archivio app', ok: true, message: 'backup sicurezza' }]
         : await deliverExternal(archive, reason);
+      if (!safety) {
+        const disasterSafe = external.some((item) => item?.ok && ['local','google','onedrive'].includes(String(item?.key || '')));
+        if (disasterSafe) {
+          config.lastDisasterSafeBackupAt = pkg.createdAt;
+          config.lastDisasterSafeBackupId = id;
+        }
+        await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: new Date().toISOString() });
+      }
       archive.deliveries = external;
       archive.deliveryUpdatedAt = new Date().toISOString();
       await backupPut(ARCHIVE_STORE, archive);
@@ -1079,7 +1278,7 @@ export function initBackupFoundation(options) {
     if (!latest) { setStatus('Nessun backup da verificare.'); return; }
     setStatus('Verifica in corso…');
     try {
-      const result = await verifyBackupBlob(latest.blob);
+      const result = await verifyArchiveWithPassphrase(latest.blob);
       const whole = await sha256Hex(latest.blob);
       if (latest.sha256 && whole !== latest.sha256) throw new Error('Checksum dell’archivio completo non valido');
       setStatus(`Backup integro ✓\n${latest.filename}\n${result.pages.count ?? result.pages.records?.length ?? 0} record · formato ${result.manifest.formatVersion}`);
@@ -1097,7 +1296,7 @@ export function initBackupFoundation(options) {
       history.appendChild(empty);
       return;
     }
-    for (const row of rows.slice(0, 12)) {
+    for (const row of rows) {
       const item = document.createElement('div');
       item.className = 'backup-item';
       item.dataset.backupId = String(row.id || '');
@@ -1133,6 +1332,49 @@ export function initBackupFoundation(options) {
     }
   }
 
+  function renderRemoteBackups(rows = []) {
+    if (!remoteBackupList) return;
+    remoteBackupList.replaceChildren();
+    if (!rows.length) {
+      const empty = document.createElement('div'); empty.className='backup-empty'; empty.textContent='Nessun backup remoto trovato nelle destinazioni connesse.'; remoteBackupList.appendChild(empty); return;
+    }
+    for (const row of rows.sort((a,b) => String(b.modifiedAt).localeCompare(String(a.modifiedAt)))) {
+      const item=document.createElement('div'); item.className='backup-item';
+      const main=document.createElement('div'); main.className='backup-item-main';
+      const title=document.createElement('strong'); title.textContent=row.name || 'Backup remoto';
+      const meta=document.createElement('small'); meta.textContent=`${row.provider === 'google' ? 'Google Drive' : 'OneDrive'} · ${row.modifiedAt ? new Date(row.modifiedAt).toLocaleString('it-IT') : ''} · ${humanBytes(row.size)}`;
+      main.append(title,meta);
+      const actions=document.createElement('div'); actions.className='backup-item-actions';
+      const button=document.createElement('button'); button.type='button'; button.textContent='Importa'; button.dataset.remoteBackupImport='1'; button.dataset.remoteProvider=row.provider; button.dataset.remoteId=row.id; button.dataset.remoteName=row.name;
+      actions.appendChild(button); item.append(main,actions); remoteBackupList.appendChild(item);
+    }
+  }
+
+  async function refreshRemoteBackups() {
+    if (remoteBackupStatus) remoteBackupStatus.textContent='Caricamento backup remoti…';
+    const rows=[]; const errors=[];
+    if (config.destinations.googleDrive || googleAuth.getAccessToken()) {
+      try { rows.push(...await listGoogleDriveBackups(googleAuth.getAccessToken(), config.google.folderId, config.google.folderName)); }
+      catch (err) { errors.push(`Google: ${err.message || err}`); }
+    }
+    if (config.destinations.oneDrive || oneDriveAuth.getAccessToken()) {
+      try { rows.push(...await listOneDriveBackups(oneDriveAuth.getAccessToken(), config.oneDrive.folder)); }
+      catch (err) { errors.push(`OneDrive: ${err.message || err}`); }
+    }
+    renderRemoteBackups(rows);
+    if (remoteBackupStatus) remoteBackupStatus.textContent=`${rows.length} backup remoti${errors.length ? ` · ${errors.join(' · ')}` : ''}`;
+  }
+
+  async function importRemoteBackup(button) {
+    const provider=button?.dataset?.remoteProvider; const id=button?.dataset?.remoteId; const name=button?.dataset?.remoteName || 'Agenda_iPad_remote.zip';
+    if (!provider || !id) return;
+    if (remoteBackupStatus) remoteBackupStatus.textContent=`Scarico ${name}…`;
+    const blob = provider === 'google' ? await downloadGoogleDriveFile(id, googleAuth.getAccessToken()) : await downloadOneDriveFile(id, oneDriveAuth.getAccessToken());
+    const file = new File([blob], name, { type:'application/zip', lastModified:Date.now() });
+    await importBackupFile(file);
+    if (remoteBackupStatus) remoteBackupStatus.textContent=`${name} importato nell'Archivio Backup locale ✓`;
+  }
+
   async function openSettings() {
     await loadConfig();
     googleAuth.preload().catch(() => {});
@@ -1140,7 +1382,12 @@ export function initBackupFoundation(options) {
     settingsButton.setAttribute('aria-expanded', 'true');
     const next = dueAt(config);
     const nextText = config.frequency === 'off' ? 'Backup automatico disattivato.' : `Prossima scadenza: ${next.getTime() <= Date.now() ? 'adesso' : next.toLocaleString('it-IT')}`;
-    setStatus(authCallbackMessage || (config.lastBackupAt ? `Ultimo backup: ${new Date(config.lastBackupAt).toLocaleString('it-IT')}\n${nextText}` : `Nessun backup automatico precedente.\n${nextText}`));
+    const localAt = config.lastLocalSnapshotAt || config.lastBackupAt;
+    const safeAt = config.lastDisasterSafeBackupAt;
+    const backupSummary = localAt
+      ? `Ultimo snapshot locale: ${new Date(localAt).toLocaleString('it-IT')}\nBackup esterno/disaster-safe: ${safeAt ? new Date(safeAt).toLocaleString('it-IT') : 'non ancora disponibile'}\n${nextText}`
+      : `Nessun backup automatico precedente.\nBackup esterno/disaster-safe: non ancora disponibile\n${nextText}`;
+    setStatus(authCallbackMessage || backupSummary);
     authCallbackMessage = '';
   }
 
@@ -1214,7 +1461,7 @@ export function initBackupFoundation(options) {
     if (!safety?.blob) throw new Error('Backup di sicurezza pre-ripristino non riuscito');
     // Il backup di sicurezza viene verificato e parsato PRIMA di modificare qualunque
     // archivio: deve essere già pronto come rollback compensativo se una fase successiva fallisce.
-    const safetyParsed = await verifyBackupBlob(safety.blob);
+    const safetyParsed = await verifyArchiveWithPassphrase(safety.blob);
     const details = { fileName:sourceLabel, manifest:parsed.manifest, recordCount:records.length, restoreMode:'local' };
     try {
       await beforeRestoreApplied(details);
@@ -1242,7 +1489,7 @@ export function initBackupFoundation(options) {
     const archive = await backupGet(ARCHIVE_STORE, id);
     if (!archive?.blob) throw new Error('Backup non trovato');
     setStatus('Verifica backup da ripristinare…');
-    const parsed = await verifyBackupBlob(archive.blob);
+    const parsed = await verifyArchiveWithPassphrase(archive.blob);
     return applyParsedBackup(parsed, archive.filename);
   }
 
@@ -1250,7 +1497,8 @@ export function initBackupFoundation(options) {
     if (!file) return;
     setStatus('Verifica backup da importare…');
     try {
-      const parsed = await verifyBackupBlob(file);
+      await ensureStorageCapacity(Math.ceil((Number(file.size) || 0) * 1.2), 'Importazione backup');
+      const parsed = await verifyArchiveWithPassphrase(file);
       const whole = await sha256Hex(file);
       const createdAt = String(parsed.manifest?.createdAt || new Date().toISOString());
       const id = `import::${createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -1263,6 +1511,8 @@ export function initBackupFoundation(options) {
         recordCount:Number(parsed.pages?.count ?? parsed.pages?.records?.length ?? 0),
         audioCount:Number(parsed.audioBackup?.recordings?.length || parsed.manifest?.backup?.audioCount || 0),
         formatVersion:Number(parsed.formatVersion) || 1,
+        encrypted:await isEncryptedBackupBlob(file),
+        encryption:(await isEncryptedBackupBlob(file)) ? 'AES-256-GCM' : '',
         reason:'importato',
         appVersion:String(parsed.manifest?.createdBy?.appVersion || '?'),
         blob:file,
@@ -1320,17 +1570,13 @@ export function initBackupFoundation(options) {
   function bindAction(button, action) {
     if (!button) return;
     button.addEventListener('pointerdown', (ev) => {
-      if (ev.pointerType === 'mouse') return;
+      if (ev.pointerType !== 'pen') return;
       directActivations.set(button, performance.now());
       action(ev);
       ev.preventDefault(); ev.stopPropagation();
     }, { passive: false });
-    button.addEventListener('touchstart', (ev) => {
-      const last = directActivations.get(button);
-      if (Number.isFinite(last) && performance.now() - last < 180) { ev.preventDefault(); return; }
-      directActivations.set(button, performance.now());
-      action(ev); ev.preventDefault(); ev.stopPropagation();
-    }, { passive: false });
+    // Touch/palmo: nessuna azione al contatto iniziale; il click conferma il tap.
+
     button.addEventListener('click', (ev) => {
       const last = directActivations.get(button);
       if (Number.isFinite(last) && performance.now() - last < 650) { ev.preventDefault(); return; }
@@ -1373,7 +1619,7 @@ export function initBackupFoundation(options) {
     setStatus('OneDrive disconnesso dalla sessione.');
   });
 
-  const saveFields = [frequency, customDays, retention, onStartup, verifyAfter, destLocal, destGoogle, destOneDrive, googleClientId, googleFolderId, googleFolderName, oneClientId, oneTenant, oneFolder];
+  const saveFields = [frequency, customDays, retention, onStartup, verifyAfter, backupPassphraseInput, destLocal, destGoogle, destOneDrive, googleClientId, googleFolderId, googleFolderName, oneClientId, oneTenant, oneFolder];
   for (const field of saveFields) field?.addEventListener('change', () => saveConfig().catch(() => {}));
   frequency?.addEventListener('change', () => { customDaysField.hidden = frequency.value !== 'custom'; });
 
@@ -1385,6 +1631,13 @@ export function initBackupFoundation(options) {
   bindAction(verifyButton, verifyLatest);
   // 0.1.101-fix8: il selettore file e' nativo e riceve direttamente il gesto utente.
   // Safari/iPadOS puo' rifiutare input.click() sintetici lanciati da pointerdown.
+  refreshRemoteBackupsButton?.addEventListener('click', () => { void refreshRemoteBackups(); });
+  remoteBackupList?.addEventListener('click', (ev) => {
+    const button = ev.target instanceof Element ? ev.target.closest('button[data-remote-backup-import="1"]') : null;
+    if (!button) return;
+    void importRemoteBackup(button).catch((err) => { if (remoteBackupStatus) remoteBackupStatus.textContent=`Importazione remota non riuscita: ${err.message || err}`; });
+  });
+
   importInput?.addEventListener('change', async () => {
     const file = importInput.files?.[0];
     if (!file) return;
@@ -1407,7 +1660,7 @@ export function initBackupFoundation(options) {
     }
   }
   history?.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
+    if (ev.pointerType !== 'pen') return;
     const button = ev.target instanceof Element ? ev.target.closest('button') : null;
     if (!button) return;
     directActivations.set(button, performance.now());

@@ -6,7 +6,7 @@ const SETTINGS_STORE = 'settings';
 const SETTINGS_KEY = 'audio-settings-v1';
 const MIN_FREE_RATIO = 0.05;
 const EMERGENCY_FREE_RATIO = 0.03;
-const CHUNK_MS = 10000;
+const CHUNK_MS = 4000;
 const AUDIO_OPEN_SETTINGS_KEY = 'agenda-ipad-audio-open-settings-v1';
 const AUDIO_QUICK_DOUBLE_TAP_MS = 350;
 
@@ -138,7 +138,7 @@ async function listRecordingsForPage(pageKey) {
     const tx = db.transaction(RECORDINGS_STORE, 'readonly');
     const index = tx.objectStore(RECORDINGS_STORE).index('pageKey');
     const req = index.getAll(IDBKeyRange.only(pageKey));
-    req.onsuccess = () => resolve((req.result || []).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt))));
+    req.onsuccess = () => resolve((req.result || []).filter((item) => !item?.provisional).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt))));
     req.onerror = () => reject(req.error);
   });
 }
@@ -244,6 +244,46 @@ function pageLabel(descriptor) {
     return `Planner · ${descriptor.date}`;
   }
   return `Agenda · ${descriptor.date}`;
+}
+
+
+async function recoverInterruptedAudioSessions() {
+  const rows = await dbGetAll(RECORDINGS_STORE);
+  const provisional = rows.filter((row) => row?.provisional && row?.sessionId);
+  let recovered = 0;
+  for (const row of provisional) {
+    const chunks = await listChunks(row.sessionId).catch(() => []);
+    if (!chunks.length) {
+      await dbDelete(RECORDINGS_STORE, row.id).catch(() => {});
+      continue;
+    }
+    const mimeType = row.mimeType || chunks.find((item) => item?.blob?.type)?.blob?.type || 'audio/mp4';
+    const totalSize = chunks.reduce((sum,item) => sum + Math.max(0, Number(item?.blob?.size) || 0), 0);
+    if (!totalSize) continue;
+    const completedAt = new Date().toISOString();
+    const recoveredRow = {
+      ...row,
+      provisional:false,
+      recoverySession:false,
+      recoveredAfterInterruption:true,
+      completedAt,
+      durationMs:Math.max(0, Date.now() - (Number(row.startedAtMs) || Date.parse(row.createdAt || row.startedAt || completedAt) || Date.now())),
+      mimeType,
+      size:totalSize,
+      localStored:true,
+      cloudProvider:'',
+      cloudFileId:'',
+      cloudName:'',
+      uploadStatus:'local',
+      blob:null,
+      chunkSessionId:row.sessionId
+    };
+    delete recoveredRow.sessionId;
+    delete recoveredRow.startedAtMs;
+    await dbPut(RECORDINGS_STORE, recoveredRow);
+    recovered++;
+  }
+  return recovered;
 }
 
 export function initAudioRecorder(options = {}) {
@@ -605,6 +645,31 @@ export function initAudioRecorder(options = {}) {
         setStatus(`Errore registrazione: ${event.error?.message || 'MediaRecorder'}`);
         stopRecording('errore').catch(() => {});
       });
+      await dbPut(RECORDINGS_STORE, {
+        id,
+        sessionId:id,
+        provisional:true,
+        recoverySession:true,
+        pageKey:descriptor.key,
+        pageDate:descriptor.date,
+        pageKind:descriptor.kind,
+        noteIndex:descriptor.noteIndex || 0,
+        timetableIndex:descriptor.timetableIndex || 0,
+        name:`${config.namePrefix || 'Registrazione'} · recupero`,
+        filename:'',
+        createdAt:activeSession.startedAt,
+        startedAt:activeSession.startedAt,
+        startedAtMs:activeSession.startedAtMs,
+        mimeType:recorder.mimeType || profile.mimeType || 'audio/mp4',
+        codecProfile:profile.id,
+        codecLabel:profile.label,
+        requestedBitrate:profile.bitrate || 0,
+        channels:config.channels,
+        destination,
+        localStored:true,
+        uploadStatus:'recording',
+        appVersion
+      });
       recorder.start(CHUNK_MS);
       if (quick) {
         if (panel) panel.hidden = true;
@@ -654,13 +719,14 @@ export function initAudioRecorder(options = {}) {
   async function uploadRecording(recording) {
     const meta = destinationMeta(recording.destination);
     if (!meta.provider) return recording;
-    if (!recording.blob) throw new Error('Blob locale temporaneo non disponibile');
+    const uploadBlob = await fetchRecordingBlob(recording);
+    if (!(uploadBlob instanceof Blob) || !uploadBlob.size) throw new Error('Audio locale temporaneo non disponibile');
     await waitForRealtimeIdle(isRealtimeBusy, 60000);
     const controller = beginNetworkOperation();
     let remote;
     try {
-      if (meta.provider === 'google') remote = await cloudBridge.uploadGoogle(recording.blob, recording.filename, config.googleFolder, recording.mimeType, controller.signal);
-      else remote = await cloudBridge.uploadOneDrive(recording.blob, recording.filename, config.oneDriveFolder, recording.mimeType, controller.signal);
+      if (meta.provider === 'google') remote = await cloudBridge.uploadGoogle(uploadBlob, recording.filename, config.googleFolder, recording.mimeType, controller.signal);
+      else remote = await cloudBridge.uploadOneDrive(uploadBlob, recording.filename, config.oneDriveFolder, recording.mimeType, controller.signal);
     } finally { finishNetworkOperation(controller); }
     recording.cloudProvider = meta.provider;
     recording.cloudFileId = remote?.id || '';
@@ -668,6 +734,8 @@ export function initAudioRecorder(options = {}) {
     recording.uploadStatus = 'uploaded';
     recording.uploadedAt = new Date().toISOString();
     if (!meta.keepLocal) {
+      if (recording.chunkSessionId) await deleteChunks(recording.chunkSessionId).catch(() => {});
+      recording.chunkSessionId = '';
       recording.blob = null;
       recording.localStored = false;
     } else recording.localStored = true;
@@ -691,7 +759,8 @@ export function initAudioRecorder(options = {}) {
       const rows = await listChunks(session.id);
       if (!rows.length) throw new Error('Nessun dato audio registrato');
       const mimeType = session.recorder.mimeType || session.profile.mimeType || rows[0]?.blob?.type || 'audio/mp4';
-      const blob = new Blob(rows.map((row) => row.blob), { type:mimeType });
+      const totalSize = rows.reduce((sum,row) => sum + Math.max(0, Number(row?.blob?.size) || 0), 0);
+      if (!totalSize) throw new Error('Nessun dato audio registrato');
       const elapsedMs = Math.max(0, Date.now()-session.startedAtMs);
       const pageExisting = await listRecordingsForPage(session.descriptor.key);
       const recording = {
@@ -700,15 +769,18 @@ export function initAudioRecorder(options = {}) {
         name:`${config.namePrefix || 'Registrazione'} ${pageExisting.length+1}`,
         filename:recordingFilename(session, mimeType, pageExisting.length+1),
         createdAt:session.startedAt, completedAt:new Date().toISOString(), durationMs:elapsedMs,
-        mimeType, size:blob.size, codecProfile:session.profile.id, codecLabel:session.profile.label,
+        mimeType, size:totalSize, codecProfile:session.profile.id, codecLabel:session.profile.label,
         requestedBitrate:session.profile.bitrate || 0, actualBitrate:Number(session.recorder.audioBitsPerSecond)||0,
         channels:config.channels, destination:session.destination,
         localStored:true, cloudProvider:'', cloudFileId:'', cloudName:'', uploadStatus:destinationMeta(session.destination).provider ? 'pending' : 'local',
-        blob, appVersion
+        blob:null, chunkSessionId:session.id, appVersion
       };
       await dbPut(RECORDINGS_STORE, recording);
+      await dbDelete(RECORDINGS_STORE, session.id).catch(() => {});
       notifyRecordingsChanged(recording.pageKey);
-      await deleteChunks(session.id);
+      // I chunk diventano il contenuto locale definitivo della registrazione.
+      // Non vengono ricomposti in un Blob durante la finalizzazione: questo evita
+      // il picco di memoria delle registrazioni lunghe.
       // La registrazione è ormai definitivamente consolidata nell'archivio locale.
       // Da questo punto l'icona microfono può tornare allo stato normale;
       // l'eventuale upload Cloud resta una fase separata e subordinata alla Pencil.
@@ -725,7 +797,6 @@ export function initAudioRecorder(options = {}) {
           recording.uploadStatus = 'pending';
           recording.uploadError = err?.name === 'AbortError' ? 'trasferimento sospeso per priorità Ink' : (err.message || String(err));
           recording.localStored = true;
-          recording.blob = blob;
           await dbPut(RECORDINGS_STORE, recording);
           pendingRetryId = recording.id;
           schedulePendingRetry();
@@ -756,6 +827,11 @@ export function initAudioRecorder(options = {}) {
 
   async function fetchRecordingBlob(recording) {
     if (recording.blob instanceof Blob && recording.blob.size) return recording.blob;
+    if (recording.chunkSessionId) {
+      const chunks = await listChunks(recording.chunkSessionId);
+      const parts = chunks.map((item) => item?.blob).filter((blob) => blob instanceof Blob && blob.size);
+      if (parts.length) return new Blob(parts, { type:recording.mimeType || parts[0]?.type || 'audio/mp4' });
+    }
     if (!recording.cloudProvider || !recording.cloudFileId) throw new Error('File audio non disponibile localmente');
     await waitForRealtimeIdle(isRealtimeBusy, 30000);
     const controller = beginNetworkOperation();
@@ -793,7 +869,7 @@ export function initAudioRecorder(options = {}) {
   }
 
   async function retryCloudUpload(recording) {
-    if (!recording?.blob) throw new Error('Copia locale temporanea non disponibile');
+    if (!recording) throw new Error('Registrazione non disponibile');
     await ensureCloudReady(recording.destination);
     await uploadRecording(recording);
     if (pendingRetryId === recording.id) pendingRetryId = '';
@@ -810,6 +886,7 @@ export function initAudioRecorder(options = {}) {
         else if (recording.cloudProvider === 'onedrive') await cloudBridge.deleteOneDrive(recording.cloudFileId, controller.signal);
       } finally { finishNetworkOperation(controller); }
     }
+    if (recording.chunkSessionId) await deleteChunks(recording.chunkSessionId).catch(() => {});
     await dbDelete(RECORDINGS_STORE, recording.id);
     notifyRecordingsChanged(recording.pageKey);
     if (loadedRecordingId === recording.id) clearPlayerUrl();
@@ -956,7 +1033,7 @@ export function initAudioRecorder(options = {}) {
   function bindAudioButtonQuickGesture() {
     if (!(audioButton instanceof HTMLButtonElement)) return;
     audioButton.addEventListener('pointerdown', (ev) => {
-      if (ev.pointerType === 'mouse') return;
+      if (ev.pointerType !== 'pen') return;
       directActivation.set(audioButton, performance.now());
       handleAudioButtonActivation(ev);
     }, { passive:false });
@@ -970,7 +1047,7 @@ export function initAudioRecorder(options = {}) {
   function bindButton(button, handler) {
     if (!(button instanceof HTMLButtonElement)) return;
     button.addEventListener('pointerdown', (ev) => {
-      if (ev.pointerType === 'mouse') return;
+      if (ev.pointerType !== 'pen') return;
       directActivation.set(button, performance.now());
       handler(ev);
       ev.preventDefault(); ev.stopPropagation();
@@ -1031,7 +1108,7 @@ export function initAudioRecorder(options = {}) {
     if (button) handleLibraryAction(button);
   });
   libraryList?.addEventListener('pointerdown', (ev) => {
-    if (ev.pointerType === 'mouse') return;
+    if (ev.pointerType !== 'pen') return;
     const button = ev.target instanceof Element ? ev.target.closest('button[data-audio-action]') : null;
     if (!button) return;
     directActivation.set(button, performance.now());
@@ -1090,10 +1167,24 @@ export function initAudioRecorder(options = {}) {
   oneClientAudio?.addEventListener('change', () => syncCredentialFields(oneClientAudio, backupOneClient));
   oneTenantAudio?.addEventListener('change', () => syncCredentialFields(oneTenantAudio, backupOneTenant));
 
+  function checkpointActiveRecording() {
+    const session = activeSession;
+    if (!session || session.stopping || session.recorder?.state !== 'recording') return;
+    try { session.recorder.requestData(); } catch {}
+    setTimeout(() => persistQueuedChunks(true).catch(() => {}), 40);
+  }
+  const handleAudioVisibility = () => { if (document.visibilityState === 'hidden') checkpointActiveRecording(); };
+  const handleAudioPageHide = () => checkpointActiveRecording();
+  document.addEventListener('visibilitychange', handleAudioVisibility, { passive:true });
+  window.addEventListener('pagehide', handleAudioPageHide, { passive:true });
+
   // Controllo di emergenza molto lento: nessuna attività nel pointermove.
   const emergencyTimer = setInterval(() => { if (activeSession && !isRealtimeBusy?.()) emergencyStorageCheck().catch(() => {}); }, 30000);
 
   populateCodecOptions();
+  recoverInterruptedAudioSessions().then((count) => {
+    if (count > 0) setStatus(`${count} registrazion${count === 1 ? 'e' : 'i'} recuperata dopo interruzione`);
+  }).catch((err) => console.warn('Recupero sessioni audio interrotte', err));
   loadConfig().then(() => {
     refreshStorageStatus(); refreshCloudUi();
     setTimeout(() => {
@@ -1119,6 +1210,6 @@ export function initAudioRecorder(options = {}) {
     resumeAfterInk,
     exportFullBackup,
     restoreFullBackup,
-    destroy:() => { clearInterval(emergencyTimer); clearTimeout(retryTimer); clearTimeout(audioTapTimer); suspendForInk(); stopRecordingClock(); clearPlayerUrl(); }
+    destroy:() => { document.removeEventListener('visibilitychange', handleAudioVisibility); window.removeEventListener('pagehide', handleAudioPageHide); clearInterval(emergencyTimer); clearTimeout(retryTimer); clearTimeout(audioTapTimer); suspendForInk(); stopRecordingClock(); clearPlayerUrl(); }
   };
 }
