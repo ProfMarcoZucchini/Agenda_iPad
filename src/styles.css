@@ -3721,3 +3721,69 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .paper.rubrica-view .page-kind-label { max-width:calc(100% - 104px); }
 }
 
+
+
+/* 0.1.136 — copertina adattiva reale dopo 2 minuti di inattività e all'avvio.
+   Le due immagini fornite vengono selezionate dal browser in base all'orientamento;
+   nessuna rotazione geometrica viene applicata, quindi la grafica resta sempre diritta. */
+.startup-overlay,
+.idle-cover-overlay {
+  padding:0 !important;
+  background:#191511 !important;
+}
+.cover-card,
+.idle-cover-card {
+  position:relative;
+  width:100vw !important;
+  height:100vh !important;
+  height:100dvh !important;
+  max-width:none !important;
+  max-height:none !important;
+  aspect-ratio:auto !important;
+  border:0 !important;
+  border-radius:0 !important;
+  background:#191511 !important;
+  box-shadow:none !important;
+  filter:none !important;
+  overflow:hidden;
+  user-select:none;
+  -webkit-user-select:none;
+}
+.cover-card::before,
+.cover-card::after,
+.idle-cover-card::before,
+.idle-cover-card::after {
+  content:none !important;
+  display:none !important;
+}
+.idle-cover-inner,
+.idle-cover-medallion { display:none !important; }
+.adaptive-cover-picture {
+  position:absolute;
+  inset:0;
+  display:block;
+  width:100%;
+  height:100%;
+}
+.adaptive-cover-image {
+  display:block;
+  width:100% !important;
+  height:100% !important;
+  max-width:none !important;
+  max-height:none !important;
+  object-fit:contain !important;
+  object-position:center center;
+  pointer-events:none;
+  user-select:none;
+  -webkit-user-select:none;
+}
+.cover-version {
+  z-index:2;
+  right:max(10px, env(safe-area-inset-right));
+  bottom:max(8px, env(safe-area-inset-bottom));
+  padding:3px 7px;
+  border-radius:999px;
+  color:rgba(255,246,225,.88);
+  background:rgba(20,16,12,.50);
+  text-shadow:0 1px 1px rgba(0,0,0,.55);
+}
