@@ -3787,3 +3787,19 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   background:rgba(20,16,12,.50);
   text-shadow:0 1px 1px rgba(0,0,0,.55);
 }
+
+
+/* 0.1.137 — FIX caricamento copertine su iPad/Safari.
+   Non si usa più <picture>/<source>: le due PNG esistenti sono entrambe presenti nel DOM
+   e la CSS mostra quella coerente con l'orientamento. Evita il mancato fallback quando
+   una source selezionata non è disponibile e forza il cambio immagine alla rotazione. */
+.adaptive-cover-landscape { display:block !important; }
+.adaptive-cover-portrait { display:none !important; }
+@media (orientation: portrait) {
+  .adaptive-cover-landscape { display:none !important; }
+  .adaptive-cover-portrait { display:block !important; }
+}
+@media (orientation: landscape) {
+  .adaptive-cover-landscape { display:block !important; }
+  .adaptive-cover-portrait { display:none !important; }
+}

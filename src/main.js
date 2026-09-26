@@ -16,7 +16,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.136';
+const APP_VERSION = '0.1.137';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -105,7 +105,7 @@ if (versionButton) {
   versionButton.title = `Versione ${APP_VERSION} e diagnostica`;
   versionButton.setAttribute('aria-label', `Versione ${APP_VERSION} e diagnostica`);
 }
-// 0.1.136 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
+// 0.1.137 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
 const startupCoverVersion = document.querySelector('.cover-version');
 if (startupCoverVersion) startupCoverVersion.textContent = `v${APP_VERSION}`;
 const authorCreditsButton = document.getElementById('authorCreditsButton');
