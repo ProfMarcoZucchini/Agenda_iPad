@@ -178,6 +178,23 @@ export function initCloudSyncTransport(options = {}) {
     return true;
   }
 
+
+  async function recoverPendingGlobalRestore(restoreId = '') {
+    const group = await readGroupStatus();
+    if (group.restoreState !== 'pending') return { ok: true, recovered: false, group };
+    const rid = String(restoreId || '').trim();
+    const owns = rid && String(group.restoreId || '') === rid;
+    if (!owns && !group.restoreRecoverable) throw new Error('Ripristino Cloud ancora attivo: recovery non ancora disponibile.');
+    const recovered = await request('group_restore_recover.php', {
+      method: 'POST', skipEpoch: true, json: { protocolVersion, restoreId: owns ? rid : '' }
+    }, 30000, true);
+    if (!recovered?.ok || recovered?.restoreState !== 'ready') throw new Error('Recovery restore Cloud non confermato.');
+    activeRestoreId = ''; activeRestoreEpoch = '';
+    stats.restoreState = 'ready'; stats.groupEpoch = String(recovered.groupEpoch || ''); emit();
+    if (stats.groupEpoch) await setGroupEpoch(stats.groupEpoch);
+    return recovered;
+  }
+
   async function testConnection() {
     if (running) throw new Error('Sincronizzazione già in corso.');
     running = true; suspendedForInk = false; stats.state = 'testing'; stats.lastError = ''; emit();
@@ -351,7 +368,11 @@ export function initCloudSyncTransport(options = {}) {
       await flushLocal();
       if (isRealtimeBusy()) throw new DOMException('Ink priority', 'AbortError');
       await healthCheck();
-      const group = await readGroupStatus();
+      let group = await readGroupStatus();
+      if (group.restoreState === 'pending' && group.restoreRecoverable && !activeRestoreId) {
+        await recoverPendingGlobalRestore('');
+        group = await readGroupStatus();
+      }
       if (group.restoreState === 'pending') throw new Error('Il gruppo è in fase di ripristino globale su un altro dispositivo.');
       if (await reconcileEpochBeforeSync(group)) return { epochMismatch: true, pushed: 0, pulled: 0, groupId: cfg.groupId };
       const pushed = await pushPending(cfg.encryptionKey);
@@ -467,7 +488,7 @@ export function initCloudSyncTransport(options = {}) {
 
   emit();
   return {
-    createGroup, testConnection, syncNow, recoverPullOnly, publishAndCommitGlobalRestore, scheduleAuto, suspendForInk, resumeAfterInk,
+    createGroup, testConnection, syncNow, recoverPullOnly, publishAndCommitGlobalRestore, recoverPendingGlobalRestore, scheduleAuto, suspendForInk, resumeAfterInk,
     getDiagnostics: () => ({ ...stats }), normalizeEndpoint
   };
 }

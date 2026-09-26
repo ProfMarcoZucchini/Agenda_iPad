@@ -3696,3 +3696,28 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
 
 /* 0.1.130 — archivio backup completo con scorrimento. */
 .backup-history{max-height:min(52vh,560px);overflow-y:auto;overscroll-behavior:contain;}
+
+/* 0.1.135 — Versione footer più leggibile + titolo Rubrica centrato stabilmente. */
+.baseline-footer #versionButton {
+  font-size:13px;
+  font-weight:800;
+  letter-spacing:.025em;
+  opacity:.94;
+  padding:6px 2px 6px 2px;
+}
+.paper.rubrica-view .page-kind-label {
+  position:absolute !important;
+  left:50% !important;
+  right:auto !important;
+  top:8px !important;
+  transform:translateX(-50%) !important;
+  margin:0 !important;
+  width:max-content;
+  max-width:calc(100% - 120px);
+  text-align:center !important;
+}
+@media (max-width:760px) {
+  .baseline-footer #versionButton { font-size:12px; }
+  .paper.rubrica-view .page-kind-label { max-width:calc(100% - 104px); }
+}
+

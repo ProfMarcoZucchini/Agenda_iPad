@@ -2,6 +2,7 @@ import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
 import { initCloudSyncTransport } from './cloud-sync.js';
+import { loadProtectedCloudJoinCode, storeProtectedCloudJoinCode } from './cloud-secret-store.js';
 import { decodeCloudJoinCode } from './cloud-crypto.js';
 import { structuralErase } from './ink-erase.js';
 import { dataUrlToBlob, sha256Blob, isSha256Hash } from './blob-store.js';
@@ -15,7 +16,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.131';
+const APP_VERSION = '0.1.135';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -31,6 +32,8 @@ const LAN_STATE_KEY = 'lan-transport-state-v1';
 const LAN_CONFIG_STORAGE_KEY = 'agenda-ipad-lan-sync-config-v1';
 const CLOUD_STATE_KEY = 'cloud-transport-state-v1';
 const CLOUD_CONFIG_STORAGE_KEY = 'agenda-ipad-cloud-sync-config-v1';
+let cloudJoinCodeMemory = '';
+let cloudSecretPersistPromise = Promise.resolve();
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SYNC_RESTORE_GUARD_STORAGE_KEY = 'agenda-ipad-sync-restore-guard-v1';
 const LIFECYCLE_JOURNAL_STORAGE_KEY = 'agenda-ipad-lifecycle-journal-v1';
@@ -96,6 +99,12 @@ const header = document.getElementById('pageHeader');
 const canvas = document.getElementById('inkCanvas');
 const ctx = canvas.getContext('2d', { alpha: true, desynchronized: true });
 const versionButton = document.getElementById('versionButton');
+// 0.1.135 — il footer legge sempre la versione dalla sorgente runtime.
+if (versionButton) {
+  versionButton.textContent = `V.${APP_VERSION}`;
+  versionButton.title = `Versione ${APP_VERSION} e diagnostica`;
+  versionButton.setAttribute('aria-label', `Versione ${APP_VERSION} e diagnostica`);
+}
 const authorCreditsButton = document.getElementById('authorCreditsButton');
 const infoCreditsOverlay = document.getElementById('infoCreditsOverlay');
 const idleCoverOverlay = document.getElementById('idleCoverOverlay');
@@ -3402,14 +3411,42 @@ function loadCloudConfig() {
     const parsed = JSON.parse(localStorage.getItem(CLOUD_CONFIG_STORAGE_KEY) || '{}');
     return {
       endpoint: String(parsed.endpoint || CLOUD_DEFAULT_ENDPOINT),
-      joinCode: String(parsed.joinCode || ''),
+      joinCode: String(parsed.joinCode || ''), // legacy only: migrated and scrubbed during boot
       mode: ['auto','manual','off'].includes(parsed.mode) ? parsed.mode : 'manual'
     };
   } catch { return { endpoint: CLOUD_DEFAULT_ENDPOINT, joinCode: '', mode: 'manual' }; }
 }
 
+async function migrateAndLoadProtectedCloudJoinCode() {
+  const config = loadCloudConfig();
+  let code = '';
+  try { code = String(await loadProtectedCloudJoinCode() || '').trim(); } catch (err) { console.warn('Archivio protetto Cloud non leggibile', err); }
+  if (!code) code = String(config.joinCode || '').trim();
+  if (!code && db) {
+    const legacy = await getSyncMeta(CLOUD_CREDENTIALS_META_KEY).catch(() => null);
+    code = String(legacy?.joinCode || '').trim();
+  }
+  if (code) {
+    try { decodeCloudJoinCode(code); await storeProtectedCloudJoinCode(code); }
+    catch (err) { console.warn('Migrazione Codice Gruppo Cloud non riuscita', err); }
+  }
+  cloudJoinCodeMemory = code;
+  // Rimuove ogni copia persistente in chiaro dopo la migrazione.
+  try {
+    localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify({ endpoint: config.endpoint, mode: config.mode, protectedJoinCode: Boolean(code) }));
+  } catch {}
+  if (db) {
+    await putSyncMeta({
+      key: CLOUD_CREDENTIALS_META_KEY, endpoint: config.endpoint, mode: config.mode, protectedJoinCode: Boolean(code),
+      modifiedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+  return { endpoint: config.endpoint, mode: config.mode, joinCode: code };
+}
+
 function cloudCredentialsFromUi() {
-  const code = String(cloudJoinCodeInput?.value || '').trim();
+  const uiCode = String(cloudJoinCodeInput?.value || '').trim();
+  const code = uiCode || cloudJoinCodeMemory;
   if (!code) return { groupId: '', authKey: '', encryptionKey: '' };
   return decodeCloudJoinCode(code);
 }
@@ -3425,24 +3462,32 @@ function cloudTransportConfig() {
 }
 
 function saveCloudConfig() {
+  const enteredCode = String(cloudJoinCodeInput?.value || '').trim();
+  if (enteredCode) {
+    try {
+      decodeCloudJoinCode(enteredCode);
+      cloudJoinCodeMemory = enteredCode;
+      cloudSecretPersistPromise = cloudSecretPersistPromise
+        .then(() => storeProtectedCloudJoinCode(enteredCode))
+        .catch((err) => console.warn('Codice Gruppo Cloud non protetto localmente', err));
+    } catch {}
+  }
   const config = {
     endpoint: String(cloudEndpointInput?.value || CLOUD_DEFAULT_ENDPOINT).trim(),
-    joinCode: String(cloudJoinCodeInput?.value || '').trim(),
-    mode: String(cloudSyncModeSelect?.value || 'manual')
+    mode: String(cloudSyncModeSelect?.value || 'manual'),
+    protectedJoinCode: Boolean(cloudJoinCodeMemory)
   };
   try { localStorage.setItem(CLOUD_CONFIG_STORAGE_KEY, JSON.stringify(config)); } catch {}
-  // 0.1.37: seconda copia persistente del codice Cloud nel DB principale.
-  // Non sovrascriviamo mai il backup IndexedDB con una stringa vuota.
-  if (db && config.joinCode) {
+  if (db) {
     void putSyncMeta({
       key: CLOUD_CREDENTIALS_META_KEY,
-      joinCode: config.joinCode,
       endpoint: config.endpoint,
       mode: config.mode,
+      protectedJoinCode: config.protectedJoinCode,
       modifiedAt: new Date().toISOString()
     }).catch(() => {});
   }
-  return config;
+  return { ...config, joinCode: cloudJoinCodeMemory };
 }
 
 function selectTextControl(control) {
@@ -3522,19 +3567,15 @@ function handleCloudSelectJoinCode() {
 }
 
 async function handleCloudRecoverSavedJoinCode() {
-  const saved = loadCloudConfig();
-  let code = String(saved.joinCode || '').trim();
-  let source = 'memoria web';
-  if (!code && db) {
-    const backup = await getSyncMeta(CLOUD_CREDENTIALS_META_KEY).catch(() => null);
-    code = String(backup?.joinCode || '').trim();
-    source = 'database locale Agenda';
+  let code = cloudJoinCodeMemory;
+  if (!code) {
+    try { code = String(await loadProtectedCloudJoinCode() || '').trim(); } catch {}
   }
-  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud recuperabile su questo dispositivo. Se il vecchio codice non è stato salvato, crea un nuovo gruppo Cloud.');
+  if (!code) return updateCloudStatus('Nessun Codice gruppo Cloud protetto recuperabile su questo dispositivo. Se il vecchio codice non è stato salvato, crea un nuovo gruppo Cloud.');
+  cloudJoinCodeMemory = code;
   if (cloudJoinCodeInput) cloudJoinCodeInput.value = code;
-  saveCloudConfig();
   selectTextControl(cloudJoinCodeInput);
-  updateCloudStatus(`Codice gruppo Cloud recuperato dalla ${source} ✓\nIl codice è selezionato e pronto per essere copiato.`);
+  updateCloudStatus('Codice gruppo Cloud recuperato dall’archivio locale protetto ✓\nIl codice è selezionato e pronto per essere copiato.');
 }
 
 function listCloudPendingEvents(limit = 120) {
@@ -6093,7 +6134,7 @@ function getUiButtonTarget(target) {
 }
 
 
-// 0.1.131 — filtro globale anti-palmo per i controlli UI.
+// 0.1.134 — filtro globale anti-palmo per i controlli UI.
 // Non entra nel percorso Ink: osserva soltanto i Pointer Events di tipo touch
 // nati su un button. Un vero tap resta un normale click; un contatto che scorre
 // oltre la soglia o con area molto ampia viene marcato e il click sintetico viene
@@ -7808,7 +7849,7 @@ function bindDirectUiButton(button) {
   if (!(button instanceof HTMLButtonElement)) return;
 
   button.addEventListener('pointerdown', (ev) => {
-    // 0.1.131 — Palm rejection: solo Apple Pencil attiva al contatto iniziale.
+    // 0.1.134 — Palm rejection: solo Apple Pencil attiva al contatto iniziale.
     // Il touch intenzionale viene confermato dal normale click al rilascio;
     // uno strisciamento del palmo non puo' quindi eseguire il comando al pointerdown.
     if (ev.pointerType !== 'pen') return;
@@ -7927,7 +7968,7 @@ function handleStylePanelDirectPointer(ev) {
 }
 
 function handleStylePanelTouchFallback(_ev) {
-  // 0.1.131 — il touch non attiva piu' opzioni al touchstart.
+  // 0.1.134 — il touch non attiva piu' opzioni al touchstart.
   // I controlli del pannello usano il click confermato al rilascio.
 }
 
@@ -7944,7 +7985,7 @@ function handleMiniCalendarDirectPointer(ev) {
 }
 
 function handleMiniCalendarTouchFallback(_ev) {
-  // 0.1.131 — niente azione al touchstart; il click conferma il tap intenzionale.
+  // 0.1.134 — niente azione al touchstart; il click conferma il tap intenzionale.
 }
 
 miniCalendar?.addEventListener('pointerdown', handleMiniCalendarDirectPointer, { passive: false, capture: true });
@@ -8537,7 +8578,7 @@ async function bootAgenda() {
     });
   }
   if (!cloudTransport && syncFoundation) {
-    const config = loadCloudConfig();
+    const config = await migrateAndLoadProtectedCloudJoinCode();
     if (cloudEndpointInput) cloudEndpointInput.value = config.endpoint || CLOUD_DEFAULT_ENDPOINT;
     if (cloudJoinCodeInput) cloudJoinCodeInput.value = config.joinCode;
     if (cloudSyncModeSelect) cloudSyncModeSelect.value = config.mode;
