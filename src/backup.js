@@ -146,7 +146,7 @@ async function backupDelete(store, key) {
   } finally { db.close(); }
 }
 
-// Liste precedenti 0.1.142: la vecchia funzione referenziava `rows` prima
+// Liste precedenti 0.1.143: la vecchia funzione referenziava `rows` prima
 // dell'inizializzazione (ReferenceError dentro IDB.onsuccess) e leggeva ogni Blob.
 // Usiamo ESCLUSIVAMENTE metadati leggeri e getAllKeys() dell'archivio.
 async function listArchives() {
@@ -181,6 +181,44 @@ async function listArchives() {
       };
       tx.onerror = () => reject(tx.error || new Error('Elenco backup non disponibile'));
       tx.onabort = () => reject(tx.error || new Error('Lettura elenco backup annullata'));
+    });
+  } finally { db.close(); }
+}
+
+
+// Diagnostica: utilizza SOLO chiavi e conteggi, mai i Blob cifrati.
+// Risultati indipendenti da renderHistory(), utile se l'elenco e' guasto.
+async function inspectBackupArchiveStorage() {
+  const db = await openBackupDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const names = Array.from(db.objectStoreNames);
+      const tx = db.transaction([ARCHIVE_STORE, ARCHIVE_META_STORE], 'readonly');
+      let ids = [], metaCount = null;
+      const keysReq = tx.objectStore(ARCHIVE_STORE).getAllKeys();
+      const countReq = tx.objectStore(ARCHIVE_META_STORE).count();
+      keysReq.onsuccess = () => { ids = keysReq.result || []; };
+      countReq.onsuccess = () => { metaCount = countReq.result; };
+      tx.oncomplete = () => resolve({ version:db.version, names, ids, metaCount });
+      tx.onerror = () => reject(tx.error || new Error('Diagnostica database non disponibile'));
+      tx.onabort = () => reject(tx.error || new Error('Diagnostica database annullata'));
+    });
+  } finally { db.close(); }
+}
+
+async function backupHasArchiveId(id) {
+  const db = await openBackupDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(ARCHIVE_STORE, 'readonly');
+      let found = false;
+      // getKey recupera SOLO la chiave, non clona il grande Blob dell'archivio.
+      const store = tx.objectStore(ARCHIVE_STORE);
+      const req = typeof store.getKey === 'function' ? store.getKey(id) : store.getAllKeys();
+      req.onsuccess = () => { found = typeof store.getKey === 'function' ? req.result === id : (req.result || []).includes(id); };
+      tx.oncomplete = () => resolve(found);
+      tx.onerror = () => reject(tx.error || new Error('Conferma scrittura backup non riuscita'));
+      tx.onabort = () => reject(tx.error || new Error('Conferma scrittura backup annullata'));
     });
   } finally { db.close(); }
 }
@@ -777,8 +815,8 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums, audioCount:audio.count };
 }
 
-// Percorso primario 0.1.142: lettura pagine singole, media uno per volta e stato
-// persistente dell'avanzamento. Stesso manifest, checksums e formato ZIP della 0.1.142.
+// Percorso primario 0.1.143: lettura pagine singole, media uno per volta e stato
+// persistente dell'avanzamento. Stesso manifest, checksums e formato ZIP della 0.1.143.
 async function makeBackupPackageProgressive({ appVersion, reader, preferences, config, secureVault = null, audioSnapshot = null, clipboards = null, onProgress = async () => {} }) {
   const createdAt = new Date().toISOString();
   const zip = createProgressiveZipParts();
@@ -1238,6 +1276,8 @@ export function initBackupFoundation(options) {
   const chooseLocal = document.getElementById('chooseLocalFolderButton');
   const localStatus = document.getElementById('localFolderStatus');
   const exportLatest = document.getElementById('exportLatestButton');
+  const emergencyExport = document.getElementById('backupEmergencyExportButton');
+  const diagnoseArchives = document.getElementById('backupDiagnoseButton');
   const googleClientId = document.getElementById('googleClientId');
   const googleFolderId = document.getElementById('googleFolderId');
   const googleFolderName = document.getElementById('googleFolderName');
@@ -1268,6 +1308,8 @@ export function initBackupFoundation(options) {
   let running = false;
   let automaticPausedAfterInterruption = false;
   let lastInterruptedJob = null;
+  let preparedArchiveForExternalExport = null;
+  let lastArchiveIdConfirmed = false;
   let lastActivity = performance.now();
   let dueTimer = 0;
   let authCallbackMessage = '';
@@ -1275,6 +1317,7 @@ export function initBackupFoundation(options) {
   const directActivations = new WeakMap();
 
   const setStatus = (text) => { if (status) status.textContent = text; };
+  const setEmergencyExportAvailable = (available) => { if (emergencyExport) emergencyExport.disabled = !available; };
 
   const cloudStateText = (connected, expiresAt) => connected
     ? `Connesso per questa sessione · scadenza ${new Date(expiresAt).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}`
@@ -1572,27 +1615,34 @@ export function initBackupFoundation(options) {
         verificationStatus:'pending',
         deliveries:[{key:'internal', label:'Archivio app', ok:true, message:'salvato · verifica in corso'}]
       };
+      // La copia cifrata rimane esportabile NELLA SESSIONE anche se IndexedDB
+      // fallisce: l'esportazione avviene solo con un successivo tap reale.
+      preparedArchiveForExternalExport = archive;
+      lastArchiveIdConfirmed = false;
+      setEmergencyExportAvailable(true);
       await advance('salvataggio locale');
-      // Commit persistente PRIMA della verifica, che può richiedere molta memoria su iPad.
-      // Un'interruzione successiva lascia un archivio recuperabile, segnalato come NON verificato.
       await backupPut(ARCHIVE_STORE, archive);
       archivedId = id;
-      await renderHistory();
-      // Non provocare un nuovo crash quando un archivio grande e' gia' salvato.
-      // I backup di sicurezza pre-ripristino fanno eccezione: verifica sempre obbligatoria.
-      // Se la sessione precedente si e' interrotta proprio in verifica/impronta,
-      // il prossimo backup MANUALE e' salvato senza ripetere immediatamente il crash.
-      const previousIntegrityFailure = Boolean(lastInterruptedJob && /verifica integrit|impronta SHA/i.test(String(lastInterruptedJob.phase || '')));
-      const deferHeavyChecks = !safety && (encryptedBlob.size > AUTO_VERIFY_MAX_BYTES || previousIntegrityFailure);
-      const shouldVerifyNow = (config.verifyAfterBackup || safety) && !deferHeavyChecks;
-      await advance(deferHeavyChecks ? 'verifica rinviata per memoria iPad' : 'verifica integrità');
-      if (shouldVerifyNow) await verifyBackupBlob(encryptedBlob, backupPassphrase);
-      if (!deferHeavyChecks) {
+      // Conferma indipendente del commit, senza caricare il Blob in memoria.
+      if (!await backupHasArchiveId(id)) {
+        throw new Error('Il database non restituisce la chiave del backup appena scritto. Usa Esporta copia di emergenza.');
+      }
+      lastArchiveIdConfirmed = true;
+      // Su iPad la verifica completa e SHA-256 sono manuali e separati:
+      // il precedente crash avveniva proprio in questa fase. I backup
+      // automatici e manuali NON vengono dichiarati verificati.
+      if (safety) {
+        await advance('verifica integrità obbligatoria pre-ripristino');
+        await verifyBackupBlob(encryptedBlob, backupPassphrase);
         await advance('impronta SHA-256');
         archive.sha256 = await sha256Hex(encryptedBlob);
+        archive.verificationStatus = 'verified';
+      } else {
+        await advance('verifica integrità rinviata per sicurezza iPad');
+        archive.verificationStatus = 'pending';
+        archive.sha256 = '';
       }
-      archive.verificationStatus = shouldVerifyNow ? 'verified' : deferHeavyChecks ? 'pending' : 'not-checked';
-      archive.deliveries = [{key:'internal', label:'Archivio app', ok:true, message:'salvato'}];
+      archive.deliveries = [{key:'internal', label:'Archivio app', ok:true, message:'salvato · verifica separata necessaria'}];
       await backupUpdateArchiveSummary(archive);
       if (!safety) {
         config.lastLocalSnapshotAt = pkg.createdAt;
@@ -1601,6 +1651,9 @@ export function initBackupFoundation(options) {
         config.lastBackupId = id;
         await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: pkg.createdAt });
       }
+      // renderHistory cattura gli errori dell'elenco, ma non deve mai
+      // impedire l'accesso alla copia di emergenza.
+      await renderHistory();
       await advance('pulizia copie obsolete');
       await prune();
       await advance('copie esterne');
@@ -1624,7 +1677,7 @@ export function initBackupFoundation(options) {
       lastInterruptedJob = null;
       const deliveryText = external.map((item) => `${item.label} ${item.ok ? '✓' : '✗'}${item.ok ? '' : ` ${item.message}`}`).join(' · ');
       const completedLabel = archive.verificationStatus === 'verified' ? 'Backup OK' : 'Backup salvato (DA VERIFICARE)';
-      setStatus(`${completedLabel} · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · ${archive.verificationStatus === 'verified' ? 'integrità verificata' : 'verifica manuale ancora necessaria: esporta una copia appena possibile'}${deliveryText ? `\n${deliveryText}` : ''}`);
+      setStatus(`${completedLabel} · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · ${archive.verificationStatus === 'verified' ? 'integrità verificata' : 'NON verificato'}\nIMPORTANTE: premi Esporta copia di emergenza e salva il file fuori dall’app.${deliveryText ? `\n${deliveryText}` : ''}`);
       setAppStatus('backup completato');
       return archive;
     } catch (err) {
@@ -1632,7 +1685,7 @@ export function initBackupFoundation(options) {
       const reasonText = String(err?.message || err);
       await writeBackupJournal('failed', phase, { reason, archivedId, error: reasonText }).catch(() => {});
       automaticPausedAfterInterruption = true;
-      setStatus(`Backup non riuscito (${phase}): ${reasonText}${archivedId ? '\nArchivio cifrato salvato: verifica integrità in sospeso.' : ''}`);
+      setStatus(`Backup non riuscito (${phase}): ${reasonText}${preparedArchiveForExternalExport ? '\nArchivio cifrato pronto in memoria: premi Esporta copia di emergenza PRIMA di chiudere l’app.' : ''}${lastArchiveIdConfirmed ? '\nLa chiave dell’archivio interno era leggibile al controllo iniziale, ma NON ne è stata verificata l’integrità.' : ''}`);
       setAppStatus('errore backup');
       return null;
     } finally {
@@ -2019,6 +2072,24 @@ export function initBackupFoundation(options) {
   bindAction(closeButton, closeSettings);
   bindAction(chooseLocal, chooseFolder);
   bindAction(exportLatest, async () => { const latest = await getLatest(); latest ? downloadOrShare(latest).catch((e) => setStatus(e.message)) : setStatus('Nessun backup disponibile.'); });
+  setEmergencyExportAvailable(false);
+  bindAction(emergencyExport, async () => {
+    const archive = preparedArchiveForExternalExport;
+    if (!archive?.blob) { setStatus('Nessun archivio temporaneo disponibile in questa sessione.'); return; }
+    try {
+      const action = await downloadOrShare(archive);
+      setStatus(`Esportazione ${action}. Controlla in File che sia presente ${archive.filename} (${humanBytes(archive.size)}). ATTENZIONE: l'integrità non è stata ancora verificata.`);
+    } catch (err) { setStatus(`Esportazione non riuscita: ${err?.message || err}. Non chiudere l’app: l’archivio è ancora disponibile.`); }
+  });
+  bindAction(diagnoseArchives, async () => {
+    try {
+      const details = await inspectBackupArchiveStorage();
+      const storage = await navigator.storage?.estimate?.().catch(() => null);
+      const last = details.ids.length ? String(details.ids[details.ids.length-1]).slice(0, 32) : 'nessuna';
+      const storageText = storage ? ` · uso indicativo ${humanBytes(storage.usage)} / quota ${humanBytes(storage.quota)}` : '';
+      setStatus(`Diagnostica backup V.${appVersion}\nOrigine: ${location.origin}\nDatabase: v${details.version} · archivi: ${details.ids.length} · schede: ${details.metaCount} · ultimo ID: ${last}${storageText}\n${preparedArchiveForExternalExport ? 'Copia cifrata in memoria disponibile: premi Esporta copia di emergenza.' : 'Nessuna copia temporanea in memoria.'}`);
+    } catch (err) { setStatus(`Diagnostica archivio non riuscita: ${err?.name || 'Errore'} · ${err?.message || err}\nNon cancellare i dati dell’app.`); }
+  });
   bindAction(backupNow, async () => { await saveConfig(); await createBackup('manual'); });
   bindAction(verifyButton, verifyLatest);
   // 0.1.101-fix8: il selettore file e' nativo e riceve direttamente il gesto utente.
