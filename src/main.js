@@ -17,7 +17,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.139';
+const APP_VERSION = '0.1.140';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -108,7 +108,7 @@ if (versionButton) {
   versionButton.title = `Versione ${APP_VERSION} e diagnostica`;
   versionButton.setAttribute('aria-label', `Versione ${APP_VERSION} e diagnostica`);
 }
-// 0.1.139 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
+// 0.1.140 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
 const startupCoverVersion = document.querySelector('.cover-version');
 if (startupCoverVersion) startupCoverVersion.textContent = `v${APP_VERSION}`;
 const authorCreditsButton = document.getElementById('authorCreditsButton');
@@ -4765,7 +4765,7 @@ function syncRulerOverlayBounds() {
   const svg = rulerOverlay.querySelector('.ruler-line-layer');
   svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
 
-  // 0.1.139 — righello Note Marco: massima lunghezza compatibile con i
+  // 0.1.140 — righello Note Marco: massima lunghezza compatibile con i
   // bordi dell'area scrivibile per QUALSIASI angolo, senza soglia di 720 px.
   // Il rettangolo ruotato viene considerato nella sua interezza, inclusa
   // l'estremita' per la rotazione.
@@ -4842,7 +4842,7 @@ function beginRulerGesture(ev) {
       startAngle:rulerState.angle
     };
   } else if (ev.pointerType === 'pen' || (ev.pointerType === 'mouse' && ev.button === 0)) {
-    // 0.1.139 — la Pencil puo' iniziare appena FUORI dal bordo del righello;
+    // 0.1.140 — la Pencil puo' iniziare appena FUORI dal bordo del righello;
     // non serve colpire il corpo HTML. Il bordo viene bloccato all'inizio.
     if (!target || (!paper?.contains(target) && !rulerOverlay?.contains(target))) return false;
     const snapped = projectPointToRulerEdge(ev);
@@ -8265,7 +8265,7 @@ function scheduleIdleCover(delay = IDLE_COVER_MS) {
 function showIdleCover(manual = false) {
   clearIdleCoverTimer();
   if (startup.phase !== 'done' || document.visibilityState !== 'visible') return;
-  if (!manual && (drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture))) {
+  if (!manual && (drawing || pageTurning || storageBusy || pageStyleBulkBusy || imageBusy || Boolean(imageGesture) || Boolean(backupFoundation?.isRunning?.()))) {
     lastUserActivityAt = Date.now();
     scheduleIdleCover();
     return;

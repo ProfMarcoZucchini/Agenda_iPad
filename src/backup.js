@@ -4,6 +4,7 @@ const BACKUP_DB_VERSION = 1;
 const ARCHIVE_STORE = 'archives';
 const SETTINGS_STORE = 'settings';
 const SETTINGS_KEY = 'backup-config-v1';
+const BACKUP_JOURNAL_KEY = 'backup-run-journal-v1';
 const DIRECTORY_KEY = 'local-directory-handle-v1';
 const BACKUP_FORMAT = 'agenda-ipad-backup';
 const BACKUP_FORMAT_VERSION = 2;
@@ -109,11 +110,20 @@ async function backupDelete(store, key) {
 async function listArchives() {
   const db = await openBackupDb();
   try {
+    // Il cursore evita getAll() con TUTTI i Blob dei vecchi backup in memoria.
+    // L'elenco contiene solo metadati; il Blob si legge solo per esportare/verificare/ripristinare.
     const rows = await new Promise((resolve, reject) => {
       const tx = db.transaction(ARCHIVE_STORE, 'readonly');
-      const req = tx.objectStore(ARCHIVE_STORE).getAll();
-      req.onsuccess = () => resolve(req.result || []);
+      const req = tx.objectStore(ARCHIVE_STORE).openCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(rows); return; }
+        const { blob, ...summary } = cursor.value || {};
+        rows.push(summary);
+        cursor.continue();
+      };
       req.onerror = () => reject(req.error);
+      tx.onabort = () => reject(tx.error || new Error('Lettura archivio backup annullata'));
     });
     return rows.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   } finally { db.close(); }
@@ -295,13 +305,13 @@ async function decryptBackupBlob(blob, passphrase) {
   const headerLen=view.getUint32(magicLen,true);
   const headerStart=magicLen+4, headerEnd=headerStart+headerLen;
   if (headerEnd>=all.length) throw new Error('Header backup cifrato non valido');
-  const headerBytes=all.slice(headerStart,headerEnd);
+  const headerBytes=all.subarray(headerStart,headerEnd);
   const header=JSON.parse(decoder.decode(headerBytes));
   if(header?.format!==ENCRYPTED_BACKUP_FORMAT || Number(header?.version)!==1) throw new Error('Formato backup cifrato non compatibile');
   const salt=b64urlDecodeBytes(header.salt), iv=b64urlDecodeBytes(header.iv);
   const key=await deriveBackupEncryptionKey(passphrase,salt,Number(header.iterations)||BACKUP_KDF_ITERATIONS);
   let plain;
-  try { plain=await crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:headerBytes},key,all.slice(headerEnd)); }
+  try { plain=await crypto.subtle.decrypt({name:'AES-GCM',iv,additionalData:headerBytes},key,all.subarray(headerEnd)); }
   catch { throw new Error('Password backup non corretta oppure archivio cifrato alterato'); }
   return new Blob([plain],{type:'application/zip'});
 }
@@ -353,8 +363,8 @@ function storedZip(entries) {
     u32(lv, 0, 0x04034b50); u16(lv, 4, 20); u16(lv, 6, 0x0800); u16(lv, 8, 0);
     u16(lv, 10, dt.time); u16(lv, 12, dt.date); u32(lv, 14, crc); u32(lv, 18, data.length); u32(lv, 22, data.length);
     u16(lv, 26, nameBytes.length); u16(lv, 28, 0);
-    const local = concatBytes([lh, nameBytes, data]);
-    locals.push(local);
+    // Blob mantiene i segmenti senza ricopiare ogni immagine/audio nell'intestazione ZIP.
+    locals.push(lh, nameBytes, data);
 
     const ch = new Uint8Array(46);
     const cv = new DataView(ch.buffer);
@@ -362,7 +372,7 @@ function storedZip(entries) {
     u16(cv, 12, dt.time); u16(cv, 14, dt.date); u32(cv, 16, crc); u32(cv, 20, data.length); u32(cv, 24, data.length);
     u16(cv, 28, nameBytes.length); u16(cv, 30, 0); u16(cv, 32, 0); u16(cv, 34, 0); u16(cv, 36, 0); u32(cv, 38, 0); u32(cv, 42, localOffset);
     centrals.push(concatBytes([ch, nameBytes]));
-    localOffset += local.length;
+    localOffset += lh.length + nameBytes.length + data.length;
   }
 
   const central = concatBytes(centrals);
@@ -392,8 +402,8 @@ async function parseStoredZip(blob) {
     const dataStart = nameStart + nameLen + extraLen;
     const dataEnd = dataStart + compressedSize;
     if (dataEnd > bytes.length) throw new Error('Contenuto ZIP incompleto');
-    const name = decoder.decode(bytes.slice(nameStart, nameStart + nameLen));
-    files.set(name, bytes.slice(dataStart, dataEnd));
+    const name = decoder.decode(bytes.subarray(nameStart, nameStart + nameLen));
+    files.set(name, bytes.subarray(dataStart, dataEnd));
     offset = dataEnd;
   }
   return files;
@@ -976,6 +986,8 @@ export function initBackupFoundation(options) {
   let config = cloneConfig();
   let directoryHandle = null;
   let running = false;
+  let automaticPausedAfterInterruption = false;
+  let lastInterruptedJob = null;
   let lastActivity = performance.now();
   let dueTimer = 0;
   let authCallbackMessage = '';
@@ -1010,6 +1022,16 @@ export function initBackupFoundation(options) {
     directoryHandle = (await backupGet(SETTINGS_STORE, DIRECTORY_KEY).catch(() => null))?.handle || null;
     syncForm();
     await renderHistory();
+    const previous = (await backupGet(SETTINGS_STORE, BACKUP_JOURNAL_KEY).catch(() => null))?.value;
+    if (previous?.state === 'running') {
+      automaticPausedAfterInterruption = true;
+      lastInterruptedJob = previous;
+      // Mai ricominciare automaticamente una procedura che ha causato un riavvio/crash.
+      authCallbackMessage = `Backup precedente interrotto alla fase: ${previous.phase || 'sconosciuta'}.\nBackup automatico sospeso per questa sessione. I dati Agenda non sono stati eliminati.`;
+    } else if (previous?.state === 'failed') {
+      lastInterruptedJob = previous;
+      authCallbackMessage = `Ultimo backup non riuscito: ${previous.error || previous.phase || 'errore sconosciuto'}`;
+    }
   }
 
   function syncForm() {
@@ -1092,7 +1114,8 @@ export function initBackupFoundation(options) {
   }
 
   async function getLatest() {
-    return (await listArchives())[0] || null;
+    const meta = (await listArchives())[0];
+    return meta ? backupGet(ARCHIVE_STORE, meta.id) : null;
   }
 
   async function writeLocalFolder(archive) {
@@ -1202,6 +1225,13 @@ export function initBackupFoundation(options) {
     return Math.ceil(bytes * 1.15) + (2 * 1024 * 1024);
   }
 
+  async function writeBackupJournal(state, phase, extra = {}) {
+    const value = { state, phase, updatedAt:new Date().toISOString(), ...extra };
+    await backupPut(SETTINGS_STORE, { key:BACKUP_JOURNAL_KEY, value, modifiedAt:value.updatedAt });
+    if (state === 'running') setStatus(`Backup in corso · ${phase}…`);
+    return value;
+  }
+
   async function createBackup(reason = 'manual', { safety = false } = {}) {
     if (running) return null;
     if (isRealtimeBusy()) {
@@ -1213,9 +1243,17 @@ export function initBackupFoundation(options) {
       return null;
     }
     running = true;
-    setStatus(`Backup ${reason === 'automatic' ? 'automatico' : 'manuale'} in corso…`);
+    let phase = 'inizializzazione';
+    let archivedId = '';
+    const advance = async (next) => {
+      phase = next;
+      await writeBackupJournal('running', phase, { reason, archivedId });
+      // Lascia respirare WebKit tra le fasi, senza interferire con il tratto Pencil.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
     setAppStatus('backup in corso');
     try {
+      await advance('preparazione dati');
       const backupPassphrase = await requireBackupPassphrase({ allowPrompt: reason !== 'automatic' });
       await flushCurrent();
       const records = await readMainRecords(mainDbName, mainStore);
@@ -1225,16 +1263,32 @@ export function initBackupFoundation(options) {
       const audioSnapshot = await audioProvider.exportBackup();
       const estimatedBytes = estimateBackupPayloadBytes({ records, preferences, secureVault, audioSnapshot, clipboards });
       await ensureStorageCapacity(estimatedBytes, 'Creazione backup');
+      await advance('creazione archivio ZIP');
       const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault, audioSnapshot, clipboards });
+      await advance('cifratura archivio');
       const encryptedBlob = await encryptBackupBlob(pkg.blob, backupPassphrase);
-      if (config.verifyAfterBackup) await verifyBackupBlob(encryptedBlob, backupPassphrase);
-      const zipHash = await sha256Hex(encryptedBlob);
       const id = `${pkg.createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
       const archive = {
         id, filename: encryptedBackupFileName(pkg.filename), createdAt: pkg.createdAt, size: encryptedBlob.size,
-        sha256: zipHash, recordCount: records.length, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
-        encrypted:true, encryption:'AES-256-GCM', reason: safety ? 'pre-restore' : reason, appVersion, blob: encryptedBlob
+        sha256: '', recordCount: records.length, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
+        encrypted:true, encryption:'AES-256-GCM', reason: safety ? 'pre-restore' : reason, appVersion, blob: encryptedBlob,
+        verificationStatus:'pending',
+        deliveries:[{key:'internal', label:'Archivio app', ok:true, message:'salvato · verifica in corso'}]
       };
+      await advance('salvataggio locale');
+      // Commit persistente PRIMA della verifica, che può richiedere molta memoria su iPad.
+      // Un'interruzione successiva lascia un archivio recuperabile, segnalato come NON verificato.
+      await backupPut(ARCHIVE_STORE, archive);
+      archivedId = id;
+      await renderHistory();
+      await advance('verifica integrità');
+      if (config.verifyAfterBackup || safety) {
+        await verifyBackupBlob(encryptedBlob, backupPassphrase);
+      }
+      await advance('impronta SHA-256');
+      archive.sha256 = await sha256Hex(encryptedBlob);
+      archive.verificationStatus = (config.verifyAfterBackup || safety) ? 'verified' : 'not-checked';
+      archive.deliveries = [{key:'internal', label:'Archivio app', ok:true, message:'salvato'}];
       await backupPut(ARCHIVE_STORE, archive);
       if (!safety) {
         config.lastLocalSnapshotAt = pkg.createdAt;
@@ -1243,7 +1297,9 @@ export function initBackupFoundation(options) {
         config.lastBackupId = id;
         await backupPut(SETTINGS_STORE, { key: SETTINGS_KEY, value: config, modifiedAt: pkg.createdAt });
       }
+      await advance('pulizia copie obsolete');
       await prune();
+      await advance('copie esterne');
       const external = safety
         ? [{ key: 'internal', label: 'Archivio app', ok: true, message: 'backup sicurezza' }]
         : await deliverExternal(archive, reason);
@@ -1259,13 +1315,19 @@ export function initBackupFoundation(options) {
       archive.deliveryUpdatedAt = new Date().toISOString();
       await backupPut(ARCHIVE_STORE, archive);
       await renderHistory();
+      await writeBackupJournal('done', 'completato', { reason, archivedId:id });
+      automaticPausedAfterInterruption = false;
+      lastInterruptedJob = null;
       const deliveryText = external.map((item) => `${item.label} ${item.ok ? '✓' : '✗'}${item.ok ? '' : ` ${item.message}`}`).join(' · ');
-      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · SHA-256 verificato${deliveryText ? `\n${deliveryText}` : ''}`);
+      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · ${archive.verificationStatus === 'verified' ? 'integrità verificata' : 'verifica manuale ancora necessaria'}${deliveryText ? `\n${deliveryText}` : ''}`);
       setAppStatus('backup completato');
       return archive;
     } catch (err) {
       console.error('Backup Agenda iPad', err);
-      setStatus(`Backup non riuscito: ${err.message || err}`);
+      const reasonText = String(err?.message || err);
+      await writeBackupJournal('failed', phase, { reason, archivedId, error: reasonText }).catch(() => {});
+      automaticPausedAfterInterruption = true;
+      setStatus(`Backup non riuscito (${phase}): ${reasonText}${archivedId ? '\nArchivio cifrato salvato: verifica integrità in sospeso.' : ''}`);
       setAppStatus('errore backup');
       return null;
     } finally {
@@ -1281,6 +1343,10 @@ export function initBackupFoundation(options) {
       const result = await verifyArchiveWithPassphrase(latest.blob);
       const whole = await sha256Hex(latest.blob);
       if (latest.sha256 && whole !== latest.sha256) throw new Error('Checksum dell’archivio completo non valido');
+      latest.sha256 = whole;
+      latest.verificationStatus = 'verified';
+      await backupPut(ARCHIVE_STORE, latest);
+      await renderHistory();
       setStatus(`Backup integro ✓\n${latest.filename}\n${result.pages.count ?? result.pages.records?.length ?? 0} record · formato ${result.manifest.formatVersion}`);
     } catch (err) { setStatus(`Backup NON valido: ${err.message}`); }
   }
@@ -1309,6 +1375,12 @@ export function initBackupFoundation(options) {
       meta.textContent = `${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${Number(row.recordCount) || 0} record · ${Number(row.audioCount) || 0} audio · ${String(row.reason || '')}`;
       const badges = document.createElement('div');
       badges.className = 'delivery-badges';
+      if (row.verificationStatus && row.verificationStatus !== 'verified') {
+        const pending = document.createElement('span');
+        pending.className = 'delivery-badge fail';
+        pending.textContent = row.verificationStatus === 'pending' ? 'Da verificare' : 'Verifica non eseguita';
+        badges.appendChild(pending);
+      }
       for (const delivery of (row.deliveries || [{label:'Archivio app',ok:true}])) {
         const badge = document.createElement('span');
         badge.className = `delivery-badge ${delivery?.ok ? 'ok' : 'fail'}`;
@@ -1387,7 +1459,9 @@ export function initBackupFoundation(options) {
     const backupSummary = localAt
       ? `Ultimo snapshot locale: ${new Date(localAt).toLocaleString('it-IT')}\nBackup esterno/disaster-safe: ${safeAt ? new Date(safeAt).toLocaleString('it-IT') : 'non ancora disponibile'}\n${nextText}`
       : `Nessun backup automatico precedente.\nBackup esterno/disaster-safe: non ancora disponibile\n${nextText}`;
-    setStatus(authCallbackMessage || backupSummary);
+    const interrupted = automaticPausedAfterInterruption && lastInterruptedJob?.state === 'running'
+      ? `\n\n⚠ Backup precedente interrotto durante: ${lastInterruptedJob.phase || 'fase sconosciuta'}. Backup automatico temporaneamente sospeso.` : '';
+    setStatus(authCallbackMessage || `${backupSummary}${interrupted}`);
     authCallbackMessage = '';
   }
 
@@ -1558,8 +1632,9 @@ export function initBackupFoundation(options) {
 
   function scheduleDueCheck(reason = 'automatic') {
     clearTimeout(dueTimer);
-    if (!config.backupOnStartup || config.frequency === 'off') return;
+    if (!config.backupOnStartup || config.frequency === 'off' || automaticPausedAfterInterruption) return;
     const run = async () => {
+      if (automaticPausedAfterInterruption) return;
       if (isRealtimeBusy() || Date.now() - lastActivity < 3500) { dueTimer = setTimeout(run, 2500); return; }
       if (dueAt(config).getTime() > Date.now()) return;
       await createBackup(reason);
@@ -1742,6 +1817,7 @@ export function initBackupFoundation(options) {
 
   return {
     openSettings, closeSettings, createBackup, verifyLatest, scheduleDueCheck, cloudBridge,
+    isRunning() { return running; },
     attachAudioProvider(provider = {}) {
       if (typeof provider.exportBackup !== 'function' || typeof provider.restoreBackup !== 'function') throw new Error('Provider audio backup non valido');
       audioProvider = { exportBackup:provider.exportBackup, restoreBackup:provider.restoreBackup };
