@@ -1,3 +1,4 @@
+import { fitRulerToWritableArea, snapPointToRulerEdge } from './ruler-geometry.js';
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
@@ -16,7 +17,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.137';
+const APP_VERSION = '0.1.139';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -36,6 +37,8 @@ let cloudJoinCodeMemory = '';
 let cloudSecretPersistPromise = Promise.resolve();
 const CLOUD_CREDENTIALS_META_KEY = 'cloud-credentials-backup-v1';
 const SYNC_RESTORE_GUARD_STORAGE_KEY = 'agenda-ipad-sync-restore-guard-v1';
+const EPOCH_RELOAD_GUARD_SESSION_KEY = 'agenda-ipad-epoch-reload-guard-v1';
+const EPOCH_RELOAD_GUARD_MS = 60 * 1000;
 const LIFECYCLE_JOURNAL_STORAGE_KEY = 'agenda-ipad-lifecycle-journal-v1';
 const SAINT_CACHE_STORAGE_KEY = 'agenda-ipad-saint-cache-v1';
 const HISTORY_CACHE_STORAGE_KEY = 'agenda-ipad-history-cache-v1';
@@ -105,7 +108,7 @@ if (versionButton) {
   versionButton.title = `Versione ${APP_VERSION} e diagnostica`;
   versionButton.setAttribute('aria-label', `Versione ${APP_VERSION} e diagnostica`);
 }
-// 0.1.137 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
+// 0.1.139 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
 const startupCoverVersion = document.querySelector('.cover-version');
 if (startupCoverVersion) startupCoverVersion.textContent = `v${APP_VERSION}`;
 const authorCreditsButton = document.getElementById('authorCreditsButton');
@@ -3348,13 +3351,66 @@ async function runPendingGlobalGroupRestore() {
   }
 }
 
+function epochReloadGuardFingerprint(details = {}) {
+  return [
+    String(details.transport || 'none'),
+    String(details.hubId || ''),
+    String(details.localEpoch || ''),
+    String(details.remoteEpoch || '')
+  ].join('|');
+}
+
+function loadEpochReloadGuard() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(EPOCH_RELOAD_GUARD_SESSION_KEY) || 'null');
+    return parsed && parsed.fingerprint ? parsed : null;
+  } catch { return null; }
+}
+
+function saveEpochReloadGuard(details = {}) {
+  const row = { fingerprint: epochReloadGuardFingerprint(details), at: Date.now() };
+  try { sessionStorage.setItem(EPOCH_RELOAD_GUARD_SESSION_KEY, JSON.stringify(row)); } catch {}
+  return row;
+}
+
+function clearEpochReloadGuard() {
+  try { sessionStorage.removeItem(EPOCH_RELOAD_GUARD_SESSION_KEY); } catch {}
+}
+
+function isRepeatedEpochReload(details = {}) {
+  const old = loadEpochReloadGuard();
+  return Boolean(old && old.fingerprint === epochReloadGuardFingerprint(details) && Date.now() - Number(old.at || 0) < EPOCH_RELOAD_GUARD_MS);
+}
+
 async function handleRemoteGroupEpochMismatch(details = {}) {
   if (isSyncRestorePending()) return;
+  const repeatedReload = isRepeatedEpochReload(details);
   beginRemoteGroupEpochGuard(details);
   lanTransport?.suspendForInk();
   cloudTransport?.suspendForInk();
   audioRecorder?.suspendForInk();
   await resetSyncStores();
+
+  // Memorizza immediatamente la generazione remota dopo il reset. In questo modo,
+  // anche se WebKit non riuscisse a conservare il guard in localStorage, il prossimo
+  // avvio non può ricadere nello stesso mismatch e innescare un reload infinito.
+  const remoteEpoch = String(details.remoteEpoch || '').trim();
+  if (remoteEpoch) {
+    if (details.transport === 'cloud') await setCloudGroupEpoch(remoteEpoch);
+    else if (details.transport === 'lan') await setLanGroupEpoch(String(details.hubId || ''), remoteEpoch);
+  }
+
+  if (repeatedReload) {
+    updateSyncRestoreGuard({
+      phase: 'epoch-mismatch-reload-blocked',
+      lastError: 'Riavvio automatico bloccato: discordanza generazione Sync già rilevata in questa sessione.'
+    });
+    statusLabel.textContent = 'Sync sospesa · riavvio automatico bloccato per evitare un ciclo';
+    console.error('Agenda iPad: bloccato ciclo di riavvio su cambio generazione Sync', details);
+    return;
+  }
+
+  saveEpochReloadGuard(details);
   location.reload();
 }
 
@@ -3365,6 +3421,7 @@ async function runPendingRestoreReconciliation() {
   const transport = String(syncRestoreGuard.transport || 'none');
   if (transport === 'none') {
     clearSyncRestoreGuard();
+    clearEpochReloadGuard();
     return { skipped: 'no-sync-group' };
   }
   updateSyncRestoreGuard({ phase: 'reconciling', attemptAt: new Date().toISOString() });
@@ -3384,6 +3441,7 @@ async function runPendingRestoreReconciliation() {
     }
     await rebuildNotesMetadataFromPages();
     clearSyncRestoreGuard();
+    clearEpochReloadGuard();
     syncRecoveryRebuildActive = false;
     syncRecoveryRebuiltPages.clear();
     await loadInitialPage();
@@ -4707,30 +4765,18 @@ function syncRulerOverlayBounds() {
   const svg = rulerOverlay.querySelector('.ruler-line-layer');
   svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
 
-  // 0.1.104 — il righello deve restare interamente raggiungibile anche ruotato.
-  // Calcoliamo l'ingombro del rettangolo ruotato e accorciamo il corpo, se serve,
-  // prima di limitarne il centro all'area realmente scrivibile. La maniglia di
-  // rotazione è dentro rulerBody, quindi rientra nello stesso ingombro protetto.
-  const margin = 12;
-  const bodyHeight = 76;
-  const desiredWidth = Math.max(260, Math.min(720, rect.width * .64));
-  const angleRad = rulerState.angle * Math.PI / 180;
-  const c = Math.abs(Math.cos(angleRad));
-  const si = Math.abs(Math.sin(angleRad));
-  const availableW = Math.max(120, rect.width - margin * 2);
-  const availableH = Math.max(120, writableHeight - margin * 2);
-  const widthLimitFromW = c > .0001 ? (availableW - si * bodyHeight) / c : Number.POSITIVE_INFINITY;
-  const widthLimitFromH = si > .0001 ? (availableH - c * bodyHeight) / si : Number.POSITIVE_INFINITY;
-  const safeWidth = Math.max(120, Math.min(desiredWidth, widthLimitFromW, widthLimitFromH));
-  rulerBody.style.width = `${safeWidth}px`;
-  rulerBody.style.height = `${bodyHeight}px`;
+  // 0.1.139 — righello Note Marco: massima lunghezza compatibile con i
+  // bordi dell'area scrivibile per QUALSIASI angolo, senza soglia di 720 px.
+  // Il rettangolo ruotato viene considerato nella sua interezza, inclusa
+  // l'estremita' per la rotazione.
+  const fit = fitRulerToWritableArea(rect.width, writableHeight, rulerState.angle);
+  rulerBody.style.width = `${fit.width}px`;
+  rulerBody.style.height = `${fit.height}px`;
 
-  const bboxW = c * safeWidth + si * bodyHeight;
-  const bboxH = si * safeWidth + c * bodyHeight;
-  const minCenterX = margin + bboxW / 2;
-  const maxCenterX = Math.max(minCenterX, rect.width - margin - bboxW / 2);
-  const minCenterY = protectedTop + margin + bboxH / 2;
-  const maxCenterY = Math.max(minCenterY, rect.height - FOOTER_PX - margin - bboxH / 2);
+  const minCenterX = fit.margin + fit.boundingWidth / 2;
+  const maxCenterX = Math.max(minCenterX, rect.width - fit.margin - fit.boundingWidth / 2);
+  const minCenterY = protectedTop + fit.margin + fit.boundingHeight / 2;
+  const maxCenterY = Math.max(minCenterY, rect.height - FOOTER_PX - fit.margin - fit.boundingHeight / 2);
   let centerX = rulerState.x * rect.width;
   let centerY = rulerState.y * rect.height;
   centerX = Math.max(minCenterX, Math.min(maxCenterX, centerX));
@@ -4748,38 +4794,16 @@ function syncRulerOverlayBounds() {
   }
 }
 
-function rulerPaperPoint(ev) {
-  if (!rect) rect = canvas.getBoundingClientRect();
-  return {
-    x: Math.max(0, Math.min(rect.width, ev.clientX - rect.left)),
-    y: Math.max(protectedTop, Math.min(rect.height - FOOTER_PX, ev.clientY - rect.top))
-  };
-}
-
-function projectPointToRulerEdge(ev) {
+function projectPointToRulerEdge(ev, edge = 'auto') {
   if (!rulerBody || !rect) return null;
-  const point = rulerPaperPoint(ev);
-  const cx = rulerState.x * rect.width;
-  const cy = rulerState.y * rect.height;
-  const angle = rulerState.angle * Math.PI / 180;
-  const ax = Math.cos(angle), ay = Math.sin(angle);
-  const nx = -ay, ny = ax;
-  const bodyWidth = Math.max(120, rulerBody.offsetWidth || Math.min(720, rect.width * .64));
-  const bodyHeight = Math.max(60, rulerBody.offsetHeight || 76);
-  // Il volto graduato occupa il corpo meno la zona protetta della maniglia.
-  const faceLeft = -bodyWidth / 2 + 12;
-  const faceRight = bodyWidth / 2 - 54;
-  const edgeOffset = -bodyHeight / 2 + 6;
-  const relX = point.x - cx;
-  const relY = point.y - cy;
-  const rawT = relX * ax + relY * ay;
-  const t = Math.max(faceLeft, Math.min(faceRight, rawT));
-  const px = cx + ax * t + nx * edgeOffset;
-  const py = cy + ay * t + ny * edgeOffset;
-  return {
-    x: Math.max(0, Math.min(1, px / Math.max(1, rect.width))),
-    y: Math.max(0, Math.min(1, py / Math.max(1, rect.height)))
-  };
+  return snapPointToRulerEdge(ev.clientX, ev.clientY, {
+    rect,
+    centerX: rulerState.x * rect.width,
+    centerY: rulerState.y * rect.height,
+    angleDeg: rulerState.angle,
+    width: rulerBody.offsetWidth,
+    height: rulerBody.offsetHeight
+  }, edge);
 }
 
 function updateRulerPreview() {
@@ -4806,8 +4830,8 @@ function beginRulerGesture(ev) {
   const target = ev.target instanceof Element ? ev.target : null;
   const onHandle = Boolean(target?.closest?.('#rulerRotateHandle'));
   const onBody = Boolean(target?.closest?.('#rulerBody'));
-  if (!onBody) return false;
   if (ev.pointerType === 'touch') {
+    if (!onBody) return false;
     rulerGesture = {
       type:onHandle ? 'rotate' : 'move',
       pointerId:ev.pointerId,
@@ -4818,12 +4842,22 @@ function beginRulerGesture(ev) {
       startAngle:rulerState.angle
     };
   } else if (ev.pointerType === 'pen' || (ev.pointerType === 'mouse' && ev.button === 0)) {
-    const point = projectPointToRulerEdge(ev);
-    if (!point) return false;
-    rulerGesture = { type:'draw', pointerId:ev.pointerId, start:point, current:point };
+    // 0.1.139 — la Pencil puo' iniziare appena FUORI dal bordo del righello;
+    // non serve colpire il corpo HTML. Il bordo viene bloccato all'inizio.
+    if (!target || (!paper?.contains(target) && !rulerOverlay?.contains(target))) return false;
+    const snapped = projectPointToRulerEdge(ev);
+    if (!snapped) return false;
+    rulerGesture = {
+      type:'draw', pointerId:ev.pointerId, edge:snapped.edge,
+      start:snapped.point, current:snapped.point
+    };
     updateRulerPreview();
   } else return false;
-  try { rulerBody.setPointerCapture?.(ev.pointerId); } catch {}
+  // Il pointer capture si ottiene dal target reale (canvas o righello),
+  // impedendo perdite di eventi quando la Pencil attraversa il bordo.
+  const captureTarget = target?.setPointerCapture ? target : rulerBody;
+  rulerGesture.captureTarget = captureTarget;
+  try { captureTarget.setPointerCapture?.(ev.pointerId); } catch {}
   ev.preventDefault();
   ev.stopPropagation();
   return true;
@@ -4843,9 +4877,9 @@ function moveRulerGesture(ev) {
     rulerState.angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI;
     syncRulerOverlayBounds();
   } else if (rulerGesture.type === 'draw') {
-    const point = projectPointToRulerEdge(ev);
-    if (point) {
-      rulerGesture.current = point;
+    const snapped = projectPointToRulerEdge(ev, rulerGesture.edge);
+    if (snapped) {
+      rulerGesture.current = snapped.point;
       updateRulerPreview();
     }
   }
@@ -4858,7 +4892,7 @@ function endRulerGesture(ev, cancelled = false) {
   if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId) return false;
   const gesture = rulerGesture;
   if (!cancelled && gesture.type === 'draw') moveRulerGesture(ev);
-  try { rulerBody?.releasePointerCapture?.(gesture.pointerId); } catch {}
+  try { gesture.captureTarget?.releasePointerCapture?.(gesture.pointerId); } catch {}
   cancelRulerGesture();
   if (!cancelled && gesture.type === 'draw') {
     const dx = (gesture.current.x - gesture.start.x) * rect.width;
