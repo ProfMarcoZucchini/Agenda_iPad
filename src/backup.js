@@ -147,6 +147,38 @@ async function readMainRecords(dbName, storeName) {
   }
 }
 
+// Lettura una pagina alla volta: evita di accumulare in memoria tutte le immagini data: URL.
+// Le chiavi sono rilevate dopo flushCurrent(); il backup abortisce se una pagina scompare.
+async function openMainBackupReader(dbName, storeName) {
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open(dbName);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  try {
+    if (!db.objectStoreNames.contains(storeName)) throw new Error('Archivio pagine non disponibile');
+    const keys = await new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAllKeys();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    return {
+      keys,
+      async read(key) {
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readonly');
+          const req = tx.objectStore(storeName).get(key);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+          tx.onabort = () => reject(tx.error || new Error('Lettura pagina annullata'));
+        });
+      },
+      close() { db.close(); }
+    };
+  } catch (err) { db.close(); throw err; }
+}
+
 async function replaceMainRecords(dbName, storeName, records) {
   const db = await new Promise((resolve, reject) => {
     const req = indexedDB.open(dbName);
@@ -383,6 +415,54 @@ function storedZip(entries) {
   ev.setUint32(12, central.length, true); ev.setUint32(16, localOffset, true); ev.setUint16(20, 0, true);
   return new Blob([...locals, central, eocd], { type: 'application/zip' });
 }
+
+// Assemblatore ZIP progressivo: mantiene i media come Blob, non come una collezione
+// di ArrayBuffer nel heap JavaScript. Header e CRC rimangono compatibili col formato v2.
+function createProgressiveZipParts() {
+  const parts = [];
+  const central = [];
+  const dt = dosDateTime();
+  let offset = 0;
+  let count = 0;
+  const u16 = (view, index, value) => view.setUint16(index, value, true);
+  const u32 = (view, index, value) => view.setUint32(index, value >>> 0, true);
+  return {
+    add(name, body, crc) {
+      const nameBytes = encoder.encode(name);
+      const length = body instanceof Blob ? body.size : body.byteLength;
+      if (count >= 0xffff || nameBytes.byteLength > 0xffff || length > 0xffffffff || offset + 30 + nameBytes.length + length > 0xffffffff) {
+        throw new Error('Backup ZIP troppo grande per il formato corrente (limite ZIP32): interrompo prima di generare un archivio incompleto');
+      }
+      const lh = new Uint8Array(30);
+      const lv = new DataView(lh.buffer);
+      u32(lv, 0, 0x04034b50); u16(lv, 4, 20); u16(lv, 6, 0x0800); u16(lv, 8, 0);
+      u16(lv, 10, dt.time); u16(lv, 12, dt.date); u32(lv, 14, crc); u32(lv, 18, length); u32(lv, 22, length);
+      u16(lv, 26, nameBytes.length); u16(lv, 28, 0);
+      parts.push(lh, nameBytes, body);
+      const ch = new Uint8Array(46);
+      const cv = new DataView(ch.buffer);
+      u32(cv, 0, 0x02014b50); u16(cv, 4, 20); u16(cv, 6, 20); u16(cv, 8, 0x0800); u16(cv, 10, 0);
+      u16(cv, 12, dt.time); u16(cv, 14, dt.date); u32(cv, 16, crc); u32(cv, 20, length); u32(cv, 24, length);
+      u16(cv, 28, nameBytes.length); u16(cv, 30, 0); u16(cv, 32, 0); u16(cv, 34, 0); u16(cv, 36, 0); u32(cv, 38, 0); u32(cv, 42, offset);
+      central.push(ch, nameBytes);
+      offset += lh.length + nameBytes.length + length;
+      count++;
+    },
+    finish() {
+      const centralBlob = new Blob(central);
+      if (offset + centralBlob.size > 0xffffffff) throw new Error('Archivio ZIP troppo grande: ZIP64 non supportato');
+      const eocd = new Uint8Array(22);
+      const ev = new DataView(eocd.buffer);
+      ev.setUint32(0, 0x06054b50, true); ev.setUint16(4, 0, true); ev.setUint16(6, 0, true);
+      ev.setUint16(8, count, true); ev.setUint16(10, count, true);
+      ev.setUint32(12, centralBlob.size, true); ev.setUint32(16, offset, true); ev.setUint16(20, 0, true);
+      return new Blob([...parts, centralBlob, eocd], { type:'application/zip' });
+    }
+  };
+}
+
+// Una copia breve per lasciare libero il ciclo eventi di Safari tra le pagine.
+function yieldBackupUI() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 async function parseStoredZip(blob) {
   const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -639,6 +719,150 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
     ...audio.entries
   ]);
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums, audioCount:audio.count };
+}
+
+// Percorso primario 0.1.141: lettura pagine singole, media uno per volta e stato
+// persistente dell'avanzamento. Stesso manifest, checksums e formato ZIP della 0.1.141.
+async function makeBackupPackageProgressive({ appVersion, reader, preferences, config, secureVault = null, audioSnapshot = null, clipboards = null, onProgress = async () => {} }) {
+  const createdAt = new Date().toISOString();
+  const zip = createProgressiveZipParts();
+  const checksumFiles = {};
+  const mediaItems = [];
+  const portableRecords = [];
+  const pageCount = reader.keys.length;
+  let imageCount = 0;
+  let audioBytes = 0;
+  let audioCount = 0;
+  let audioIndex = null;
+  const addBytes = async (name, bytes) => {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    checksumFiles[name] = await sha256Hex(data);
+    zip.add(name, data, crc32(data));
+  };
+  // I media vengono registrati appena estratti: non ne conserviamo i buffer
+  // nell'elenco in JavaScript, e non duplichiamo l'intero array di pagine.
+  for (let i = 0; i < pageCount; i++) {
+    const item = await reader.read(reader.keys[i]);
+    if (!item) throw new Error(`Pagina ${i + 1}/${pageCount} non più disponibile durante il backup; nessun archivio creato`);
+    const copy = { ...item };
+    if (Array.isArray(item.images)) {
+      copy.images = [];
+      for (let j = 0; j < item.images.length; j++) {
+        if (j === 0 || j % 4 === 0) await onProgress(`ZIP · pagina ${i + 1}/${pageCount} · immagine ${j + 1}/${item.images.length}`);
+        const original = item.images[j];
+        const image = { ...original };
+        const decoded = dataUrlToMedia(image.src);
+        if (typeof image.src === 'string' && image.src.startsWith('data:') && !decoded) {
+          throw new Error(`Immagine non leggibile: pagina ${i + 1}, immagine ${j + 1}; archivio non creato`);
+        }
+        if (decoded) {
+          const ext = extensionForMime(image.mimeType || decoded.mimeType);
+          const recordToken = safeFileToken(item.date || item.referenceDate || 'page');
+          const imageToken = safeFileToken(image.id || `image-${imageCount + 1}`);
+          const path = `media/images/${recordToken}--${imageToken}.${ext}`;
+          // Blob costruito immediatamente: dopo l'iterazione la stringa base64
+          // e il buffer binario di questa immagine possono essere rilasciati.
+          const mediaBlob = new Blob([decoded.bytes], { type: decoded.mimeType });
+          checksumFiles[path] = await sha256Hex(decoded.bytes);
+          zip.add(path, mediaBlob, crc32(decoded.bytes));
+          mediaItems.push({ id:image.id || imageToken, type:'image', path,
+            mimeType:image.mimeType || decoded.mimeType, pageKey:item.date || null,
+            referenceDate:item.referenceDate || null, name:image.name || null, size:decoded.bytes.length });
+          image.mediaPath = path;
+          image.mimeType = image.mimeType || decoded.mimeType;
+          delete image.src;
+          imageCount++;
+          if (imageCount % 4 === 0) await yieldBackupUI();
+        }
+        copy.images.push(image);
+      }
+    }
+    portableRecords.push(copy);
+    if (i % 2 === 0 || i === pageCount - 1) {
+      await onProgress(`ZIP · pagine ${i + 1}/${pageCount} · immagini ${imageCount}`);
+      await yieldBackupUI();
+    }
+  }
+  if (audioSnapshot) {
+    if (Number(audioSnapshot.schemaVersion) !== 1 || !Array.isArray(audioSnapshot.recordings)) throw new Error('Snapshot audio non compatibile');
+    const recordings = [];
+    const totalAudio = audioSnapshot.recordings.length;
+    for (let i = 0; i < totalAudio; i++) {
+      await onProgress(`ZIP · lettura audio ${i + 1}/${totalAudio}`);
+      const row = audioSnapshot.recordings[i];
+      const blob = row?.blob;
+      const metadata = row?.metadata && typeof row.metadata === 'object' ? structuredClone(row.metadata) : null;
+      if (!metadata || !(blob instanceof Blob) || !blob.size) throw new Error(`Backup audio incompleto: registrazione ${i + 1}`);
+      const id = String(metadata.id || crypto.randomUUID?.() || `audio-${i + 1}`).replace(/[^A-Za-z0-9._-]/g, '_');
+      const mimeType = String(metadata.mimeType || blob.type || 'application/octet-stream');
+      const path = `media/audio/${id}.${audioExtensionForMime(mimeType)}`;
+      // Web Crypto SHA-256 richiede temporaneamente un ArrayBuffer per file;
+      // qui lo allochiamo SOLO per una registrazione per volta.
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      checksumFiles[path] = await sha256Hex(bytes);
+      zip.add(path, blob, crc32(bytes));
+      audioBytes += blob.size;
+      audioCount++;
+      delete metadata.blob;
+      recordings.push({ ...metadata, mediaPath:path, mimeType, size:blob.size });
+      mediaItems.push({ type:'audio', path, mimeType, pageKey:metadata.pageKey || null,
+        name:metadata.name || metadata.filename || null, size:blob.size });
+      await onProgress(`ZIP · audio ${i + 1}/${totalAudio} · ${humanBytes(audioBytes)}`);
+      await yieldBackupUI();
+    }
+    audioIndex = { schemaVersion:1, settings:Array.isArray(audioSnapshot.settings) ? audioSnapshot.settings : [], recordings };
+  }
+  await onProgress('ZIP · preparazione indici e controlli integrità');
+  await yieldBackupUI();
+  const pagesBytes = jsonBytes({ schemaVersion:2, count:portableRecords.length, records:portableRecords });
+  const prefBytes = jsonBytes({ schemaVersion:1, values:preferences });
+  const mediaBytes = jsonBytes({ schemaVersion:2, items:mediaItems, layoutVersion:2 });
+  const secureVaultBytes = secureVault ? jsonBytes(secureVault) : null;
+  const audioIndexBytes = audioIndex ? jsonBytes(audioIndex) : null;
+  const clipboardBytes = jsonBytes(clipboards || { schemaVersion:1, image:[], lasso:[] });
+  const safeConfig = {
+    frequency:config.frequency, customDays:config.customDays, retention:config.retention,
+    backupOnStartup:Boolean(config.backupOnStartup), verifyAfterBackup:Boolean(config.verifyAfterBackup),
+    destinations:config.destinations,
+    google:{ clientId:config.google.clientId, folderId:config.google.folderId, folderName:config.google.folderName || 'Agenda iPad Backups' },
+    oneDrive:{ clientId:config.oneDrive.clientId, tenant:config.oneDrive.tenant, folder:config.oneDrive.folder }
+  };
+  const manifest = {
+    format:BACKUP_FORMAT, formatVersion:BACKUP_FORMAT_VERSION, createdAt,
+    createdBy:{ app:'Agenda iPad', appVersion, platform:'PWA' }, reader:{ minFormatVersion:1 },
+    backup:{ type:'full-state', immutable:true, recordCount:portableRecords.length, audioCount, audioBytes },
+    collections:[
+      { id:'pages', path:'data/pages.json', encoding:'json', schemaVersion:2 },
+      { id:'preferences', path:'data/preferences.json', encoding:'json', schemaVersion:1 },
+      { id:'media', path:'media/index.json', encoding:'json-index', schemaVersion:2, extensible:true },
+      { id:'local-clipboards', path:'data/local-clipboards.json', encoding:'json', schemaVersion:1 },
+      ...(audioIndexBytes ? [{ id:'audio', path:'data/audio.json', encoding:'json-index', schemaVersion:1, completeFiles:true }] : []),
+      ...(secureVaultBytes ? [{ id:'password-vault', path:'data/password-vault.json', encoding:'json-encrypted-envelope', schemaVersion:1, encrypted:true }] : [])
+    ],
+    mediaLayout:{ images:'media/images/', audio:'media/audio/', video:'media/video/', attachments:'media/attachments/' },
+    backupSettingsSnapshot:safeConfig,
+    restoreNotes:{ appBinaryIncluded:false, biometricCredentialPortable:false,
+      oauthSessionsPortable:false, syncCredentialsPortable:false },
+    checksumAlgorithm:'SHA-256'
+  };
+  const headerFiles = [
+    ['manifest.json',jsonBytes(manifest)], ['data/pages.json',pagesBytes],
+    ['data/preferences.json',prefBytes], ['media/index.json',mediaBytes],
+    ['data/local-clipboards.json',clipboardBytes],
+    ...(audioIndexBytes ? [['data/audio.json',audioIndexBytes]] : []),
+    ...(secureVaultBytes ? [['data/password-vault.json',secureVaultBytes]] : [])
+  ];
+  for (const [name, bytes] of headerFiles) checksumFiles[name] = await sha256Hex(bytes);
+  // I checksum sono indipendenti dall'ordine di memorizzazione dei file nello ZIP.
+  const checksums = { algorithm:'SHA-256', files:checksumFiles };
+  await addBytes('manifest.json', headerFiles[0][1]);
+  const checksumBytes = jsonBytes(checksums);
+  // checksums.json non contiene un hash di se stesso.
+  zip.add('checksums.json', checksumBytes, crc32(checksumBytes));
+  for (const [name, bytes] of headerFiles.slice(1)) zip.add(name, bytes, crc32(bytes));
+  await onProgress('ZIP · assemblaggio finale');
+  await yieldBackupUI();
+  return { createdAt, filename:backupFileName(appVersion,createdAt), blob:zip.finish(), manifest, checksums, audioCount, recordCount:portableRecords.length };
 }
 
 async function verifyBackupBlob(blob, passphrase = '') {
@@ -1256,21 +1480,36 @@ export function initBackupFoundation(options) {
       await advance('preparazione dati');
       const backupPassphrase = await requireBackupPassphrase({ allowPrompt: reason !== 'automatic' });
       await flushCurrent();
-      const records = await readMainRecords(mainDbName, mainStore);
-      const preferences = collectPortablePreferences();
-      const secureVault = await getSecurePasswordVaultBackup();
-      const clipboards = await collectLocalClipboards();
-      const audioSnapshot = await audioProvider.exportBackup();
-      const estimatedBytes = estimateBackupPayloadBytes({ records, preferences, secureVault, audioSnapshot, clipboards });
-      await ensureStorageCapacity(estimatedBytes, 'Creazione backup');
-      await advance('creazione archivio ZIP');
-      const pkg = await makeBackupPackage({ appVersion, records, preferences, config, secureVault, audioSnapshot, clipboards });
+      const reader = await openMainBackupReader(mainDbName, mainStore);
+      let pkg;
+      try {
+        const preferences = collectPortablePreferences();
+        const secureVault = await getSecurePasswordVaultBackup();
+        const clipboards = await collectLocalClipboards();
+        const audioSnapshot = await audioProvider.exportBackup();
+        await advance('creazione archivio ZIP');
+        let lastProgressAt = 0;
+        const onProgress = async (step) => {
+          phase = step;
+          const now = Date.now();
+          setStatus(`Backup in corso · ${step}…`);
+          // Journal ogni ~1 s: evita migliaia di scritture IndexedDB ma salva
+          // l'ultimo elemento raggiunto, anche in caso di chiusura di Safari.
+          if (now - lastProgressAt >= 900 || step.includes('assemblaggio finale')) {
+            lastProgressAt = now;
+            await writeBackupJournal('running', step, { reason, archivedId });
+          }
+        };
+        pkg = await makeBackupPackageProgressive({ appVersion, reader, preferences, config,
+          secureVault, audioSnapshot, clipboards, onProgress });
+        await ensureStorageCapacity(Math.ceil(pkg.blob.size * 1.15) + 2 * 1024 * 1024, 'Creazione backup');
+      } finally { reader.close(); }
       await advance('cifratura archivio');
       const encryptedBlob = await encryptBackupBlob(pkg.blob, backupPassphrase);
       const id = `${pkg.createdAt}::${crypto.randomUUID?.() || Math.random().toString(36).slice(2)}`;
       const archive = {
         id, filename: encryptedBackupFileName(pkg.filename), createdAt: pkg.createdAt, size: encryptedBlob.size,
-        sha256: '', recordCount: records.length, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
+        sha256: '', recordCount: pkg.recordCount, audioCount:pkg.audioCount || 0, formatVersion: BACKUP_FORMAT_VERSION,
         encrypted:true, encryption:'AES-256-GCM', reason: safety ? 'pre-restore' : reason, appVersion, blob: encryptedBlob,
         verificationStatus:'pending',
         deliveries:[{key:'internal', label:'Archivio app', ok:true, message:'salvato · verifica in corso'}]
