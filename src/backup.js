@@ -1,7 +1,8 @@
 import { createGoogleDriveAuth, createOneDriveAuth } from './cloud-auth.js';
 const BACKUP_DB_NAME = 'AgendaIPadBackupDB';
-const BACKUP_DB_VERSION = 1;
+const BACKUP_DB_VERSION = 2;
 const ARCHIVE_STORE = 'archives';
+const ARCHIVE_META_STORE = 'archiveSummaries';
 const SETTINGS_STORE = 'settings';
 const SETTINGS_KEY = 'backup-config-v1';
 const BACKUP_JOURNAL_KEY = 'backup-run-journal-v1';
@@ -18,6 +19,9 @@ const decoder = new TextDecoder();
 const ENCRYPTED_BACKUP_MAGIC = 'AGENDAIPADENC1\n';
 const ENCRYPTED_BACKUP_FORMAT = 'agenda-ipad-encrypted-backup';
 const BACKUP_KDF_ITERATIONS = 350000;
+// Su iPad la decrittazione+verifica immediata moltiplica l'uso di RAM.
+// Oltre questa dimensione manteniamo il Blob salvato ma NON lo dichiariamo verificato.
+const AUTO_VERIFY_MAX_BYTES = 24 * 1024 * 1024;
 const NON_PORTABLE_PREFERENCE_KEYS = new Set([
   'agenda-ipad-cloud-sync-config-v1',
   'agenda-ipad-lan-sync-config-v1',
@@ -63,6 +67,8 @@ function openBackupDb() {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(ARCHIVE_STORE)) db.createObjectStore(ARCHIVE_STORE, { keyPath: 'id' });
+      // Migrazione NON distruttiva: non leggiamo i blob preesistenti durante l'upgrade.
+      if (!db.objectStoreNames.contains(ARCHIVE_META_STORE)) db.createObjectStore(ARCHIVE_META_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(SETTINGS_STORE)) db.createObjectStore(SETTINGS_STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
@@ -70,14 +76,35 @@ function openBackupDb() {
   });
 }
 
+// Solo campi leggeri: i byte cifrati non devono essere letti per mostrare l'elenco.
+function archiveSummary(archive) {
+  const keys = [
+    'id', 'filename', 'createdAt', 'size', 'sha256', 'recordCount', 'audioCount',
+    'formatVersion', 'encrypted', 'encryption', 'reason', 'appVersion',
+    'verificationStatus', 'deliveries', 'deliveryUpdatedAt'
+  ];
+  const summary = {};
+  for (const key of keys) if (Object.hasOwn(archive, key)) summary[key] = archive[key];
+  return summary;
+}
+
 async function backupGet(store, key) {
   const db = await openBackupDb();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(store, 'readonly');
+      const needsSummary = store === ARCHIVE_STORE;
+      const tx = db.transaction(needsSummary ? [store, ARCHIVE_META_STORE] : [store], 'readonly');
+      let value = null;
+      let summary = null;
       const req = tx.objectStore(store).get(key);
-      req.onsuccess = () => resolve(req.result ?? null);
-      req.onerror = () => reject(req.error);
+      req.onsuccess = () => { value = req.result ?? null; };
+      if (needsSummary) {
+        const metaReq = tx.objectStore(ARCHIVE_META_STORE).get(key);
+        metaReq.onsuccess = () => { summary = metaReq.result ?? null; };
+      }
+      tx.oncomplete = () => resolve(value && summary ? { ...value, ...summary } : value);
+      tx.onerror = () => reject(tx.error || new Error('Lettura backup non riuscita'));
+      tx.onabort = () => reject(tx.error || new Error('Lettura backup annullata'));
     });
   } finally { db.close(); }
 }
@@ -86,46 +113,75 @@ async function backupPut(store, value) {
   const db = await openBackupDb();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(store, 'readwrite');
+      const isArchive = store === ARCHIVE_STORE;
+      const tx = db.transaction(isArchive ? [ARCHIVE_STORE, ARCHIVE_META_STORE] : [store], 'readwrite');
       tx.objectStore(store).put(value);
+      // Scrittura dei metadati nella STESSA transazione del Blob: atomicita'.
+      if (isArchive) tx.objectStore(ARCHIVE_META_STORE).put(archiveSummary(value));
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error || new Error('Backup DB transaction aborted'));
+      tx.onerror = () => reject(tx.error || new Error('Salvataggio backup non riuscito'));
+      tx.onabort = () => reject(tx.error || new Error('Salvataggio backup annullato'));
     });
   } finally { db.close(); }
+}
+
+async function backupUpdateArchiveSummary(archive) {
+  // Dopo il commit, avanzamento della verifica e destinazioni non devono
+  // riscrivere l'intero Blob cifrato (e richiedere nuovamente spazio disco).
+  return backupPut(ARCHIVE_META_STORE, archiveSummary(archive));
 }
 
 async function backupDelete(store, key) {
   const db = await openBackupDb();
   try {
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction(store, 'readwrite');
+      const isArchive = store === ARCHIVE_STORE;
+      const tx = db.transaction(isArchive ? [ARCHIVE_STORE, ARCHIVE_META_STORE] : [store], 'readwrite');
       tx.objectStore(store).delete(key);
+      if (isArchive) tx.objectStore(ARCHIVE_META_STORE).delete(key);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error || new Error('Eliminazione non riuscita'));
+      tx.onabort = () => reject(tx.error || new Error('Eliminazione annullata'));
     });
   } finally { db.close(); }
 }
 
+// Liste precedenti 0.1.142: la vecchia funzione referenziava `rows` prima
+// dell'inizializzazione (ReferenceError dentro IDB.onsuccess) e leggeva ogni Blob.
+// Usiamo ESCLUSIVAMENTE metadati leggeri e getAllKeys() dell'archivio.
 async function listArchives() {
   const db = await openBackupDb();
   try {
-    // Il cursore evita getAll() con TUTTI i Blob dei vecchi backup in memoria.
-    // L'elenco contiene solo metadati; il Blob si legge solo per esportare/verificare/ripristinare.
-    const rows = await new Promise((resolve, reject) => {
-      const tx = db.transaction(ARCHIVE_STORE, 'readonly');
-      const req = tx.objectStore(ARCHIVE_STORE).openCursor();
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (!cursor) { resolve(rows); return; }
-        const { blob, ...summary } = cursor.value || {};
-        rows.push(summary);
-        cursor.continue();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction([ARCHIVE_META_STORE, ARCHIVE_STORE], 'readonly');
+      let summaries = [];
+      let keys = [];
+      const metaReq = tx.objectStore(ARCHIVE_META_STORE).getAll();
+      const keyReq = tx.objectStore(ARCHIVE_STORE).getAllKeys();
+      metaReq.onsuccess = () => { summaries = metaReq.result || []; };
+      keyReq.onsuccess = () => { keys = keyReq.result || []; };
+      tx.oncomplete = () => {
+        const byId = new Map(summaries.map((item) => [String(item.id), item]));
+        // Nessun archivio legacy viene cancellato o caricato in memoria.
+        // Se manca la scheda, lo presentiamo come recuperabile in elenco.
+        const rows = keys.map((id) => {
+          const existing = byId.get(String(id));
+          if (existing) return existing;
+          const match = String(id).match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/);
+          return {
+            id, filename: 'Backup recuperabile (scheda da verificare)',
+            createdAt: match?.[0] || '', size: null, recordCount: null,
+            audioCount: null, reason: 'backup precedente',
+            verificationStatus: 'pending', missingMeta: true,
+            deliveries: [{ key:'internal', label:'Archivio app', ok:true, message:'Salvato nel database · dati descrittivi non ancora disponibili' }]
+          };
+        });
+        rows.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+        resolve(rows);
       };
-      req.onerror = () => reject(req.error);
-      tx.onabort = () => reject(tx.error || new Error('Lettura archivio backup annullata'));
+      tx.onerror = () => reject(tx.error || new Error('Elenco backup non disponibile'));
+      tx.onabort = () => reject(tx.error || new Error('Lettura elenco backup annullata'));
     });
-    return rows.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   } finally { db.close(); }
 }
 
@@ -721,8 +777,8 @@ async function makeBackupPackage({ appVersion, records, preferences, config, sec
   return { createdAt, filename: backupFileName(appVersion, createdAt), blob, manifest, checksums, audioCount:audio.count };
 }
 
-// Percorso primario 0.1.141: lettura pagine singole, media uno per volta e stato
-// persistente dell'avanzamento. Stesso manifest, checksums e formato ZIP della 0.1.141.
+// Percorso primario 0.1.142: lettura pagine singole, media uno per volta e stato
+// persistente dell'avanzamento. Stesso manifest, checksums e formato ZIP della 0.1.142.
 async function makeBackupPackageProgressive({ appVersion, reader, preferences, config, secureVault = null, audioSnapshot = null, clipboards = null, onProgress = async () => {} }) {
   const createdAt = new Date().toISOString();
   const zip = createProgressiveZipParts();
@@ -1331,7 +1387,9 @@ export function initBackupFoundation(options) {
   async function prune() {
     const rows = await listArchives();
     const keep = Math.max(3, Number(config.retention) || 30);
-    for (const row of rows.slice(keep)) {
+    // Non eliminare mai automaticamente archivi senza scheda o in attesa di verifica.
+    const verifiedRows = rows.filter((row) => !row.missingMeta && row.verificationStatus === 'verified');
+    for (const row of verifiedRows.slice(keep)) {
       await deleteExternalCopies(row);
       await backupDelete(ARCHIVE_STORE, row.id);
     }
@@ -1520,15 +1578,22 @@ export function initBackupFoundation(options) {
       await backupPut(ARCHIVE_STORE, archive);
       archivedId = id;
       await renderHistory();
-      await advance('verifica integrità');
-      if (config.verifyAfterBackup || safety) {
-        await verifyBackupBlob(encryptedBlob, backupPassphrase);
+      // Non provocare un nuovo crash quando un archivio grande e' gia' salvato.
+      // I backup di sicurezza pre-ripristino fanno eccezione: verifica sempre obbligatoria.
+      // Se la sessione precedente si e' interrotta proprio in verifica/impronta,
+      // il prossimo backup MANUALE e' salvato senza ripetere immediatamente il crash.
+      const previousIntegrityFailure = Boolean(lastInterruptedJob && /verifica integrit|impronta SHA/i.test(String(lastInterruptedJob.phase || '')));
+      const deferHeavyChecks = !safety && (encryptedBlob.size > AUTO_VERIFY_MAX_BYTES || previousIntegrityFailure);
+      const shouldVerifyNow = (config.verifyAfterBackup || safety) && !deferHeavyChecks;
+      await advance(deferHeavyChecks ? 'verifica rinviata per memoria iPad' : 'verifica integrità');
+      if (shouldVerifyNow) await verifyBackupBlob(encryptedBlob, backupPassphrase);
+      if (!deferHeavyChecks) {
+        await advance('impronta SHA-256');
+        archive.sha256 = await sha256Hex(encryptedBlob);
       }
-      await advance('impronta SHA-256');
-      archive.sha256 = await sha256Hex(encryptedBlob);
-      archive.verificationStatus = (config.verifyAfterBackup || safety) ? 'verified' : 'not-checked';
+      archive.verificationStatus = shouldVerifyNow ? 'verified' : deferHeavyChecks ? 'pending' : 'not-checked';
       archive.deliveries = [{key:'internal', label:'Archivio app', ok:true, message:'salvato'}];
-      await backupPut(ARCHIVE_STORE, archive);
+      await backupUpdateArchiveSummary(archive);
       if (!safety) {
         config.lastLocalSnapshotAt = pkg.createdAt;
         config.lastLocalSnapshotId = id;
@@ -1552,13 +1617,14 @@ export function initBackupFoundation(options) {
       }
       archive.deliveries = external;
       archive.deliveryUpdatedAt = new Date().toISOString();
-      await backupPut(ARCHIVE_STORE, archive);
+      await backupUpdateArchiveSummary(archive);
       await renderHistory();
       await writeBackupJournal('done', 'completato', { reason, archivedId:id });
       automaticPausedAfterInterruption = false;
       lastInterruptedJob = null;
       const deliveryText = external.map((item) => `${item.label} ${item.ok ? '✓' : '✗'}${item.ok ? '' : ` ${item.message}`}`).join(' · ');
-      setStatus(`Backup OK · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · ${archive.verificationStatus === 'verified' ? 'integrità verificata' : 'verifica manuale ancora necessaria'}${deliveryText ? `\n${deliveryText}` : ''}`);
+      const completedLabel = archive.verificationStatus === 'verified' ? 'Backup OK' : 'Backup salvato (DA VERIFICARE)';
+      setStatus(`${completedLabel} · ${archive.filename}\n${humanBytes(archive.size)} · ${archive.recordCount} record · ${archive.audioCount || 0} audio · ${archive.verificationStatus === 'verified' ? 'integrità verificata' : 'verifica manuale ancora necessaria: esporta una copia appena possibile'}${deliveryText ? `\n${deliveryText}` : ''}`);
       setAppStatus('backup completato');
       return archive;
     } catch (err) {
@@ -1584,7 +1650,7 @@ export function initBackupFoundation(options) {
       if (latest.sha256 && whole !== latest.sha256) throw new Error('Checksum dell’archivio completo non valido');
       latest.sha256 = whole;
       latest.verificationStatus = 'verified';
-      await backupPut(ARCHIVE_STORE, latest);
+      await backupUpdateArchiveSummary(latest);
       await renderHistory();
       setStatus(`Backup integro ✓\n${latest.filename}\n${result.pages.count ?? result.pages.records?.length ?? 0} record · formato ${result.manifest.formatVersion}`);
     } catch (err) { setStatus(`Backup NON valido: ${err.message}`); }
@@ -1592,7 +1658,16 @@ export function initBackupFoundation(options) {
 
   async function renderHistory() {
     if (!history) return;
-    const rows = await listArchives().catch(() => []);
+    let rows;
+    try { rows = await listArchives(); }
+    catch (err) {
+      history.replaceChildren();
+      const failure = document.createElement('div');
+      failure.className = 'backup-empty';
+      failure.textContent = `Impossibile leggere l'elenco backup: ${err?.message || err}. Non cancellare i dati dell'app.`;
+      history.appendChild(failure);
+      return;
+    }
     history.replaceChildren();
     if (!rows.length) {
       const empty = document.createElement('div');
@@ -1611,13 +1686,15 @@ export function initBackupFoundation(options) {
       const title = document.createElement('strong');
       title.textContent = String(row.filename || 'Backup senza nome');
       const meta = document.createElement('small');
-      meta.textContent = `${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${Number(row.recordCount) || 0} record · ${Number(row.audioCount) || 0} audio · ${String(row.reason || '')}`;
+      meta.textContent = row.missingMeta
+        ? `${row.createdAt ? new Date(row.createdAt).toLocaleString('it-IT') + ' · ' : ''}Archivio rilevato nel database · dimensioni da verificare · NON eliminare prima di esportare`
+        : `${new Date(row.createdAt).toLocaleString('it-IT')} · ${humanBytes(row.size)} · ${Number(row.recordCount) || 0} record · ${Number(row.audioCount) || 0} audio · ${String(row.reason || '')}`;
       const badges = document.createElement('div');
       badges.className = 'delivery-badges';
       if (row.verificationStatus && row.verificationStatus !== 'verified') {
         const pending = document.createElement('span');
         pending.className = 'delivery-badge fail';
-        pending.textContent = row.verificationStatus === 'pending' ? 'Da verificare' : 'Verifica non eseguita';
+        pending.textContent = row.missingMeta ? 'Recuperato dall’archivio · da verificare' : row.verificationStatus === 'pending' ? 'Da verificare' : 'Verifica non eseguita';
         badges.appendChild(pending);
       }
       for (const delivery of (row.deliveries || [{label:'Archivio app',ok:true}])) {
@@ -1631,7 +1708,7 @@ export function initBackupFoundation(options) {
 
       const actions = document.createElement('div');
       actions.className = 'backup-item-actions';
-      for (const [key, label] of [['restore','Ripristina'], ['export','Esporta'], ['delete','Elimina']]) {
+      for (const [key, label] of [['export','Esporta'], ['restore','Ripristina'], ['delete','Elimina']]) {
         const button = document.createElement('button');
         button.type = 'button';
         button.dataset[`backup${key[0].toUpperCase()}${key.slice(1)}`] = '1';
@@ -1831,6 +1908,7 @@ export function initBackupFoundation(options) {
         blob:file,
         deliveries:[{ key:'internal', label:'Archivio app', ok:true, message:'importato' }]
       };
+      archive.verificationStatus = 'verified';
       await backupPut(ARCHIVE_STORE, archive);
       await renderHistory();
       setStatus(`Backup importato e verificato ✓\n${archive.filename}`);
