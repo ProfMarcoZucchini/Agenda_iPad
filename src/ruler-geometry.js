@@ -66,3 +66,26 @@ export function snapPointToRulerEdge(clientX, clientY, geometry, edge = 'auto') 
     }
   };
 }
+
+/**
+ * Area di controllo tattile del righello. La decisione dipende dall'asse LOCALE
+ * del righello (non dalla direzione dello schermo), quindi resta corretta dopo
+ * ogni rotazione. Il 20% di ciascuna estremita' e' dedicato alla rotazione;
+ * su righelli lunghi la zona non supera 110 px per evitare tocchi involontari.
+ * La Pencil resta gestita esclusivamente da snapPointToRulerEdge.
+ */
+export function rulerTouchAction(clientX, clientY, geometry) {
+  const { rect, centerX, centerY, angleDeg, width } = geometry;
+  if (!rect || !Number.isFinite(width) || width <= 0) return 'move';
+  const rad = (Number(angleDeg) || 0) * Math.PI / 180;
+  const dx = clientX - (rect.left + centerX);
+  const dy = clientY - (rect.top + centerY);
+  const localX = dx * Math.cos(rad) + dy * Math.sin(rad);
+  const terminalZone = Math.min(width * 0.20, 110);
+  return Math.abs(localX) >= width / 2 - terminalZone ? 'rotate' : 'move';
+}
+
+/** Differenza angolare minima: gestisce correttamente -180/+180 e il lato sinistro. */
+export function rulerSignedAngleDelta(previousDeg, currentDeg) {
+  return ((currentDeg - previousDeg + 540) % 360) - 180;
+}

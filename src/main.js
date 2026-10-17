@@ -1,4 +1,4 @@
-import { fitRulerToWritableArea, snapPointToRulerEdge } from './ruler-geometry.js';
+import { fitRulerToWritableArea, snapPointToRulerEdge, rulerTouchAction, rulerSignedAngleDelta } from './ruler-geometry.js';
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
@@ -17,7 +17,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.143';
+const APP_VERSION = '0.1.145';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -108,7 +108,7 @@ if (versionButton) {
   versionButton.title = `Versione ${APP_VERSION} e diagnostica`;
   versionButton.setAttribute('aria-label', `Versione ${APP_VERSION} e diagnostica`);
 }
-// 0.1.143 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
+// 0.1.145 — anche la versione sulla copertina di avvio deriva da APP_VERSION.
 const startupCoverVersion = document.querySelector('.cover-version');
 if (startupCoverVersion) startupCoverVersion.textContent = `v${APP_VERSION}`;
 const authorCreditsButton = document.getElementById('authorCreditsButton');
@@ -145,7 +145,6 @@ const shapePreviewPath = document.getElementById('shapePreviewPath');
 const rulerToolButton = document.getElementById('rulerToolButton');
 const rulerOverlay = document.getElementById('rulerOverlay');
 const rulerBody = document.getElementById('rulerBody');
-const rulerRotateHandle = document.getElementById('rulerRotateHandle');
 const rulerAngleBadge = document.getElementById('rulerAngleBadge');
 const rulerPreviewPath = document.getElementById('rulerPreviewPath');
 const undoButton = document.getElementById('undoButton');
@@ -4765,7 +4764,7 @@ function syncRulerOverlayBounds() {
   const svg = rulerOverlay.querySelector('.ruler-line-layer');
   svg?.setAttribute('viewBox', `0 0 ${Math.max(1, rect.width)} ${writableHeight}`);
 
-  // 0.1.143 — righello Note Marco: massima lunghezza compatibile con i
+  // 0.1.145 — righello Note Marco: massima lunghezza compatibile con i
   // bordi dell'area scrivibile per QUALSIASI angolo, senza soglia di 720 px.
   // Il rettangolo ruotato viene considerato nella sua interezza, inclusa
   // l'estremita' per la rotazione.
@@ -4828,21 +4827,34 @@ function cancelRulerGesture() {
 function beginRulerGesture(ev) {
   if (activeTool !== 'ruler' || !rulerBody || pageTurning || drawing) return false;
   const target = ev.target instanceof Element ? ev.target : null;
-  const onHandle = Boolean(target?.closest?.('#rulerRotateHandle'));
   const onBody = Boolean(target?.closest?.('#rulerBody'));
   if (ev.pointerType === 'touch') {
     if (!onBody) return false;
+    // Solo il primo dito manipola il righello: evita gesti concorrenti.
+    if (rulerGesture) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return true;
+    }
+    const pivotClientX = rect.left + rulerState.x * rect.width;
+    const pivotClientY = rect.top + rulerState.y * rect.height;
+    const action = rulerTouchAction(ev.clientX, ev.clientY, {
+      rect, centerX:rulerState.x * rect.width, centerY:rulerState.y * rect.height,
+      angleDeg:rulerState.angle, width:rulerBody.offsetWidth
+    });
     rulerGesture = {
-      type:onHandle ? 'rotate' : 'move',
+      type:action,
       pointerId:ev.pointerId,
       startClientX:ev.clientX,
       startClientY:ev.clientY,
       startX:rulerState.x,
       startY:rulerState.y,
-      startAngle:rulerState.angle
+      pivotClientX,
+      pivotClientY,
+      lastFingerAngle:Math.atan2(ev.clientY - pivotClientY, ev.clientX - pivotClientX) * 180 / Math.PI
     };
   } else if (ev.pointerType === 'pen' || (ev.pointerType === 'mouse' && ev.button === 0)) {
-    // 0.1.143 — la Pencil puo' iniziare appena FUORI dal bordo del righello;
+    // 0.1.145 — la Pencil puo' iniziare appena FUORI dal bordo del righello;
     // non serve colpire il corpo HTML. Il bordo viene bloccato all'inizio.
     if (!target || (!paper?.contains(target) && !rulerOverlay?.contains(target))) return false;
     const snapped = projectPointToRulerEdge(ev);
@@ -4872,9 +4884,16 @@ function moveRulerGesture(ev) {
     rulerState.y = rulerGesture.startY + dy;
     syncRulerOverlayBounds();
   } else if (rulerGesture.type === 'rotate') {
-    const cx = rect.left + rulerState.x * rect.width;
-    const cy = rect.top + rulerState.y * rect.height;
-    rulerState.angle = Math.atan2(ev.clientY - cy, ev.clientX - cx) * 180 / Math.PI;
+    // Ruota rispetto all'angolo del dito PRECEDENTE; cosi' non ci sono
+    // scatti di 180° quando il contatto parte dall'estremita' sinistra.
+    // Il perno iniziale rimane fisso durante il gesto, anche se il righello
+    // viene contenuto automaticamente nei bordi dell'area scrivibile.
+    const fingerAngle = Math.atan2(
+      ev.clientY - rulerGesture.pivotClientY,
+      ev.clientX - rulerGesture.pivotClientX
+    ) * 180 / Math.PI;
+    rulerState.angle += rulerSignedAngleDelta(rulerGesture.lastFingerAngle, fingerAngle);
+    rulerGesture.lastFingerAngle = fingerAngle;
     syncRulerOverlayBounds();
   } else if (rulerGesture.type === 'draw') {
     const snapped = projectPointToRulerEdge(ev, rulerGesture.edge);
@@ -5083,7 +5102,7 @@ function selectTool(tool) {
     : tool === 'eraser' ? 'gomma'
     : tool === 'lasso' ? 'lazo · disegna un contorno chiuso'
     : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`
-    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · sposta con dito, traccia con Pencil`
+    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · ruota dalle estremità, sposta dal centro, traccia con Pencil`
     : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
 }

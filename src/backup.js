@@ -1832,6 +1832,13 @@ export function initBackupFoundation(options) {
       ? `\n\n⚠ Backup precedente interrotto durante: ${lastInterruptedJob.phase || 'fase sconosciuta'}. Backup automatico temporaneamente sospeso.` : '';
     setStatus(authCallbackMessage || `${backupSummary}${interrupted}`);
     authCallbackMessage = '';
+    // Consenti l'esportazione anche dopo il riavvio della PWA: la 0.1.143
+    // la lasciava disabilitata quando non esisteva piu' la copia in RAM.
+    if (preparedArchiveForExternalExport?.blob) setEmergencyExportAvailable(true);
+    else {
+      listArchives().then((rows) => setEmergencyExportAvailable(rows.length > 0))
+        .catch(() => setEmergencyExportAvailable(false));
+    }
   }
 
   function closeSettings() {
@@ -2073,13 +2080,32 @@ export function initBackupFoundation(options) {
   bindAction(chooseLocal, chooseFolder);
   bindAction(exportLatest, async () => { const latest = await getLatest(); latest ? downloadOrShare(latest).catch((e) => setStatus(e.message)) : setStatus('Nessun backup disponibile.'); });
   setEmergencyExportAvailable(false);
+  // 0.1.144: esportazione di emergenza isolata dal backup principale.
+  // Se il backup e' stato confermato in IndexedDB, usa lo stesso archivio
+  // persistente dell'azione Esporta ordinaria; la copia volatile serve SOLO
+  // se il commit non e' riuscito. Non crea ZIP e non scrive nel database.
   bindAction(emergencyExport, async () => {
-    const archive = preparedArchiveForExternalExport;
-    if (!archive?.blob) { setStatus('Nessun archivio temporaneo disponibile in questa sessione.'); return; }
+    const temporary = preparedArchiveForExternalExport;
+    let archive = null;
     try {
+      if (temporary?.id) {
+        // Leggere la copia persistente solo quando esiste davvero, per non
+        // esportare per errore un backup piu' vecchio dopo un commit fallito.
+        if (lastArchiveIdConfirmed || await backupHasArchiveId(temporary.id)) {
+          archive = await backupGet(ARCHIVE_STORE, temporary.id);
+        }
+        if (!archive?.blob) archive = temporary;
+      } else {
+        // Dopo la riapertura dell'app non esiste piu' la copia temporanea.
+        // Riusa ESATTAMENTE il percorso dell'export ordinario funzionante.
+        archive = await getLatest();
+      }
+      if (!archive?.blob) { setStatus('Nessun backup disponibile per l’esportazione.'); return; }
       const action = await downloadOrShare(archive);
-      setStatus(`Esportazione ${action}. Controlla in File che sia presente ${archive.filename} (${humanBytes(archive.size)}). ATTENZIONE: l'integrità non è stata ancora verificata.`);
-    } catch (err) { setStatus(`Esportazione non riuscita: ${err?.message || err}. Non chiudere l’app: l’archivio è ancora disponibile.`); }
+      setStatus(`Esportazione ${action}. Controlla nell’app File che sia presente ${archive.filename} (${humanBytes(archive.size)}). ${archive.verificationStatus === 'verified' ? 'Archivio verificato.' : 'Archivio da verificare prima di un eventuale ripristino.'}`);
+    } catch (err) {
+      setStatus(`Esportazione non riuscita: ${err?.message || err}. Il backup salvato nell’archivio non viene modificato.`);
+    }
   });
   bindAction(diagnoseArchives, async () => {
     try {
