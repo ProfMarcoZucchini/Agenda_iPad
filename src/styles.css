@@ -3772,3 +3772,27 @@ button.mini-calendar-day:active { background:rgba(105,83,54,.14); transform:scal
   .adaptive-cover-landscape { display:block !important; }
   .adaptive-cover-portrait { display:none !important; }
 }
+
+
+/* 0.1.147 — quaderni laterali del Planning: foglio a righe, titolo centrale.
+   Solo presentazione: nessuna modifica al canvas o alla pipeline Ink. */
+.paper.planning-side-note-view .hours,
+.paper.planning-side-note-view .date-block,
+.paper.planning-side-note-view .weather-badge,
+.paper.planning-side-note-view .planner-mode-bar,
+.paper.planning-side-note-view .planner-layer { display:none !important; }
+.paper.planning-side-note-view .page-header {
+  justify-content:center; align-items:center;
+  padding-left:52px !important; padding-right:52px !important;
+}
+.paper.planning-side-note-view .page-kind-label {
+  position:absolute !important; left:50% !important; top:50% !important;
+  transform:translate(-50%,-50%) !important;
+  margin:0 !important; font-family:Georgia, "Times New Roman", serif;
+  font-size:clamp(22px,3.5vw,37px); font-weight:600; letter-spacing:.015em;
+  color:rgba(67,55,43,.9); text-transform:none; white-space:nowrap;
+}
+.paper[data-paper-color="black"].planning-side-note-view .page-kind-label { color:rgba(255,255,255,.9); }
+@media (max-width:760px) {
+  .paper.planning-side-note-view .page-kind-label { font-size:clamp(19px,4vw,29px); }
+}

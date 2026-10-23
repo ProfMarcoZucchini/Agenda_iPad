@@ -89,3 +89,17 @@ export function rulerTouchAction(clientX, clientY, geometry) {
 export function rulerSignedAngleDelta(previousDeg, currentDeg) {
   return ((currentDeg - previousDeg + 540) % 360) - 180;
 }
+
+// 0.1.146 — un tap breve sul corpo del righello lo disattiva.
+// Soglie volutamente indipendenti da durata/velocita' dello spostamento:
+// tocchi lunghi, gesture multi-dito e trascinamenti non sono tap.
+export const RULER_TAP_MAX_MS = 350;
+export const RULER_TAP_SLOP_PX = 10;
+
+export function isRulerFingerTap(gesture, endClientX, endClientY, elapsedMs, cancelled = false) {
+  if (cancelled || !gesture || !['move', 'rotate'].includes(gesture.type)) return false;
+  if (gesture.moved || gesture.multiTouch) return false;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs > RULER_TAP_MAX_MS) return false;
+  const movement = Math.hypot(endClientX - gesture.startClientX, endClientY - gesture.startClientY);
+  return Number.isFinite(movement) && movement <= RULER_TAP_SLOP_PX;
+}

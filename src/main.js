@@ -1,4 +1,5 @@
-import { fitRulerToWritableArea, snapPointToRulerEdge, rulerTouchAction, rulerSignedAngleDelta } from './ruler-geometry.js';
+import { isPlanningSideNote, planningSideNoteTitle, planningSideNoteKey, planningSideSwipeTarget } from './planning-side-notes.js';
+import { fitRulerToWritableArea, snapPointToRulerEdge, rulerTouchAction, rulerSignedAngleDelta, isRulerFingerTap, RULER_TAP_SLOP_PX } from './ruler-geometry.js';
 import { initBackupFoundation } from './backup.js';
 import { initSyncFoundation } from './sync-core.js';
 import { initLanSyncTransport } from './lan-sync.js';
@@ -17,7 +18,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.145';
+const APP_VERSION = '0.1.147';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -1543,7 +1544,7 @@ function principalSaintName(payload) {
 function setSaintLabel(root, dateString, state = 'cached', pageKind = currentPageKind) {
   const label = root?.querySelector?.('.saint-name');
   if (!label) return;
-  const hiddenForNotes = pageKind === 'note' || pageKind === 'free-note';
+  const hiddenForNotes = pageKind === 'note' || pageKind === 'free-note' || isPlanningSideNote(pageKind);
   label.hidden = hiddenForNotes;
   if (hiddenForNotes) return;
   const name = cachedSaintName(dateString);
@@ -1728,7 +1729,8 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
   const noteCounter = root.querySelector('.note-counter');
   const hours = root.querySelector('.hours');
   if (kindLabel) {
-    if (pageKind === 'rubrica') kindLabel.textContent = 'Rubrica';
+    if (isPlanningSideNote(pageKind)) kindLabel.textContent = planningSideNoteTitle(pageKind);
+    else if (pageKind === 'rubrica') kindLabel.textContent = 'Rubrica';
     else if (pageKind === 'free-note') kindLabel.textContent = 'Note libere';
     else if (pageKind === 'note') kindLabel.textContent = `Nota del giorno ${noteIndex}/${Math.max(noteIndex, noteTotal)}`;
     else if (isPlannerKind(pageKind)) {
@@ -1745,7 +1747,7 @@ function setHeaderFor(root, dateString, pageKind = 'agenda', noteIndex = 0, note
     } else kindLabel.textContent = '';
   }
   if (noteCounter) noteCounter.textContent = pageKind === 'free-note' ? `${Math.max(1, freeNoteIndex)}/${Math.max(1, freeNoteTotal)}` : '';
-  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || pageKind === 'rubrica' || isPlannerKind(pageKind);
+  if (hours) hours.hidden = pageKind === 'note' || pageKind === 'free-note' || pageKind === 'rubrica' || isPlannerKind(pageKind) || isPlanningSideNote(pageKind);
   if (pageKind === 'note') requestAnimationFrame(() => alignNoteTitleToPen(root));
   else if (kindLabel) kindLabel.style.removeProperty('left');
 }
@@ -2181,6 +2183,7 @@ function configurePageRoot(root, descriptor) {
   root.classList.toggle('planner-view', planner);
   root.classList.toggle('note-view', descriptor.kind === 'note');
   root.classList.toggle('free-note-view', descriptor.kind === 'free-note');
+  root.classList.toggle('planning-side-note-view', isPlanningSideNote(descriptor.kind));
   root.classList.toggle('rubrica-view', descriptor.kind === 'rubrica');
   for (const m of PLANNER_MODES) root.classList.toggle(`planner-${m}`, planner && mode === m);
   root.classList.toggle('planner-timetable', planner && mode === 'timetable');
@@ -2199,7 +2202,7 @@ function configurePageRoot(root, descriptor) {
     button.setAttribute('aria-pressed', selected ? 'true' : 'false');
   });
   const hours = root.querySelector('.hours');
-  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || descriptor.kind === 'rubrica' || planner;
+  if (hours) hours.hidden = descriptor.kind === 'note' || descriptor.kind === 'free-note' || descriptor.kind === 'rubrica' || planner || isPlanningSideNote(descriptor.kind);
 }
 
 let audioIndicatorSerial = 0;
@@ -2235,7 +2238,8 @@ function updateHeader() {
     setWeatherBadgeFor(document, currentDate, currentPageKind);
   }
   if (baselineLabel) {
-    if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter} · ${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
+    if (isPlanningSideNote(currentPageKind)) baselineLabel.textContent = `PLANNING · ${planningSideNoteTitle(currentPageKind).toUpperCase()}`;
+    else if (currentPageKind === 'rubrica') baselineLabel.textContent = `RUBRICA · ${currentRubricaLetter} · ${Math.max(1,currentRubricaPageIndex)}/${Math.max(1,currentRubricaPageTotal)}`;
     else if (currentPageKind === 'free-note') baselineLabel.textContent = `NOTE LIBERE · ${currentFreeNoteIndex}/${Math.max(1, currentFreeNoteTotal)}`;
     else if (currentPageKind === 'note') baselineLabel.textContent = `Note del giorno ${currentNoteIndex}/${Math.max(currentNoteIndex, currentNoteTotal)}`;
     else if (isPlannerKind()) baselineLabel.textContent = currentPlannerMode === 'timetable' ? 'ORARIO SETTIMANALE · INK NATIVO' : `PLANNER · ${plannerModeTitle(currentPlannerMode, currentDate).toUpperCase()}`;
@@ -2268,6 +2272,8 @@ function freeNoteKey(index) {
 }
 
 function pageKey(dateString, pageKind = 'agenda', noteIndex = 0, timetableIndex = currentTimetableIndex, freeNoteIndex = currentFreeNoteIndex, rubricaLetter = currentRubricaLetter, rubricaPageIndex = currentRubricaPageIndex) {
+  // Quaderni Planning: chiavi indipendenti dal giorno e separate da Agenda/Note.
+  if (isPlanningSideNote(pageKind)) return planningSideNoteKey(pageKind);
   if (pageKind === 'rubrica') return `${RUBRICA_KEY_PREFIX}${String(rubricaLetter || 'A').toUpperCase()}::${String(Math.max(1, Number(rubricaPageIndex) || 1)).padStart(4,'0')}`;
   if (pageKind === 'free-note') return freeNoteKey(freeNoteIndex);
   if (pageKind === 'note') return noteKey(dateString, noteIndex);
@@ -4832,6 +4838,9 @@ function beginRulerGesture(ev) {
     if (!onBody) return false;
     // Solo il primo dito manipola il righello: evita gesti concorrenti.
     if (rulerGesture) {
+      // Un secondo contatto invalida il tap: non nascondere il righello
+      // quando il gesto potrebbe essere del palmo o a piu' dita.
+      rulerGesture.multiTouch = true;
       ev.preventDefault();
       ev.stopPropagation();
       return true;
@@ -4847,6 +4856,9 @@ function beginRulerGesture(ev) {
       pointerId:ev.pointerId,
       startClientX:ev.clientX,
       startClientY:ev.clientY,
+      startedAt:performance.now(),
+      moved:false,
+      multiTouch:false,
       startX:rulerState.x,
       startY:rulerState.y,
       pivotClientX,
@@ -4877,6 +4889,19 @@ function beginRulerGesture(ev) {
 
 function moveRulerGesture(ev) {
   if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId || activeTool !== 'ruler') return false;
+  // 0.1.146 — i piccoli tremolii del dito non muovono il righello.
+  // Superata la soglia, rotazione e spostamento continuano come nella 0.1.145.
+  if (rulerGesture.type === 'move' || rulerGesture.type === 'rotate') {
+    if (!rulerGesture.moved) {
+      const distance = Math.hypot(ev.clientX - rulerGesture.startClientX, ev.clientY - rulerGesture.startClientY);
+      if (distance <= RULER_TAP_SLOP_PX) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return true;
+      }
+      rulerGesture.moved = true;
+    }
+  }
   if (rulerGesture.type === 'move') {
     const dx = (ev.clientX - rulerGesture.startClientX) / Math.max(1, rect.width);
     const dy = (ev.clientY - rulerGesture.startClientY) / Math.max(1, rect.height);
@@ -4911,8 +4936,16 @@ function endRulerGesture(ev, cancelled = false) {
   if (!rulerGesture || ev.pointerId !== rulerGesture.pointerId) return false;
   const gesture = rulerGesture;
   if (!cancelled && gesture.type === 'draw') moveRulerGesture(ev);
+  const fingerTap = isRulerFingerTap(
+    gesture, ev.clientX, ev.clientY, performance.now() - gesture.startedAt, cancelled
+  );
   try { gesture.captureTarget?.releasePointerCapture?.(gesture.pointerId); } catch {}
   cancelRulerGesture();
+  if (fingerTap) {
+    // Usa il medesimo percorso gia' impiegato dal pulsante Righello.
+    // Nessun reset della pagina, della scrittura o del contenuto salvato.
+    deactivatePageTool('righello nascosto · tap');
+  }
   if (!cancelled && gesture.type === 'draw') {
     const dx = (gesture.current.x - gesture.start.x) * rect.width;
     const dy = (gesture.current.y - gesture.start.y) * rect.height;
@@ -5102,7 +5135,7 @@ function selectTool(tool) {
     : tool === 'eraser' ? 'gomma'
     : tool === 'lasso' ? 'lazo · disegna un contorno chiuso'
     : tool === 'shape' ? `figure · ${SHAPE_LABELS[selectedShapeType]} · ${selectedShapeFill === 'filled' ? 'piena' : 'contorno'} · trascina o fai clic`
-    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · ruota dalle estremità, sposta dal centro, traccia con Pencil`
+    : tool === 'ruler' ? `righello · ${rulerInkTool === 'highlighter' ? 'evidenziatore' : 'penna'} · ruota dalle estremità, sposta dal centro, tap per chiudere, traccia con Pencil`
     : tool === 'voice' ? 'Voice Script · scegli il punto di inserimento'
     : tool === 'image' ? 'modalità immagini' : 'penna';
 }
@@ -6660,6 +6693,7 @@ function drawPreviewInk(preview, previewStrokes) {
 }
 
 function footerTextFor(descriptor) {
+  if (isPlanningSideNote(descriptor.kind)) return `PLANNING · ${planningSideNoteTitle(descriptor.kind).toUpperCase()}`;
   if (descriptor.kind === 'free-note') return `NOTE LIBERE · ${descriptor.freeNoteIndex}/${Math.max(1, descriptor.freeNoteTotal)}`;
   if (descriptor.kind === 'note') return `Note del giorno ${descriptor.noteIndex}/${Math.max(descriptor.noteIndex, descriptor.noteTotal)}`;
   if (isPlannerKind(descriptor.kind)) return `PLANNER · ${String(descriptor.plannerMode ?? 'daily').toUpperCase()}`;
@@ -6726,7 +6760,7 @@ async function loadPageForPreview(descriptor, preview) {
       images: imagesFromRecord(record),
       pageStyle: descriptor.kind === 'planner-timetable'
         ? { color:'black', template:'blank' }
-        : descriptor.kind === 'free-note' && !record
+        : (descriptor.kind === 'free-note' || isPlanningSideNote(descriptor.kind)) && !record
           ? { color:globalPageStyle.color, template:'ruled' }
           : pageStyleFromRecord(record)
     };
@@ -6759,18 +6793,25 @@ function resetTurnStyles() {
 function horizontalTarget(direction) {
   if (currentPageKind === 'free-note' || currentPageKind === 'rubrica') return null;
   if (currentPageKind === 'planner-timetable') {
+    // Le schede Orario conservano la navigazione orizzontale storica.
     const nextIndex = currentTimetableIndex + direction;
     if (nextIndex < 1 || nextIndex > WEEKLY_TIMETABLE_MAX_PAGES) return null;
     return pageDescriptor(currentDate, 'planner-timetable', 0, 0, nextIndex);
   }
-  if (isPlannerKind()) return null;
+  const planningSide = planningSideSwipeTarget(currentPageKind, direction, isPlannerKind());
+  if (planningSide === 'planner-return') {
+    // La modalità Planner non cambia mentre si visita il quaderno laterale.
+    return pageDescriptor(currentDate, plannerKind(currentPlannerMode), 0, 0);
+  }
+  if (isPlanningSideNote(planningSide)) return pageDescriptor(currentDate, planningSide, 0, 0);
+  if (isPlannerKind() || isPlanningSideNote(currentPageKind)) return null;
   const targetDate = addDays(currentDate, direction);
   if (!dateInRange(targetDate)) return null;
   return pageDescriptor(targetDate, 'agenda', 0, 0);
 }
 
 function verticalTarget(direction) {
-  if (currentPageKind === 'rubrica') return null;
+  if (currentPageKind === 'rubrica' || isPlanningSideNote(currentPageKind)) return null;
   if (currentPageKind === 'free-note') {
     if (direction < 0) {
       if (currentFreeNoteIndex <= 1) return null;
@@ -6926,7 +6967,11 @@ function movePageSwipe(ev) {
       if (pageSwipe?.target?.key === target.key) pageSwipe.targetPage = targetPage;
       return targetPage;
     });
-    if (axis === 'x') statusLabel.textContent = currentPageKind === 'planner-timetable'
+    if (axis === 'x') statusLabel.textContent = isPlanningSideNote(target.kind)
+      ? `apri ${planningSideNoteTitle(target.kind)}`
+      : isPlanningSideNote(currentPageKind)
+        ? 'torna al Planning'
+        : currentPageKind === 'planner-timetable'
       ? `Orario settimanale ${target.timetableIndex}/${WEEKLY_TIMETABLE_MAX_PAGES}`
       : (direction === 1 ? 'giorno successivo' : 'giorno precedente');
     else if (target.kind === 'agenda') statusLabel.textContent = 'torna ad Agenda';
@@ -7437,7 +7482,7 @@ async function commitPageTurn() {
   const previousPaperColor = pageStyle.color;
   pageStyle = target.kind === 'planner-timetable'
     ? normalizePageStyle({ color:'black', template:'blank' })
-    : target.kind === 'free-note'
+    : (target.kind === 'free-note' || isPlanningSideNote(target.kind))
       ? normalizePageStyle(targetPage?.pageStyle ?? { color:globalPageStyle.color, template:'ruled' })
       : normalizePageStyle(targetPage?.pageStyle ?? globalPageStyle);
   applyPageStyle();
