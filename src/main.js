@@ -18,7 +18,7 @@ const SHAPE_TYPES = Object.freeze([...WINDOWS_SHAPE_TYPES, ...EXTRA_SHAPE_TYPES]
 const SHAPE_LABELS = Object.freeze({ ...WINDOWS_SHAPE_LABELS, ...EXTRA_SHAPE_LABELS });
 const buildShapePoints = (type, bounds) => EXTRA_SHAPE_TYPES.includes(type) ? buildExtraShapePoints(type, bounds) : buildWindowsShapePoints(type, bounds);
 const shapeIconPathData = (type) => EXTRA_SHAPE_TYPES.includes(type) ? extraShapeIconPathData(type) : windowsShapeIconPathData(type);
-const APP_VERSION = '0.1.147';
+const APP_VERSION = '0.1.148';
 const DB_NAME = 'AgendaIPadReintegrationDB';
 const DB_VERSION = 4;
 const STORE = 'pages';
@@ -1974,7 +1974,9 @@ async function closeWeeklyTimetable() {
         ? 'Nota del giorno'
         : target.kind === 'free-note'
           ? 'Note libere'
-          : 'Planner';
+          : isPlanningSideNote(target.kind)
+            ? planningSideNoteTitle(target.kind)
+            : 'Planner';
   } catch (err) {
     session.storageErrors++;
     console.warn('Ritorno al Planner settimanale non riuscito', err);
@@ -2007,7 +2009,7 @@ function registerPageDoubleTap(target, x, y) {
 
   // 0.1.130 — navigazione simmetrica verso Orario settimanale.
   // Da qualunque scheda Orario si torna esattamente al descriptor memorizzato
-  // da openWeeklyTimetable(): Agenda, Nota, Nota libera o Planner di provenienza.
+  // da openWeeklyTimetable(): Agenda, Nota, Planning o pagina laterale di provenienza.
   if (currentPageKind === 'planner-timetable') {
     void closeWeeklyTimetable();
     return true;
@@ -2015,7 +2017,8 @@ function registerPageDoubleTap(target, x, y) {
   if (
     currentPageKind === 'agenda' ||
     currentPageKind === 'note' ||
-    isPlannerKind(currentPageKind)
+    isPlannerKind(currentPageKind) ||
+    isPlanningSideNote(currentPageKind)
   ) {
     void openWeeklyTimetable();
     return true;
@@ -6835,7 +6838,8 @@ function verticalTarget(direction) {
     return pageDescriptor(currentDate, 'planner-timetable', 0, 0, 1);
   }
   if (currentPageKind === 'planner-timetable' && direction > 0) {
-    return isPlannerKind(weeklyTimetableReturnDescriptor?.kind) && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
+    return (isPlannerKind(weeklyTimetableReturnDescriptor?.kind) || isPlanningSideNote(weeklyTimetableReturnDescriptor?.kind))
+      && weeklyTimetableReturnDescriptor.kind !== 'planner-timetable'
       ? { ...weeklyTimetableReturnDescriptor }
       : pageDescriptor(currentDate, 'planner-weekly', 0, 0);
   }
